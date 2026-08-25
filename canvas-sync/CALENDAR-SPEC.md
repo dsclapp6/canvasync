@@ -34,6 +34,7 @@ Suites at that moment: `scripts/` **445 pass / 0 fail**, `bridge/` **261 pass / 
 | 2026-08-24 19:28Z | "fix the calendar so WITHIN the calendar there is full functionality control for marking assignments complete and going straight to the assignment link on canvas with the 'submit' button" |
 | 2026-08-24 (later) | "meetings are not going in correctly. they should show class days, times, and location. Should be titled '[LOC] - [CLASS] - [PROF]', eg. 'Virani 182 - BUSI380 - VanHorn' as pulled from the syllabus." |
 | 2026-08-24 (latest) | "the calendar doesnt look at all as its supposed to. I told you to give me different view options; stacked vertically like it is now, side by side week view, monthly tiled view. Also need to have the check boxes. Stop shortcutting… Calendar items still not even clickable." |
+| 2026-08-25 (later) | "for all dated items, include the number of days/weeks until its due, not just the date. I have a hard time tracking how impending stuff is by date. And add some sort of emphasis, maybe color coding? g/y/r system or something. or some sort of bold emphasis or something depending on how soon? pick whatever is the cleanest and communicates status most effectively" |
 
 Also standing, from the UI direction given 2026-08-24 13:08Z: **"simplify,
 minimalistic, small features, soft colors, functional"** — and the cream palette
@@ -152,6 +153,7 @@ from a month-view chip: same result. Covered by tests in
 | 3.8 | A Month tile holding more items than fit shows `+N more`, and clicking expands that day. | A tile with 4+ items shows the marker; clicking expands | x | x | x |
 | 3.9 | Keyboard reachable: every checkbox, title button and view control is tabbable. | No `tabindex="-1"` or `disabled` on an interactive calendar control | x | ~ | x |
 | 3.10 | Empty states say which filter emptied the view. | Hide every class: the message names that cause | x | x | x |
+| 3.11 | **Every dated item states its distance and grades it by urgency** ("include the number of days/weeks until its due… g/y/r system or something… pick whatever is the cleanest", 2026-08-25). One vocabulary (`relPhrase`: days inside two weeks, weeks beyond) and one ladder (`dueTier` → `.due-rel`: muted → amber `soon` ≤7d → brick `now` ≤1d → bold brick `overdue`) across the task list, checkpoints, home Coming up, the assignment page, and List-view day headings. Done items are never loud; day headings only grade when the day holds unfinished non-meeting work; past days are history, not alarms. | `relPhrase`/`dueTier` unit-tested in `cal-grid.test.js`; every `.cal-day-head` carries a `.cal-day-rel`; 0 tiered rels under `.cal-day.past`, `.task.is-done`, `.cp-row.done`; a meetings-only day inside the week has no tier; `--warn` ≥4.5:1 on ground/panel/sunk | x | x | x |
 
 **Measured 2026-08-24.** 6 classes, **6 distinct colours** (`#3E6B8A #7A5C3E
 #4E7A5B #8A4F5C #5C5A8A #8A7136`). Hiding a class removed all its items in all
@@ -463,3 +465,56 @@ Suites at this note: `bridge/` **277 pass / 0 fail** (canvas-tasks +2,
 assignment-route +3), `scripts/` **562 pass / 0 fail** (sync-calendar +2).
 The stray fixture bridge a previous session left on `:3849` was stopped first
 (§5.2); this session's fixture bridge was torn down after the drive.
+
+**2026-08-25, later still — every dated item says how far away it is, graded
+by urgency (row 3.11).** The user's words are in the Source table: days/weeks
+until due on every dated item, with colour or weight by how soon, "whatever is
+the cleanest". The chosen design is one ladder, not a literal g/y/r: the
+distance phrase itself ("in 3 days", "in 2 weeks") is the mark — muted ink,
+amber (`--warn #7A4E12`) inside a week, brick today/tomorrow, bold brick past —
+and there is no green rung because calm is the paper's own voice. Petrol keeps
+marking today **as a place** (Week column, Month tile); the ladder grades
+today **as a distance** (the token sheet now states the distinction).
+
+- **The vocabulary is pure and tested.** `relPhrase(diff)` / `dueTier(diff)`
+  live in `cal-grid.js` (+2 tests incl. a monotonicity walk over ±45 days);
+  `bridge/` **278 pass / 0 fail**. One HTML renderer, `dueRelHtml()`, feeds
+  every surface: task list (`fmtDue` now returns escaped HTML), checkpoint
+  rows, home Coming up (`.hu-rel`, floored at 11ch), the assignment page
+  (`assignment-sub` moved to escaped innerHTML; `daysUntilIso` keeps the
+  local-day rule), and List-view day headings in both groupings
+  (`calDayRelHtml`, which replaced `relativeDay`/`daysFromToday`).
+- **Quiet is enforced, not hoped for.** A done item's rel is muted/400 in the
+  task list, the checkpoint list, and on the assignment page (payload
+  `user_state.done`); a day heading only grades when the day holds unfinished
+  non-meeting work — a lecture-only Thursday reads muted "in 2 days"; past
+  days never tier. Driven: BUSI 305's Aug 31 heading went quiet the moment its
+  HW was ticked done.
+- **Driven on a fixture bridge** (`:3849`, six real classes; `busi-305` and
+  `calendar/` copied so ticks and moves write the fixture — real
+  `user_state.json` mtime Aug 23 before and after — rest symlinked; dummy
+  secret; torn down after, §5.2 rechecked). List 223 rows, 135 checkboxes =
+  135 open buttons, 74 Submit, 11 `.ai-added`, 0 dead meeting controls; 85 of
+  85 day heads carry a rel, 0 tiered under `.past`; Week 7 tracks, Month
+  42/11 adjacent/today ×1; §3.7 overflow 12/12 at 375/768/1280. Ladder states
+  measured live: `soon` = `#7A4E12`/500, `now` = `#96382C`/500, `overdue`
+  (via a due-move to yesterday, then reset) = `#96382C`/700, done = muted
+  `#6A6152`/400. `--warn` contrast computed: 6.1 ground / 7.1 panel / 5.6
+  sunk.
+- **A four-dimension adversarial review** (2 skeptics per finding) confirmed
+  and got fixes for: a pre-existing unescaped `due_confidence` in the task
+  template (now `esc()`d, with `flag-` too), the assignment page shouting at
+  finished work (now keyed on `user_state.done`), `.hu-rel` at 10ch breaking
+  column alignment past 9 weeks (now 11ch), and day headings tiering on mere
+  proximity (now gated on unfinished work). The typeface mix is deliberate
+  and documented: the ladder is colour and weight; the phrase speaks its
+  line's voice. Named gap: the correctness reviewer died on a session limit —
+  that dimension rests on the 278 unit tests and the live drive, not an
+  independent reader. Home page bonus fix: `upcomingOps`/`renderHome` computed
+  "today" via `toISOString().slice()` — the UTC slice that drops today's own
+  deadlines from Coming up every evening — now `localTodayIso()`/`addDays`.
+- **§5.1 re-measured:** all six public files sha256-identical on disk and at
+  `:3847`; `/api/classes` still 401s bare. Everything here is `public/`-only,
+  so it is User-visible on ⌘R with no app relaunch.
+
+Suites at this note: `bridge/` **278 pass / 0 fail**, `scripts/` untouched.

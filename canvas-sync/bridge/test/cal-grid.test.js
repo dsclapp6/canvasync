@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   isoDate, parseIso, addDays, addMonths, startOfWeek, startOfMonth, weekDays,
   monthGrid, bucketByDate, sortDayOps, monthLabel, weekLabel, dayHeadLabel,
-  initialAnchor, WEEKDAY_HEADS,
+  initialAnchor, relPhrase, dueTier, WEEKDAY_HEADS,
 } from '../public/cal-grid.js';
 
 // --- ISO in, ISO out, always local --------------------------------------
@@ -249,4 +249,43 @@ test('an empty worklist opens on today rather than on nothing', () => {
   assert.equal(initialAnchor([], '2026-08-24'), '2026-08-24');
   assert.equal(initialAnchor(null, '2026-08-24'), '2026-08-24');
   assert.equal(initialAnchor([{ date: null }], '2026-08-24'), '2026-08-24');
+});
+
+// --- the urgency vocabulary ------------------------------------------------
+// One phrasing and one loudness ladder for every dated item in the app
+// ("include the number of days/weeks until its due", 2026-08-25).
+
+test('relPhrase names the near days and counts the far ones in weeks', () => {
+  assert.equal(relPhrase(0), 'today');
+  assert.equal(relPhrase(1), 'tomorrow');
+  assert.equal(relPhrase(-1), 'yesterday');
+  assert.equal(relPhrase(2), 'in 2 days');
+  assert.equal(relPhrase(13), 'in 13 days');
+  // 13 is the last day counted in days — "in 2 weeks" at 14, and rounded to
+  // the nearest week beyond, because "in 17 days" is exactly the arithmetic
+  // the user said they cannot do at a glance.
+  assert.equal(relPhrase(14), 'in 2 weeks');
+  assert.equal(relPhrase(17), 'in 2 weeks');
+  assert.equal(relPhrase(18), 'in 3 weeks');
+  assert.equal(relPhrase(63), 'in 9 weeks');
+  assert.equal(relPhrase(-2), '2 days ago');
+  assert.equal(relPhrase(-14), '2 weeks ago');
+});
+
+test('dueTier is monotonic — a deadline never gets quieter as it closes', () => {
+  assert.equal(dueTier(-30), 'overdue');
+  assert.equal(dueTier(-1), 'overdue');
+  assert.equal(dueTier(0), 'now');
+  assert.equal(dueTier(1), 'now');   // tomorrow is the day the work happens
+  assert.equal(dueTier(2), 'soon');
+  assert.equal(dueTier(7), 'soon');
+  assert.equal(dueTier(8), '');
+  // Walk the whole line so a refactor cannot swap two rungs silently.
+  const rank = { '': 0, soon: 1, now: 2, overdue: 3 };
+  let prev = -Infinity;
+  for (let d = 45; d >= -45; d--) {
+    const r = rank[dueTier(d)];
+    assert.ok(r >= prev, `tier fell from ${prev} to ${r} at diff ${d}`);
+    prev = r;
+  }
 });

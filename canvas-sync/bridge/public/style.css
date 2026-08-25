@@ -25,9 +25,11 @@
  *      design's real failure was controls indistinguishable from labels.
  *
  *   4. COLOUR IS INFORMATION — unchanged law. Petrol = the action or the
- *      focus, brick = overdue/destructive, a class colour identifies a class
- *      (as a dot, a rule, an edge — never a wash). Everything else is paper
- *      and ink. States are said in INK WEIGHT, never opacity (spec 3.6).
+ *      focus, brick = overdue/destructive/urgent, amber = a deadline inside
+ *      the week (the urgency ladder's middle rung — see .due-rel), a class
+ *      colour identifies a class (as a dot, a rule, an edge — never a wash).
+ *      Everything else is paper and ink. States are said in INK WEIGHT,
+ *      never opacity (spec 3.6).
  *
  *   5. SOFT GEOMETRY. Corners round at 4/8/12px — enough to read humane,
  *      never bubbly. Grids and tables stay ruled and square inside rounded
@@ -43,6 +45,7 @@
  * 3:1 (WCAG 1.4.11). Measured on these exact tokens:
  *   ink 14.2:1 ground · 16.3:1 panel      muted 5.2 / 6.0 / 4.8 (ground/panel/sunk)
  *   accent 7.6:1 ground · on-accent 8.7:1  alarm 6.2:1 · on-alarm 7.1:1
+ *   warn 6.1:1 ground · 7.1 panel · 5.6 sunk
  *   fill 11.3:1 · edge 4.2 panel / 3.6 ground / 3.3 sunk · palette worst 4.6:1
  */
 
@@ -60,11 +63,15 @@
   --muted:   #6A6152;
 
   /* The two meaningful hues. */
-  --accent:    #1D4E6F;  /* petrol — the action, the focus, today */
+  --accent:    #1D4E6F;  /* petrol — the action, the focus, today AS A PLACE
+                            (the grid column, the month tile). Today as a due
+                            DISTANCE ("today", "tomorrow") is the urgency
+                            ladder's top rung and speaks brick — see .due-rel. */
   --accent-2:  #16405C;  /* petrol, pressed */
   --on-accent: #FFFDF7;
   --alarm:     #96382C;  /* brick — overdue, destructive, failed */
   --on-alarm:  #FFFDF7;
+  --warn:      #7A4E12;  /* amber — a deadline inside the week (.due-rel.soon) */
   --fill:      #33302A;  /* dark stamp for multi-select "on" */
   --on-fill:   #F3EDDF;
 
@@ -674,11 +681,21 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   color: var(--muted);
   font-size: var(--t-legend);
 }
-/* Only overdue gets a colour: a hundred coloured dates is a hundred alarms
-   nobody reads. Soon and today are said in weight. */
-.task-due.soon { color: var(--ink); }
-.task-due.today { color: var(--ink); font-weight: var(--w-bold); }
-.task-due.overdue { color: var(--alarm); }
+/* THE URGENCY LADDER — one vocabulary for every dated item in the app: the
+   task list, the checkpoints, the home page's Coming up, the assignment
+   page, and the calendar's day headings. The distance itself ("in 3 days",
+   "in 2 weeks") is the mark, and it gets louder as it closes: muted ink →
+   amber inside a week → brick today/tomorrow → bold brick once it is past
+   ("g/y/r system or something… whatever is the cleanest", 2026-08-25).
+   Only the distance is coloured — a hundred coloured dates is a hundred
+   alarms nobody reads — and there is no green rung, because calm is what
+   the paper already says. No font-family here on purpose: the phrase speaks
+   in whatever voice its line already has (mono beside mono dates, sans in a
+   sans sub-line) — the ladder is colour and weight, not a typeface. */
+.due-rel { color: var(--muted); }
+.due-rel.soon { color: var(--warn); font-weight: var(--w-label); }
+.due-rel.now { color: var(--alarm); font-weight: var(--w-label); }
+.due-rel.overdue { color: var(--alarm); font-weight: var(--w-bold); }
 
 .task-badges { display: flex; gap: var(--s-3); margin-top: var(--s-2); flex-wrap: wrap; }
 .badge {
@@ -700,9 +717,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .task.is-done .badge.implicit,
 .task.is-done .badge.ai-added,
 .task.is-done .badge.moved { color: var(--muted); }
-.task.is-done .task-due.soon,
-.task.is-done .task-due.today,
-.task.is-done .task-due.overdue { color: var(--muted); font-weight: var(--w-text); }
+.task.is-done .due-rel,
+.cp-row.done .due-rel { color: var(--muted); font-weight: var(--w-text); }
 
 /* Blocked is brick — the one state that is a problem; priority is ink. */
 .task.flag-priority { border-left-color: var(--ink); }
@@ -914,6 +930,15 @@ table.files tr:hover td { background: var(--sunk); }
   font-variant-numeric: tabular-nums;
 }
 .cal-day-rel { font-size: var(--t-legend); color: var(--muted); }
+/* Day headings ride the urgency ladder ONLY when the day holds unfinished
+   work (calDayRelHtml gates on it) — a heading over nothing but lectures
+   stays muted, the past is history, and petrol keeps marking today as a
+   place (the Week column, the Month tile). When a heading does speak it
+   speaks the ladder's brick, not petrol: the chip is the distance phrase,
+   and a petrol Today beside an amber "in 2 days" would read as the calmer
+   of the two. */
+.cal-day-rel.soon { color: var(--warn); font-weight: var(--w-label); }
+.cal-day-rel.now { color: var(--alarm); font-weight: var(--w-label); }
 .cal-day-count {
   margin-left: auto;
   font-family: var(--mono);
@@ -1902,6 +1927,15 @@ table.files tr:hover td { background: var(--sunk); }
   font-variant-numeric: tabular-nums;
   font-size: var(--t-legend);
   color: var(--muted);
+  min-width: 11ch; flex: none;
+}
+/* The graded distance beside the day — floored at the longest future phrase
+   ("in 30 weeks" = 11ch; the list never shows the past) so titles stay a
+   column. */
+.hu-rel {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
   min-width: 11ch; flex: none;
 }
 .hu-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

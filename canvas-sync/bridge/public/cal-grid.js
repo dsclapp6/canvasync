@@ -191,6 +191,36 @@ export function dayHeadLabel(iso) {
 export const WEEKDAY_HEADS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /**
+ * "in 3 days" / "in 2 weeks" / "today" — a date's distance in the units a
+ * person actually tracks it by: days inside two weeks, weeks beyond ("include
+ * the number of days/weeks until its due", 2026-08-25). Takes the whole-day
+ * diff (negative = past) rather than a date, so the caller owns the timezone
+ * question and this stays a pure function of one integer.
+ */
+export function relPhrase(diff) {
+  if (diff === 0) return 'today';
+  if (diff === 1) return 'tomorrow';
+  if (diff === -1) return 'yesterday';
+  const n = Math.abs(diff);
+  const span = n < 14 ? `${n} days` : `${Math.round(n / 7)} weeks`;
+  return diff > 0 ? `in ${span}` : `${span} ago`;
+}
+
+/**
+ * How loud that distance should be. Monotonic — a deadline never gets quieter
+ * as it approaches: '' (calm) → 'soon' (inside a week) → 'now' (today or
+ * tomorrow) → 'overdue' (past). style.css maps these to muted ink, amber,
+ * brick, and bold brick; the names are tiers, not dates, so "now" covers
+ * tomorrow — the day a student has to actually do the work.
+ */
+export function dueTier(diff) {
+  if (diff < 0) return 'overdue';
+  if (diff <= 1) return 'now';
+  if (diff <= 7) return 'soon';
+  return '';
+}
+
+/**
  * The period to open on: the one containing today when today is inside the
  * worklist window, otherwise the one containing the first op.
  *

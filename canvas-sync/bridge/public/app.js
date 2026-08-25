@@ -8,9 +8,9 @@
 // function cannot be tested, and off-by-one-day is the failure mode of every
 // calendar ever written. bridge/test/cal-grid.test.js pins 28 cases against it.
 import {
-  addDays, addMonths, bucketByDate, dayHeadLabel, initialAnchor, monthGrid,
-  monthLabel, sortDayOps, startOfMonth, startOfWeek, todayIso, weekDays,
-  weekLabel, WEEKDAY_HEADS,
+  addDays, addMonths, bucketByDate, dayHeadLabel, dueTier, initialAnchor,
+  monthGrid, monthLabel, relPhrase, sortDayOps, startOfMonth, startOfWeek,
+  todayIso, weekDays, weekLabel, WEEKDAY_HEADS,
 } from './cal-grid.js';
 import { nextSelection, isSelected } from './cal-plan.js';
 
@@ -641,7 +641,9 @@ function homeCardHtml(c) {
 /** The next deadlines across every class, newest first. Meetings are not news. */
 function upcomingOps(limit = 8) {
   const ops = CAL_WORKLIST?.ops ?? [];
-  const today = new Date().toISOString().slice(0, 10);
+  // Local, never toISOString().slice() — the UTC slice rolls to tomorrow at
+  // 5pm local and quietly drops today's own deadlines from "Coming up".
+  const today = localTodayIso();
   return ops
     .filter(o => o.calendar !== 'meeting' && o.date && o.date >= today && !CAL_DONE.has(o.marker))
     .sort((a, b) => a.date.localeCompare(b.date) || String(a.time ?? '').localeCompare(String(b.time ?? '')))
@@ -661,7 +663,7 @@ function renderHome() {
   const stats = [`${cards.length} ${cards.length === 1 ? 'class' : 'classes'}`];
   if (counted) stats.push(`${graded} of ${counted} graded`);
   const up = upcomingOps(200);
-  const weekEnd = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+  const weekEnd = addDays(localTodayIso(), 7);
   const thisWeek = up.filter(o => o.date <= weekEnd).length;
   if (thisWeek) stats.push(`${thisWeek} due this week`);
   $('home-stats').innerHTML = stats.map(t => `<span>${esc(t)}</span>`).join('');
@@ -678,6 +680,7 @@ function renderHome() {
     return `<li class="hu-row" data-folder="${esc(cls?.folder ?? '')}"
              style="--class-color:${classColor(o.class)}">
         <span class="hu-day">${esc(day)}</span>
+        ${dueRelHtml(daysUntil(o.date), 'hu-rel')}
         <span class="hu-title">${esc(o.title)}</span>
         <span class="hu-kind">${esc(calKindLabel(o.kind))}</span>
       </li>`;
@@ -1020,17 +1023,23 @@ function renderAssignment() {
   if (!a) return;
   $('assignment-title').textContent = a.name;
 
+  // HTML, not textContent, so the due date can carry its graded distance —
+  // every piece is escaped here.
   const bits = [];
-  if (a.course_code) bits.push(a.course_code);
-  if (a.due_at) bits.push(`Due ${fmtDateTime(a.due_at)}`);
-  if (a.points_possible != null) bits.push(`${a.points_possible} pts`);
+  if (a.course_code) bits.push(esc(a.course_code));
+  if (a.due_at) {
+    const diff = daysUntilIso(a.due_at);
+    const rel = diff == null ? '' : ` · ${dueRelHtml(diff, '', { done: !!a.user_state?.done })}`;
+    bits.push(`Due ${esc(fmtDateTime(a.due_at))}${rel}`);
+  }
+  if (a.points_possible != null) bits.push(esc(`${a.points_possible} pts`));
   if (a.is_quiz) {
     const q = a.quiz || {};
-    bits.push(['Quiz',
+    bits.push(esc(['Quiz',
       q.question_count ? `${q.question_count} question${q.question_count === 1 ? '' : 's'}` : null,
-      q.time_limit ? `${q.time_limit} min` : null].filter(Boolean).join(' · '));
+      q.time_limit ? `${q.time_limit} min` : null].filter(Boolean).join(' · ')));
   }
-  $('assignment-sub').textContent = bits.join('  ·  ');
+  $('assignment-sub').innerHTML = bits.join('  ·  ');
 
   const open = $('assignment-open');
   open.classList.toggle('hidden', !a.url);
@@ -1307,13 +1316,24 @@ function daysUntil(dateStr) {
   return Math.round((new Date(y, mo - 1, d) - localMidnight()) / DAY_MS);
 }
 
-function dueClass(dateStr) {
-  if (!dateStr) return '';
-  const diff = daysUntil(dateStr);
-  if (diff < 0) return 'overdue';
-  if (diff === 0) return 'today';
-  if (diff <= 7) return 'soon';
-  return '';
+// Same whole-day diff for a full Canvas timestamp — the assignment page's
+// due_at carries a time, and the day it belongs to is the LOCAL day.
+function daysUntilIso(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null
+    : Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - localMidnight()) / DAY_MS);
+}
+
+// The one mark for "how impending": the distance itself ("in 3 days", "in 2
+// weeks"), graded by the dueTier ladder — muted, then amber inside a week,
+// then brick. Every dated item routes through this so the task list, the
+// checkpoints, the home page, the assignment page and the calendar can never
+// disagree about what urgent looks like.
+function dueRelHtml(diff, cls = '', { done = false } = {}) {
+  // A finished item is never urgent, whatever its date says — the same rule
+  // the calendar applies to its rows.
+  const tier = done ? '' : dueTier(diff);
+  return `<span class="due-rel${cls ? ` ${cls}` : ''}${tier ? ` ${tier}` : ''}">${esc(relPhrase(diff))}</span>`;
 }
 
 // "2:30–3:45 PM" rather than "2:30 PM–3:45 PM". The meridiem is only worth
@@ -1351,8 +1371,8 @@ function fmtTime12(t) {
   return `${h}:${m[2]} ${ap}`;
 }
 
-// A bare "2026-10-07" for the checkpoint list, where the relative phrasing
-// below would be more words than the row can hold.
+// "Oct 7" — the short date for tight rows (checkpoints), which pair it with a
+// graded relative label rather than spelling the whole thing out.
 function fmtShortDate(iso) {
   const [y, mo, d] = iso.split('-').map(Number);
   return new Date(y, mo - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -1360,10 +1380,12 @@ function fmtShortDate(iso) {
 
 // "due Tue 11:59 PM · in 3 days" — weekday inside a week, date beyond it.
 // Takes the effective date so a moved deadline reads as the moved one.
+// Returns HTML (everything escaped here): the relative part carries the
+// urgency tier, the rest stays quiet ink.
 function fmtDue(it, eff) {
   const date = eff?.date ?? it.due_date;
   const timeRaw = eff?.time ?? it.due_time;
-  if (!date) return it.recurring || 'no date';
+  if (!date) return esc(it.recurring || 'no date');
   const [y, mo, d] = date.split('-').map(Number);
   const due = new Date(y, mo - 1, d);
   const diff = daysUntil(date);
@@ -1372,12 +1394,7 @@ function fmtDue(it, eff) {
     ? due.toLocaleDateString('en-US', { weekday: 'short' })
     : due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const when = time ? `${day} ${time}` : day;
-  const rel = diff === 0 ? 'today'
-    : diff === 1 ? 'tomorrow'
-    : diff > 1 ? `in ${diff} days`
-    : diff === -1 ? 'yesterday'
-    : `${-diff} days ago`;
-  return `due ${when} · ${rel}`;
+  return `due ${esc(when)} · ${dueRelHtml(diff)}`;
 }
 
 // The user's own marks, keyed by mined item id. Held here so a checkbox can
@@ -1417,7 +1434,7 @@ function renderCheckpoints(it) {
     <li class="cp-row${cp.done ? ' done' : ''}">
       <input type="checkbox" data-cp-done="${esc(cp.id)}"${cp.done ? ' checked' : ''}>
       <span class="cp-title">${esc(cp.title)}</span>
-      <span class="cp-date">${cp.date ? esc(fmtShortDate(cp.date)) : ''}</span>
+      <span class="cp-date">${cp.date ? `${esc(fmtShortDate(cp.date))} · ${dueRelHtml(daysUntil(cp.date))}` : ''}</span>
       <button type="button" class="linky cp-del" data-cp-del="${esc(cp.id)}">remove</button>
     </li>`).join('');
   return `
@@ -1503,20 +1520,20 @@ function renderTasks() {
       const classes = ['task'];
       if (aiAdded) classes.push('ai-added');
       if (st.done) classes.push('is-done');
-      if (st.flag) classes.push(`flag-${st.flag}`);
+      if (st.flag) classes.push(`flag-${esc(st.flag)}`);
       html.push(`
         <div class="${classes.join(' ')}" data-task="${esc(it.id)}">
           <div class="task-top">
             <input type="checkbox" class="task-check" data-done${st.done ? ' checked' : ''}
                    aria-label="Mark ${esc(it.title)} complete">
             <button type="button" class="task-title linky-title" data-open-assignment="${esc(it.canvas_assignment_id ?? it.id)}">${esc(it.title)}</button>
-            <span class="task-due ${st.done ? '' : dueClass(eff.date)}">${esc(due)}</span>
+            <span class="task-due">${due}</span>
           </div>
           <div class="task-badges">
             <span class="badge">${esc(it.category || 'other')}</span>
             ${aiAdded ? '<span class="badge ai-added" title="Added by AI from the syllabus \u2014 not a Canvas assignment, nothing to submit on Canvas">AI-added \u00b7 not on Canvas</span>' : ''}
             ${it.points_possible != null ? `<span class="badge">${esc(it.points_possible)} pts</span>` : ''}
-            ${it.due_confidence && it.due_confidence !== 'high' ? `<span class="badge implicit">${it.due_confidence} confidence date</span>` : ''}
+            ${it.due_confidence && it.due_confidence !== 'high' ? `<span class="badge implicit">${esc(it.due_confidence)} confidence date</span>` : ''}
             ${eff.moved ? '<span class="badge moved">moved</span>' : ''}
             ${cps.length ? `<span class="badge">${cpsDone}/${cps.length} checkpoints</span>` : ''}
             ${st.note ? '<span class="badge">note</span>' : ''}
@@ -1935,22 +1952,21 @@ function fmtDayLabel(dateStr) {
   return `${day.toLocaleDateString('en-US', { weekday: 'short' })} ${day.getMonth() + 1}/${day.getDate()}`;
 }
 
-// Whole-day difference from today, so "in 1 day" never flips on the clock time.
-function daysFromToday(dateStr) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return Math.round((calDate(dateStr) - today) / 86400000);
-}
-
-function relativeDay(dateStr) {
-  const n = daysFromToday(dateStr);
-  if (n === 0) return 'Today';
-  if (n === 1) return 'Tomorrow';
-  if (n === -1) return 'Yesterday';
-  if (n < 0) return `${-n} days ago`;
-  if (n < 14) return `in ${n} days`;
-  if (n < 60) return `in ${Math.round(n / 7)} weeks`;
-  return '';
+// The day header's relative label. The phrase always prints; the urgency
+// tier only applies when the day actually holds unfinished work — a header
+// over nothing but lectures must not shout, and a solid run of amber
+// headings across a quiet week is exactly the hundred-alarms failure the
+// ladder exists to avoid. The past is history either way (the same reason a
+// past lecture's row gets no overdue red).
+function calDayRelHtml(dateStr, dayOps = []) {
+  const diff = daysUntil(dateStr);
+  const phrase = relPhrase(diff);
+  // "Today", "Tomorrow", "Yesterday" — the one-word forms head a section, the
+  // "in N days" forms annotate one, and headers capitalise.
+  const cap = phrase.includes(' ') ? phrase : phrase[0].toUpperCase() + phrase.slice(1);
+  const hasWork = dayOps.some(o => o.calendar !== 'meeting' && !calItemModel(o).done);
+  const tier = diff >= 0 && hasWork ? dueTier(diff) : '';
+  return `<span class="cal-day-rel${tier ? ` ${tier}` : ''}">${esc(cap)}</span>`;
 }
 
 // The worklist stores a slug (folder minus its numeric prefix); the bridge's
@@ -2181,7 +2197,7 @@ function calSubmitHtml(m, { dense = false } = {}) {
 function calOpRow(op, { showClass = false } = {}) {
   const m = calItemModel(op);
   // A past lecture is history, not a missed deadline — no overdue red.
-  const overdue = !m.isMeeting && !m.done && daysFromToday(op.date) < 0;
+  const overdue = !m.isMeeting && !m.done && daysUntil(op.date) < 0;
   const when = op.all_day ? 'All day' : op.time ? fmtTimeSpan(op.time, op.end_time) : '—';
   const title = showClass ? op.title : stripClassPrefix(op.title, op.class || '');
   const pts = calPoints(op.description);
@@ -2211,7 +2227,7 @@ function calOpRow(op, { showClass = false } = {}) {
  */
 function calChip(op) {
   const m = calItemModel(op);
-  const overdue = !m.isMeeting && !m.done && daysFromToday(op.date) < 0;
+  const overdue = !m.isMeeting && !m.done && daysUntil(op.date) < 0;
   const title = stripClassPrefix(op.title, op.class || '');
   const when = op.all_day || !op.time ? '' : fmtTimeChip(op.time);
   return `
@@ -2249,13 +2265,12 @@ function renderCalendarByDay(ops) {
       lastMonth = month;
     }
     const dayOps = byDate.get(date);
-    const rel = relativeDay(date);
-    const past = daysFromToday(date) < 0;
+    const past = daysUntil(date) < 0;
     html += `
       <section class="cal-day${past ? ' past' : ''}">
         <header class="cal-day-head">
           <span class="cal-day-name">${esc(fmtDayLabel(date))}</span>
-          ${rel ? `<span class="cal-day-rel">${esc(rel)}</span>` : ''}
+          ${calDayRelHtml(date, dayOps)}
           <span class="cal-day-count">${dayOps.length}</span>
         </header>`;
     for (const [slug, classOps] of groupBy(dayOps, o => o.class || 'unknown')) {
@@ -2286,10 +2301,9 @@ function renderCalendarByClass(ops) {
         </header>`;
     const byDate = groupBy(classOps, o => o.date);
     for (const date of [...byDate.keys()].sort()) {
-      const rel = relativeDay(date);
       html += `
-        <div class="cal-class-day${daysFromToday(date) < 0 ? ' past' : ''}">
-          <div class="cal-class-date">${esc(fmtDayLabel(date))}${rel ? ` <span class="cal-day-rel">${esc(rel)}</span>` : ''}</div>
+        <div class="cal-class-day${daysUntil(date) < 0 ? ' past' : ''}">
+          <div class="cal-class-date">${esc(fmtDayLabel(date))} ${calDayRelHtml(date, byDate.get(date))}</div>
           <div class="cal-rows">${byDate.get(date).map(o => calOpRow(o)).join('')}</div>
         </div>`;
     }
