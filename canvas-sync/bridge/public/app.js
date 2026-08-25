@@ -1041,9 +1041,11 @@ function renderAssignment() {
 
   const parts = [];
   // Say what this IS before anything else: an AI-added item has no Canvas row,
-  // so there is no submit box to hunt for. `canvas_id` is the fallback for a
-  // bridge that predates the origin field.
-  const aiAdded = a.origin ? a.origin === 'syllabus' : a.canvas_id == null;
+  // so there is no submit box to hunt for. Strictly the server's word — a
+  // bridge that predates the origin field also predates the claim-following
+  // lookup, so its `canvas_id` is null for merged items too and inferring from
+  // it would pin this notice on real Canvas work.
+  const aiAdded = a.origin === 'syllabus';
   if (aiAdded) {
     parts.push('<div class="notice ai-added">Added by AI from the syllabus — not a Canvas assignment. There is nothing to submit on Canvas.</div>');
   }

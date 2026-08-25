@@ -97,7 +97,12 @@ Per tracked course, the extension pulls: assignments (with rubric, submission st
 overrides, score statistics), assignment groups (grade weights), modules with items,
 discussion topics **plus thread replies** for the 20 most relevant topics, announcements back
 to term start, every page body, quizzes, course calendar events (−30 to +210 days), your own
-enrollment/grades, the course tab list, student groups, and the file listing. It downloads
+enrollment/grades, the course tab list, student groups, the external-tool list, and the file
+listing. Course-pack tools (Harvard Business Publishing, Study.Net, RedShelf, …) are
+recognised by name: the extension records each pack's label, provider domain and launch URL
+(`course_packs.json`), the class page shows a **Course Pack ↗** link beside the class title,
+and the context pack gains a "Course pack" section — the pack's *content* stays with the
+provider (see the honest gaps below). It downloads
 every reachable file: the Files tab, files attached to modules but hidden from the Files tab,
 and files linked inline from any HTML body (syllabus, pages, assignments, announcements,
 discussions, quiz descriptions) — diffed against the bridge index so unchanged files are never
@@ -110,6 +115,10 @@ re-downloaded, with a 200 MB per-file cap.
 - **External LTI tools.** Content living in Piazza, Panopto, Gradescope, McGraw-Hill, etc. is
   hosted by those vendors — Canvas only stores the link. The context pack lists these tabs per
   class under "External course tools (content NOT synced — check these manually)".
+- **Course-pack readings.** The pack itself (HBP cases, Study.Net chapters) is the same story
+  one level deeper: the articles live on the provider's paywalled domain, which the extension
+  has no host permission for — by design. What CAN be read from Canvas is read: the tool's
+  identity, provider and launch target, one click from the class page.
 - **Group spaces.** Student group memberships are captured; files/discussions *inside* a group
   space are a separate context the sync does not enter.
 - **Unpublished/locked content.** Anything your instructor has not published or has

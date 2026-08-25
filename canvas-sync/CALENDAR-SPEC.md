@@ -82,12 +82,14 @@ views**, not only in List.
 | 2.3 | A failed POST puts the tick back and toasts. Nothing is left showing as saved that did not save. | Block the route, click, assert `checked === false` and a toast appeared | x | x | x |
 | 2.4 | **`CAL_DONE` is seeded from the server on load**, so a tick survives a reload. | Tick an item, reload, the box is still ticked | x | x | x |
 | 2.5 | A **done item can be un-done from the calendar** — a `Show completed` toggle re-renders finished work struck through and still checkable. | Tick an item, wait for the rebuild, turn on `Show completed`, the row is present, ticked, and un-tickable | x | x | x |
-| 2.6 | The item **title is a button that opens the in-app assignment page**. | `[data-open-assignment]` count === visible `due` op count in every view; clicking one shows the assignment panel | x | x | x |
+| 2.6 | The item **title is a button that opens the in-app assignment page**. | `[data-open-assignment]` count === visible `due` **+ `checkpoint`** op count in every view (2.12 made checkpoints openable); clicking one shows the assignment panel | x | x | x |
 | 2.7 | A **Submit link** goes straight to the Canvas submission URL, in the corrected `/quizzes/:id/take` form, and opens in a new tab. | Every `.cal-submit` href matches its op's `submit_url`; no quiz-backed row uses the `/assignments/` form | x | x | x |
-| 2.8 | An item with **no URL says so** rather than rendering a dead control. | Those rows carry a muted `no link` marker and no `<a>` | x | x | x |
+| 2.8 | An item with **no URL says so** rather than rendering a dead control. | Those rows carry a muted `.cal-nolink` marker and no `<a>` — reading `AI-added` when 2.13 knows why, `no link` otherwise | x | x | x |
 | 2.9 | Checkpoints are checkable too — they are the user's own prep blocks. | `[data-cal-done]` appears on checkpoint rows; ticking one round-trips | x | x | x |
 | 2.10 | Meetings are **not** checkable and **not** openable, and must not render a dead checkbox or a dead link. | `.cal-row.meeting [data-cal-done]` count === 0 and `.cal-row.meeting .cal-title a[href]` count === 0 | x | x | x |
 | 2.11 | The client must not re-derive the `folder` ↔ `slug` strip — `/api/classes` ships `slug`, so the join uses that. | `calFolder()` no longer contains a `/^[0-9]+-/` regex | x | x | x |
+| 2.12 | **A checkpoint clicks in to the assignment it preps for** ("make it so all the check ins have click in", 2026-08-25): its title is the same in-app button a deadline has, and Canvas-backed parents put their URL on the op and in its description. | `[data-open-assignment]` count === visible due + checkpoint count in every view; clicking a prep block's title opens the parent's panel with its Canvas Open/Submit links; every checkpoint op whose item has a live Canvas row carries `url` | x | x | ~ |
+| 2.13 | **AI-added work looks different from actual work** ("so I dont stress trying to figure out what to do/submit for an assignment that isnt actually a submitted assignment", 2026-08-25). Every due op carries `origin: 'canvas' \| 'syllabus'`; syllabus rows get a dashed edge, an italic title and an `AI-added` pill in all three views and the task list; the assignment panel states it in a sentence and hides Open/Submit. | `.cal-row.ai-added` count === due ops with `origin === 'syllabus'`; each carries `.cal-nolink.ai`; `.task.ai-added` matches items with `origin === 'syllabus'`; panel shows `.notice.ai-added` for a syllabus item and never for a Canvas-backed one | x | x | ~ |
 
 **Measured 2026-08-24.** List view: 240 rows, **102 checkboxes** = 102 `due`
 ops, **102** `[data-open-assignment]`, **74** Submit links, **20** `no link`
@@ -412,3 +414,52 @@ class data, dummy secret, symlinked read-only):
 
 Suites at this note: `bridge/` **271 pass / 0 fail**, `scripts/` **556 pass /
 0 fail**. The fixture bridge was torn down and the scratch home deleted.
+
+**2026-08-25, later — checkpoints click in, AI-added work says so (rows 2.12,
+2.13; 2.6/2.8 amended).** The user's words: *"make it so all the check ins
+have click in. also make AI added tasks/assignments look different from actual
+ones so I dont stress trying to figure out what to do/submit for an assignment
+that isnt actually a submitted assignment."*
+
+- **Provenance is one field, stamped at the source.** `tasksForClass` marks
+  every item `origin: 'canvas'` (a live Canvas row stands behind it) or
+  `'syllabus'` (the AI mined it; nothing to open or submit — including a
+  claimed Canvas row that no longer exists). `sync-calendar` carries it onto
+  every due op, checkpoint op and done-drop record; the assignment route
+  computes the same answer server-side. Fallback for a pre-field worklist:
+  "no link anywhere", true of exactly the same rows.
+- **Checkpoint ops carry their parent's URL** (op field + description line, so
+  the ICS files get it too). Auto-prep markers hash title/date/dueDate — not
+  the description — so no calendar event churns.
+- **The route now follows a mined claim to its Canvas row**: the calendar
+  opens items by mined id, and a merged item opened that way used to arrive
+  with no Canvas links (`bridge/test/assignment-route.test.js`, 3 tests).
+- Driven on a fixture bridge (`:3849`, the six real classes copied, dummy
+  secret): worklist **222 ops — 104 due (93 canvas + 11 syllabus) + 30
+  checkpoints (18 carrying parent URLs; the 12 without belong to syllabus-only
+  items)**. List: 222 rows, **134 checkboxes = 134 open buttons** (was 105 —
+  the 30 checkpoints, minus one due/cp visibility difference, are the gain),
+  74 Submit links unchanged, **11 `.ai-added` rows each carrying the
+  `AI-added` pill**, titles italic, task-list edge and badge dashed. Week and
+  Month: open buttons === checkboxes (2/2, 9/9), AI chips' class-colour edge
+  `dashed`. Clicking `Prep 7d · BUSI 396 Benchmark Communication Package`
+  opened the parent panel with real Open/Submit links and **no** AI notice;
+  clicking `BUSI 305 · Exam 1` showed the notice, hid Open/Submit, and Back
+  returned to the calendar. The panel notice keys **strictly** on the
+  server-sent `origin` — inferring from a null `canvas_id` would pin it on
+  merged items served by an old bridge.
+- The real worklist was rebuilt on the new code: same 222 ops, now carrying
+  `origin` and checkpoint URLs, and `:3847` serves `app.js`/`style.css`/
+  `index.html` byte-identical to disk — rows 2.12/2.13 are User-visible after
+  ⌘R **except** the panel halves (origin field, claim-following lookup) and
+  the course-pack API, which ride on `server.js` and wait for the app to be
+  relaunched; their User ticks are `~` on that basis.
+- Extension **1.3.0** (course packs; see README): out of this file's scope but
+  synced in the same change — `external_tools` + `course_packs` ingest, the
+  class page's `Course Pack ↗` link, and the context pack's course-pack
+  section were driven on the same fixture.
+
+Suites at this note: `bridge/` **277 pass / 0 fail** (canvas-tasks +2,
+assignment-route +3), `scripts/` **562 pass / 0 fail** (sync-calendar +2).
+The stray fixture bridge a previous session left on `:3849` was stopped first
+(§5.2); this session's fixture bridge was torn down after the drive.
