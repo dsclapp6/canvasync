@@ -211,8 +211,10 @@ function salvageFromResponse(raw) {
 
 async function parseWithClaude(text, promptTemplate, sourceFile, sourceHash, lowConfidence) {
   const prompt = promptTemplate.replace('<SYLLABUS_TEXT>', () => text);
-  // Model defaults to claude-opus-5 (see _util.js DEFAULT_MODEL).
-  const raw = await aiInvoke(prompt, { timeoutMs: 300000 });
+  // Model defaults to claude-opus-5 (see _util.js DEFAULT_MODEL). maxTokens
+  // only affects the local backend, where the default 8192 is not enough for
+  // a long syllabus schedule — the response truncates mid-JSON.
+  const raw = await aiInvoke(prompt, { timeoutMs: 300000, maxTokens: 16384 });
   return raw;
 }
 
@@ -220,6 +222,13 @@ async function repairJson(brokenRaw) {
   const repairPrompt = `The previous response was not valid JSON. Return valid JSON only.\n\nPrevious response:\n${brokenRaw}`;
   const raw = await aiInvoke(repairPrompt, { timeoutMs: 60000 });
   return raw;
+}
+
+// Does a parse actually contain anything a downstream stage could use?
+export function parseHasContent(p) {
+  return Boolean(p?.course?.code || p?.course?.title)
+    || (p?.grading?.components?.length ?? 0) > 0
+    || (p?.schedule?.length ?? 0) > 0;
 }
 
 function validateResult(obj) {
@@ -363,6 +372,31 @@ async function main() {
   parsed.extracted_at = new Date().toISOString();
   parsed.source_file = sourceFile;
   parsed.source_hash = sourceHash;
+
+  // A model reply of "{}" is valid JSON, so it sails past every guard above
+  // and validateResult scaffolds it into a structurally correct parse with
+  // nothing in it — which then OVERWRITES a good earlier extraction (this is
+  // how BUSI 380's schedule vanished after a local-model run). An empty
+  // result for a substantial syllabus is a failed extraction, not data.
+  const REJECT_NOTE = 'A newer re-parse attempt returned an empty result and was discarded; this data is from the previous successful parse.';
+  if (!parseHasContent(parsed) && extracted.text.length >= 2000) {
+    const emptyOutPath = join(absClassDir, 'syllabus_parsed.json');
+    await writeFile(emptyOutPath + '.ERROR', rawResponse ?? '(empty response)', 'utf8');
+    const previous = await readJsonSafe(emptyOutPath);
+    if (parseHasContent(previous)) {
+      // Keep the good parse, but REWRITE it so its mtime advances past the
+      // syllabus source — otherwise the trigger's staleness check re-runs
+      // this stage (50 local-model minutes) on every sync forever.
+      if (!(previous.extraction_notes || '').includes(REJECT_NOTE)) {
+        previous.extraction_notes = ((previous.extraction_notes || '') + ' ' + REJECT_NOTE).trim();
+      }
+      await atomicWriteJson(emptyOutPath, previous);
+      process.stderr.write('Empty parse rejected — kept previous syllabus_parsed.json (raw response in .ERROR)\n');
+      process.exit(0);
+    }
+    process.stderr.write('Empty parse rejected, no previous parse to keep — failing (raw response in .ERROR)\n');
+    process.exit(1);
+  }
 
   if (truncated) {
     parsed.extraction_confidence = parsed.extraction_confidence === 'low' ? 'low' : 'medium';

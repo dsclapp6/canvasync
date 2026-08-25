@@ -23,6 +23,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // a heavy class (hundreds of slides) to roughly 150K tokens per run.
 const PER_MATERIAL_CHARS = 8_000;
 const TOTAL_MATERIALS_CHARS = 400_000;
+// The syllabus is the one document where obligations routinely sit past the
+// per-file clip — BUSI 380's weekly reading lists start ~18K chars into a 49K
+// syllabus, so an 8K clip made the miner report the articles as "not present".
+// It gets its own section with a budget that fits a whole syllabus.
+const SYLLABUS_CHARS = 100_000;
 const PER_PAGE_CHARS = 3_000;
 const PER_MESSAGE_CHARS = 1_200;
 const PER_DESC_CHARS = 1_500;
@@ -170,10 +175,48 @@ function sectionCalendarEvents(events) {
   return `## Course calendar events\n\n${JSON.stringify(rows, null, 1)}\n`;
 }
 
+function isSyllabusFile(e) {
+  return /syllab/i.test(`${e?.displayName ?? ''} ${e?.filename ?? ''}`);
+}
+
+// Full syllabus text, near-uncut. The parsed-syllabus section carries only the
+// structured schedule the parse stage managed to extract; when that parse is
+// weak or empty (local-model runs), this section is the only place the weekly
+// reading lists exist at all.
+export async function sectionSyllabusFullText(classDir, filesIndex) {
+  const entries = (filesIndex || []).filter(e => e && isSyllabusFile(e)
+    && e.extractionStatus === 'done' && e.materialsPath
+    && e.duplicateOf == null && e.supersededBy == null);
+  const parts = [];
+  let budget = SYLLABUS_CHARS;
+  for (const e of entries) {
+    if (budget <= 0) break;
+    let text = '';
+    try {
+      text = await readFile(join(classDir, e.materialsPath), 'utf8');
+    } catch { continue; }
+    const clipped = clip(text.trim(), budget);
+    budget -= clipped.length;
+    parts.push(`### ${e.displayName || e.filename || 'Syllabus'}\n${clipped}\n`);
+  }
+  if (parts.length === 0) {
+    // No syllabus among the course files — fall back to the scraped page.
+    try {
+      const html = await readFile(join(classDir, 'syllabus.html'), 'utf8');
+      const text = stripHtml(html);
+      if (text) parts.push(`### syllabus.html\n${clip(text, SYLLABUS_CHARS)}\n`);
+    } catch { /* no syllabus at all — section says so below */ }
+  }
+  return `## Full syllabus text (authoritative for schedule, readings, and implicit tasks)\n\n${parts.join('\n') || '(no syllabus found)'}\n`;
+}
+
 async function sectionMaterials(classDir, filesIndex) {
   const usable = (filesIndex || [])
     .filter(e => e && e.extractionStatus === 'done' && e.duplicateOf == null
-      && e.supersededBy == null && e.materialsPath)
+      && e.supersededBy == null && e.materialsPath
+      // Syllabus files ride in sectionSyllabusFullText at full length — an 8K
+      // clipped duplicate here would only invite the model to cite the cut copy.
+      && !isSyllabusFile(e))
     .sort((a, b) => {
       const da = a.canvasUpdatedAt ? Date.parse(a.canvasUpdatedAt) : 0;
       const db = b.canvasUpdatedAt ? Date.parse(b.canvasUpdatedAt) : 0;
@@ -312,6 +355,7 @@ async function main() {
     sectionAssignmentGroups(assignmentGroups),
     sectionQuizzes(quizzes),
     sectionSyllabus(syllabusParsed),
+    await sectionSyllabusFullText(classDir, filesIndex),
     sectionModules(modules),
     sectionPages(pages),
     sectionMessages('Announcements', announcements, 'title', 'message', 'posted_at'),
