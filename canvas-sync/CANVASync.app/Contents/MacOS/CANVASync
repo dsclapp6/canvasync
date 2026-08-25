@@ -1,0 +1,64 @@
+#!/bin/bash
+# CANVASync launcher — double-clickable entry point for the desktop app.
+#
+# Finder launches apps with a bare PATH (/usr/bin:/bin), so nothing here may
+# assume node, npm, or nvm are reachable. Once dependencies are installed the
+# app runs entirely on Electron's bundled runtime (the bridge is spawned with
+# ELECTRON_RUN_AS_NODE by app/main.js) — node/npm are only needed for the
+# one-time "npm install" bootstrap on a fresh checkout.
+
+set -u
+
+# The .app lives in the repo root: <repo>/CANVASync.app/Contents/MacOS/<this>
+# Resolve through symlinks, rebasing relative link targets on the link's own
+# directory (a bare `readlink` in a loop would resolve them against $PWD).
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  target="$(readlink "$SELF")"
+  case "$target" in
+    /*) SELF="$target" ;;
+    *)  SELF="$(cd "$(dirname "$SELF")" && cd "$(dirname "$target")" && pwd)/$(basename "$target")" ;;
+  esac
+done
+REPO="$(cd "$(dirname "$SELF")/../../.." && pwd)"
+
+LOG_DIR="$HOME/Library/Logs"
+LOG="$LOG_DIR/CANVASync-launcher.log"
+mkdir -p "$LOG_DIR"
+exec >>"$LOG" 2>&1
+echo "--- $(date) launcher start (repo: $REPO)"
+
+fail() {
+  echo "FATAL: $1"
+  /usr/bin/osascript -e "display dialog \"$1\" with title \"CANVASync\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1
+  exit 1
+}
+
+[ -f "$REPO/app/main.js" ] || fail "CANVASync.app must stay inside the canvas-sync folder (next to app/ and bridge/). Move it back and try again."
+
+ELECTRON="$REPO/app/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+
+# One-time bootstrap: install dependencies if they are missing (fresh checkout).
+if [ ! -x "$ELECTRON" ] || [ ! -d "$REPO/bridge/node_modules" ]; then
+  echo "dependencies missing — bootstrapping"
+
+  # Find a node/npm despite Finder's bare PATH: nvm installs, Homebrew, system.
+  # nvm dirs are version-sorted (newest first) — a plain glob is LEXICAL, which
+  # would rank v9.x above v24.x ('2' < '9') and pick an incompatible old Node.
+  NODE_BIN=""
+  for dir in $(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V -r) /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$dir/node" ] && [ -x "$dir/npm" ]; then NODE_BIN="$dir"; break; fi
+  done
+  [ -n "$NODE_BIN" ] || fail "First-time setup needs Node.js to install dependencies, but none was found. Install Node from nodejs.org (or Homebrew), then open CANVASync again."
+
+  export PATH="$NODE_BIN:$PATH"
+  echo "using node at $NODE_BIN ($("$NODE_BIN/node" --version))"
+
+  ( cd "$REPO/app"    && npm install --no-audit --no-fund ) || fail "npm install failed for app/ — see ~/Library/Logs/CANVASync-launcher.log"
+  ( cd "$REPO/bridge" && npm install --no-audit --no-fund ) || fail "npm install failed for bridge/ — see ~/Library/Logs/CANVASync-launcher.log"
+
+  [ -x "$ELECTRON" ] || fail "Electron did not install correctly — see ~/Library/Logs/CANVASync-launcher.log"
+fi
+
+echo "launching electron"
+exec "$ELECTRON" "$REPO/app"

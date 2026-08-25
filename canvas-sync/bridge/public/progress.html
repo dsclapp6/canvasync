@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Index progress — CANVASync</title>
+
+<!--
+  progress.html — "what has actually been indexed, and is the local model
+  running right now?"
+
+  DELIBERATELY SELF-CONTAINED. No <link>, no <script src>, no webfont, no
+  import of app.js or style.css. Two reasons, both real:
+
+    1. app.js and style.css are being rewritten in parallel with this file. A
+       page that borrowed their class names would break the moment either one
+       landed, and the breakage would be silent — a progress page that renders
+       wrong is worse than one that renders nothing.
+    2. The whole point of this page is to be trustworthy when the rest of the
+       system is mid-flight. It has to survive a redesign untouched.
+
+  The palette echoes style.css's cream tokens by VALUE, not by import, so the
+  page looks like it belongs without depending on a file it does not own. The
+  font is the system stack rather than IBM Plex: index.html pulls Plex from
+  fonts.googleapis.com, and a status page must not go dark because a font CDN
+  is unreachable.
+
+  GOVERNING RULE, same as the schedule data: NO NUMBER BEATS A WRONG NUMBER.
+  Anything we do not know renders as the word "unknown", never as 0, never as
+  an empty bar, never as a full one. There is no spinner unless the pipeline
+  actually reports running — a spinner over an idle machine is a lie about
+  where 12.7 GB of RAM went.
+-->
+
+<style>
+/* --- Tokens ---------------------------------------------------------------
+   Echoed from bridge/public/style.css so the two pages read as one product.
+   Three neutrals, two hairlines, two ink weights, and exactly two meaningful
+   hues (accent, alarm). Everything else that is coloured is a class colour,
+   and a class colour only ever appears as a 6px dot or a 3px rule — never as
+   a wash behind a row. On cream, a saturated fill is very loud. */
+:root {
+  /* Warm-print tokens, echoed by VALUE from style.css (see the note above —
+     this page owns its palette so it cannot be broken by a redesign in
+     flight). The serif is the system's: a status page must not go dark
+     because a font CDN is unreachable, and Georgia carries the same voice. */
+  --ground:  #F3EDDF;
+  --panel:   #FFFDF7;
+  --sunk:    #EBE3D2;
+  --rule:    #E2D8C6;
+  --rule-2:  #CBBEA6;
+  --edge:    #847A66;
+  --ink:     #211E18;
+  --muted:   #6A6152;
+  --accent:    #1D4E6F;
+  --accent-2:  #16405C;
+  --on-accent: #FFFDF7;
+  --alarm:     #96382C;
+  --on-alarm:  #FFFDF7;
+  --fill:    #33302A;
+  --on-fill: #F3EDDF;
+
+  --sit:   0 1px 0 rgba(43, 36, 24, 0.08);
+  --raise: 0 1px 2px rgba(43, 36, 24, 0.10), 0 2px 8px rgba(43, 36, 24, 0.06);
+  --r-1: 4px;
+  --r-2: 8px;
+
+  --serif: ui-serif, Georgia, "Times New Roman", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; margin: 0; }
+
+body {
+  font: 14px/1.5 var(--sans);
+  background: var(--ground);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+/* The same paper grain as the dashboard, inlined — this file imports nothing. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+::selection { background: var(--accent); color: var(--on-accent); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: var(--rule-2);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track { background: transparent; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
+.mono, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.unk   { color: var(--muted); font-style: italic; }
+.spacer { flex: 1; }
+.hidden { display: none; }
+
+.wrap { max-width: 900px; margin: 0 auto; padding: 24px 20px 48px; }
+
+/* --- Masthead ------------------------------------------------------------ */
+.masthead {
+  display: flex; align-items: baseline; gap: 10px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--rule-2); margin-bottom: 20px;
+}
+.masthead h1 { font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em; }
+.masthead a { color: var(--accent); font-size: 12px; }
+.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--rule-2); flex: none; }
+.pulse.live { background: var(--accent); }
+#poll-note { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+/* --- Banner: the only place this page is allowed a sentence, because an
+       error that does not explain itself is a dead end. ---------------------- */
+.banner {
+  border: 1px solid var(--rule-2); border-left: 3px solid var(--alarm);
+  border-radius: var(--r-2); box-shadow: var(--raise); background: var(--panel);
+  padding: 10px 14px; margin-bottom: 20px;
+}
+.banner h2 { font-size: 14px; font-weight: 700; }
+.banner p  { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.banner input {
+  font: 12px var(--mono); padding: 6px 8px; border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  background: var(--sunk); color: var(--ink); width: 100%; max-width: 380px; margin-top: 8px;
+}
+.banner input:focus { background: var(--panel); border-color: var(--accent); outline: none; }
+.banner button {
+  font: 12px var(--sans); font-weight: 600; padding: 6px 12px; margin-top: 8px; cursor: pointer;
+  border: 1px solid var(--accent-2); border-radius: var(--r-1);
+  box-shadow: var(--sit);
+  background: var(--accent); color: var(--on-accent);
+  transition: background-color 130ms ease-out, transform 130ms ease-out;
+}
+.banner button:hover { background: var(--accent-2); }
+.banner button:active { transform: translateY(1px); box-shadow: none; }
+
+/* --- Topline: the whole status in two or three fixed-width lines ---------- */
+.topline { margin-bottom: 22px; }
+.status {
+  display: flex; align-items: baseline; gap: 12px;
+  font-family: var(--mono); font-size: 13px;
+  padding: 3px 0;
+}
+.status .k {
+  font-weight: 700; letter-spacing: .04em; min-width: 11ch; flex: none;
+}
+.status .v { color: var(--muted); }
+.status.head .k { font-size: 15px; }
+.status.head .v { color: var(--ink); }
+.status.idle .k { color: var(--muted); }
+
+/* --- Classes -------------------------------------------------------------- */
+.section-head {
+  display: flex; align-items: baseline;
+  border-bottom: 1px solid var(--rule-2); padding-bottom: 6px; margin-bottom: 4px;
+}
+.section-head h2 { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+/* padding-left, not just list-style: a <ul> keeps its 40px UA
+   padding-inline-start even with the markers off, which indented every
+   class row 40px past the CLASSES rule above it. */
+.classes { list-style: none; padding-left: 0; }
+.cls { border-bottom: 1px solid var(--rule); }
+.cls-head {
+  display: grid; width: 100%; align-items: center; gap: 10px;
+  grid-template-columns: 6px 9ch 1fr 5ch 10ch 2ch;
+  padding: 7px 2px; background: none; border: 0; cursor: pointer;
+  font: 13px var(--sans); color: inherit; text-align: left;
+}
+.cls-head { border-radius: var(--r-1); transition: background-color 130ms ease-out; }
+.cls-head:hover { background: var(--sunk); }
+.cls-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--class-color, var(--rule-2)); }
+/* The column is a fixed 9ch, so a longer code has to be clipped rather than
+   left to paint across the meter beside it — which is exactly what a bridge
+   process older than shortCode did with "BUSI 396 001/002/003/004".
+   compactCode() makes that rare; this makes it survivable. */
+.cls-code { font-family: var(--mono); font-weight: 700; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis; }
+.cls-ratio { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
+.cls-state { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.cls-state.run  { color: var(--ink); font-weight: 700; }
+.cls-state.fail { color: var(--alarm); font-weight: 700; }
+.cls-caret { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
+
+/* The per-class progress bar: one segment per countable stage, filled as each
+   is indexed. Segments rather than one continuous fill, because the stages are
+   discrete and a smooth bar would imply a precision the data does not have. */
+.meter { display: flex; gap: 2px; height: 8px; width: 100%; }
+.meter > i {
+  flex: 1; background: var(--sunk); box-shadow: inset 0 0 0 1px var(--rule-2);
+  border-radius: 2px;
+}
+.meter > i.done    { background: var(--fill); box-shadow: none; }
+.meter > i.running { background: var(--accent); box-shadow: none; }
+.meter > i.failed  { background: var(--alarm); box-shadow: none; }
+.meter > i.stale   { background: repeating-linear-gradient(-45deg, var(--rule-2) 0 2px, transparent 2px 4px); }
+.meter > i.unrecognised { background: var(--rule-2); }
+.meter.unknown > i { background: var(--sunk); }
+
+/* --- Expanded detail ------------------------------------------------------ */
+.cls-body { padding: 2px 0 12px 16px; }
+.stage {
+  display: grid; grid-template-columns: 14ch 12ch 1fr; gap: 10px;
+  font-family: var(--mono); font-size: 12px; padding: 2px 0; color: var(--muted);
+}
+.stage .s-name { color: var(--ink); }
+.stage .s-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cats { display: flex; flex-wrap: wrap; gap: 4px 14px; font-family: var(--mono); font-size: 12px;
+        color: var(--muted); padding-top: 6px; }
+.cats b { color: var(--ink); font-weight: 700; }
+
+/* --- Global + foot -------------------------------------------------------- */
+#global { margin-top: 22px; }
+#global .status .k { min-width: 11ch; }
+.foot {
+  margin-top: 22px; padding-top: 8px; border-top: 1px solid var(--rule);
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+}
+.warn { color: var(--alarm); }
+.bits { color: var(--muted); }
+.bits b { color: var(--ink); font-weight: 700; }
+.banner-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.banner .primary { border-color: var(--accent); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <h1>Index progress</h1>
+    <span class="pulse" id="pulse"></span>
+    <span class="mono muted" id="poll-note"></span>
+    <span class="spacer"></span>
+    <a href="/app/">Back to dashboard</a>
+  </header>
+
+  <!-- Rendered before the first response lands, and replaced by an honest
+       error state if the fetch fails. It never starts blank. -->
+  <div class="banner" id="banner">
+    <h2>Reading the index…</h2>
+  </div>
+
+  <section class="topline" id="topline" hidden></section>
+
+  <div class="section-head">
+    <h2>Classes</h2>
+  </div>
+  <ul class="classes" id="classes"></ul>
+
+  <section id="global"></section>
+
+  <footer class="foot" id="foot"></footer>
+
+</div>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Auth — identical mechanism to app.js, deliberately.
+//
+// The Electron shell injects window.canvasync and can hand over the secret;
+// a plain browser tab keeps it in localStorage under 'bridgeSecret' after the
+// dashboard's own gate has accepted it once. This page never displays the
+// value and never writes it anywhere but that same localStorage key.
+// ---------------------------------------------------------------------------
+const IS_APP = !!window.canvasync;
+let SECRET = null;
+
+async function loadSecret() {
+  if (IS_APP) {
+    try { const s = await window.canvasync.getSecret(); if (s) return s; } catch (e) {}
+  }
+  try { return localStorage.getItem('bridgeSecret'); } catch (e) { return null; }
+}
+
+// The header is omitted rather than sent as the string "null" when we have no
+// secret, so a 401 means "wrong secret" and not "we sent garbage".
+async function api(pathname) {
+  const headers = {};
+  if (SECRET) headers['X-Bridge-Secret'] = SECRET;
+  const res = await fetch(pathname, { headers: headers, cache: 'no-store' });
+  if (!res.ok) { const e = new Error(res.status + ' ' + res.statusText); e.code = res.status; throw e; }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+const POLL_RUNNING_MS = 5000;   // pipeline live: fast enough to watch a stage finish
+const POLL_IDLE_MS    = 10000;  // nothing running: no reason to hammer the bridge
+
+// Mirrors class-colors.js DEFAULT_PALETTE and its position-based assignment.
+// Duplicated on purpose: this page must not import a module, and the fallback
+// only runs when /api/class-colors is unreachable — in which case an
+// approximately-right colour beats no identity at all.
+const PALETTE = ['#3E6B8A','#7A5C3E','#4E7A5B','#8A4F5C','#5C5A8A','#8A7136','#3F7373','#7A4A78','#6B7A3E','#8A5A3E'];
+
+let COLORS = {};            // slug -> "#rrggbb"
+let OPEN = new Set();       // folders the user expanded; survives every re-render
+let LAST = null;            // last good payload, kept so a failed poll degrades
+let LAST_AT = 0;            // when that payload arrived (ms epoch)
+let TIMER = null;
+let BUSY = false;
+// True once a poll has failed while a previous payload is still on screen.
+// Everything this page says in the present tense ("the local model IS loaded
+// and working") stops being a present-tense claim the moment the bridge goes
+// quiet — an 11-minute-old confident "Yes" is the worst answer this page can
+// give, because answering "is it running right now" is the whole point of it.
+let STALE = false;
+
+// ---------------------------------------------------------------------------
+// Formatting. Every one of these returns the word "unknown" rather than a
+// plausible-looking zero.
+// ---------------------------------------------------------------------------
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+const UNK = '<span class="unk">unknown</span>';
+
+// Timestamps arrive as ISO strings, but the contract's own examples annotate
+// some of them ("2026-08-24T17:58:12Z  (mtime(metadata.json) — ...)"). Take the
+// leading ISO token when the whole string will not parse, rather than printing
+// "Invalid Date" at the top of a status page.
+function parseStamp(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') { const d = new Date(v); return isNaN(d) ? null : d; }
+  const s = String(v).trim();
+  let d = new Date(s);
+  if (!isNaN(d)) return d;
+  const m = s.match(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/);
+  if (m) { d = new Date(m[0].replace(' ', 'T')); if (!isNaN(d)) return d; }
+  return null;
+}
+
+function dur(ms) {
+  if (!isFinite(ms) || ms < 0) return null;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), rs = s % 60;
+  if (m < 60) return m + 'm ' + rs + 's';
+  const h = Math.floor(m / 60), rm = m % 60;
+  if (h < 24) return h + 'h ' + rm + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+
+function ago(v) {
+  const d = parseStamp(v);
+  if (!d) return UNK;
+  const t = dur(Date.now() - d.getTime());
+  const abs = d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+  if (t === null) return '<span title="' + esc(abs) + '">' + esc(abs) + '</span>';
+  return '<span title="' + esc(abs) + '">' + esc(t) + ' ago</span>';
+}
+
+function clock(v) {
+  const d = parseStamp(v);
+  if (!d) return UNK;
+  const abs = d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const short = sameDay
+    ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return '<span title="' + esc(abs) + '">' + esc(short) + '</span>';
+}
+
+function num(v) {
+  return (typeof v === 'number' && isFinite(v)) ? String(v) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Vocabulary. Unrecognised states render as themselves with the dashed
+// The vocabulary of stage states. A state the page has never heard of is
+// printed verbatim rather than coerced into one we did measure — a new state
+// appearing as "not started" is how a real failure goes unnoticed.
+const STATE_LABEL = {
+  'done': 'indexed', 'complete': 'indexed', 'stale': 'stale', 'running': 'running',
+  'queued': 'queued', 'failed': 'failed', 'cancelled': 'cancelled',
+  'interrupted': 'interrupted', 'not-started': 'not started', 'n-a': 'n/a',
+  'not-wired': 'not wired', 'cli-only': 'CLI only', 'partial': 'partial',
+  'empty': 'empty', 'unavailable': 'unavailable', 'not-indexed': 'not indexed',
+  'error': 'failed',
+};
+
+const STAGE_ORDER = ['parse', 'extract', 'mine', 'graph', 'build', 'pack2'];
+const STAGE_LABEL = {
+  parse: 'Syllabus', extract: 'Course files', mine: 'Task mining',
+  graph: 'Correlation graph', build: 'AI context', pack2: 'Context pack v2',
+};
+const CAT_LABEL = {
+  assignments: 'Assignments', quizzes: 'Quizzes', modules: 'Modules', pages: 'Pages',
+  announcements: 'Announcements', discussions: 'Discussions', files: 'Course files',
+  syllabus: 'Syllabus', grades: 'Grades', calendarEvents: 'Canvas events',
+  minedTasks: 'Mined tasks', contextPack: 'AI context pack',
+  correlationGraph: 'Correlation graph', calendarOps: 'Calendar ops',
+};
+// States that mean "there is nothing here to do", so they are not counted in
+// the denominator. Counting them would make every class permanently
+// incomplete for a stage the pipeline is never going to run.
+const UNCOUNTED = ['n-a', 'not-wired', 'cli-only'];
+
+// ---------------------------------------------------------------------------
+// Colours
+// ---------------------------------------------------------------------------
+function slugOf(folder) { return String(folder || '').replace(/^[0-9]+-/, ''); }
+
+function fallbackColors(slugs) {
+  const sorted = Array.from(new Set(slugs.filter(Boolean).map(String))).sort();
+  const out = {};
+  sorted.forEach(function (slug, i) { out[slug] = PALETTE[i % PALETTE.length]; });
+  return out;
+}
+function colorFor(folder) { return COLORS[slugOf(folder)] || 'var(--rule-2)'; }
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function banner(kind, title, body, actionsHtml) {
+  const el = document.getElementById('banner');
+  el.className = 'banner' + (kind === 'bad' ? ' bad' : '');
+  el.innerHTML = '<h2>' + esc(title) + '</h2>' + body
+    + (actionsHtml ? '<div class="banner-row">' + actionsHtml + '</div>' : '');
+  el.hidden = false;
+}
+function clearBanner() { document.getElementById('banner').hidden = true; }
+
+function setPulse(mode, note) {
+  const p = document.getElementById('pulse');
+  p.className = 'pulse' + (mode ? ' ' + mode : '');
+  document.getElementById('poll-note').textContent = note;
+}
+
+// Stage key -> the verb it is doing. The script filename is an implementation
+// detail; the verb is what the page is read for.
+const VERB = {
+  parse: 'PARSING', extract: 'EXTRACTING', mine: 'MINING',
+  graph: 'GRAPHING', build: 'BUILDING', pack2: 'PACKING',
+};
+
+// A job names its stage, but older payloads and the CLI path name only the
+// script. Map it back rather than printing "MINE-ASSIGNMENTS.JS" as a verb.
+const SCRIPT_STAGE = {
+  'parse-syllabus.js': 'parse', 'extract-course-files.js': 'extract',
+  'mine-assignments.js': 'mine', 'build-graph.js': 'graph',
+  'build-context.js': 'build', 'build-pack.js': 'pack2',
+};
+function stageOf(j) {
+  if (j && j.stage) return String(j.stage);
+  const base = String((j && j.script) || '').split('/').pop();
+  return SCRIPT_STAGE[base] || base || 'running';
+}
+
+/**
+ * "BUSI 396 001/002/003/004" -> "BUSI396".
+ *
+ * The endpoint sends `shortCode` and this page prefers it. The fallback exists
+ * because a bridge process started before shortCode was added still answers,
+ * and its `code` is the full registrar string — 24 characters into a 9ch
+ * column, printed straight across the progress meter.
+ *
+ * Deliberately narrower than scripts/cal-names.js compactCourseCode(): it only
+ * rewrites a string that opens with a real SUBJ NNN code and returns anything
+ * else untouched, so a Canvas shell name ("Power of Persuasion") is never
+ * mangled into a course code that does not exist.
+ */
+function compactCode(code) {
+  const t = String(code == null ? '' : code).trim();
+  const m = /^([A-Za-z]{2,6})\s+(\d{2,4}[A-Za-z]?)\b/.exec(t);
+  return m ? m[1].toUpperCase() + m[2].toUpperCase() : t;
+}
+
+/** folder -> "BUSI374", so a job list is readable at a glance. */
+function codeMap(d) {
+  const out = {};
+  (Array.isArray(d.classes) ? d.classes : []).forEach(function (c) {
+    if (c && c.folder) out[String(c.folder)] = c.shortCode || compactCode(c.code) || String(c.folder);
+  });
+  return out;
+}
+
+/** One fixed-width status line: a key column and a value. */
+function line(key, value, cls) {
+  return '<div class="status' + (cls ? ' ' + cls : '') + '">'
+    + '<span class="k">' + esc(key) + '</span><span class="v">' + value + '</span></div>';
+}
+
+/**
+ * The whole status, in three lines.
+ *
+ * What used to be here: a Local model card naming the backend, the MLX model
+ * id, resident RAM in gigabytes, two pids, the lock's holder and age and a
+ * five-sentence paragraph explaining what a lock can and cannot prove; a
+ * Pipeline card; and a scrape card ending in a sentence about there being no
+ * per-class scrape time. All of it was plumbing or prose.
+ *
+ * The one thing the model card answered that nothing else did is WHICH class is
+ * actually generating versus merely holding a slot — the lock names its holder,
+ * so two of three "running" classes are really waiting. That survives, as one
+ * word on the class row. Nothing else about the model is the reader's problem.
+ */
+function isWorking(d) {
+  const pipe = (d && d.pipeline) || {};
+  if (pipe.running === true) return true;
+  return Array.isArray(d && d.jobs) && d.jobs.length > 0;
+}
+
+function renderTopline(d) {
+  const pipe = d.pipeline || {};
+  const prog = (d.global && d.global.progress) || {};
+  const jobs = Array.isArray(d.jobs) ? d.jobs : [];
+  const codes = codeMap(d);
+  const out = [];
+
+  const done = num(prog.stagesDone), total = num(prog.stagesTotal);
+  const act = num(pipe.activeCount), qd = num(pipe.queuedCount);
+
+  let head, cls = '';
+  if (isWorking(d)) head = 'INDEXING';
+  else if (pipe.running === false) { head = 'IDLE'; cls = 'idle'; }
+  else { head = 'UNKNOWN'; cls = 'idle'; }
+
+  const facts = [];
+  if (done !== null && total !== null && Number(total) > 0) facts.push(esc(done) + '/' + esc(total) + ' stages');
+  if (act !== null && Number(act) > 0) facts.push(esc(act) + ' running');
+  if (qd !== null && Number(qd) > 0) facts.push(esc(qd) + ' queued');
+  if (pipe.cancelRequested) facts.push('cancelling');
+  out.push(line(head, facts.length ? facts.join(' \u00b7 ') : UNK, 'head ' + cls));
+
+  // One line per stage that has work on it, naming the classes. This is the
+  // shape the whole page was asked for: "PARSING  BUSI374, BUSI396".
+  const byStage = {};
+  jobs.forEach(function (j) {
+    const k = stageOf(j);
+    if (!byStage[k]) byStage[k] = [];
+    byStage[k].push(esc(codes[String(j.folder)] || j.folder || '?'));
+  });
+  const seen = {};
+  STAGE_ORDER.forEach(function (k) {
+    if (byStage[k] && byStage[k].length) { seen[k] = 1; out.push(line(VERB[k] || k.toUpperCase(), byStage[k].join(', '), '')); }
+  });
+  // A stage key this page has no verb for must still appear, or work would run
+  // invisibly the first time a new stage is wired in.
+  Object.keys(byStage).forEach(function (k) {
+    if (!seen[k]) out.push(line(String(k).toUpperCase(), byStage[k].join(', '), ''));
+  });
+
+  const scrape = d.lastScrape || {};
+  const seenN = Array.isArray(scrape.coursesSeen) ? scrape.coursesSeen.length : null;
+  out.push(line('SCRAPED', ago(scrape.at) + (seenN !== null ? ' \u00b7 ' + esc(seenN) + ' courses' : ''), ''));
+
+  // A payload that stopped refreshing must not keep reading as the present.
+  if (STALE && LAST_AT) out.push(line('STALE', 'as of ' + clock(new Date(LAST_AT).toISOString()), 'idle'));
+
+  document.getElementById('topline').innerHTML = out.join('');
+  document.getElementById('topline').hidden = false;
+}
+
+// --- Meter ------------------------------------------------------------------
+// Segment states this page has a drawing for. Anything else gets the
+// 'unrecognised' segment rather than the default, which reads as "not started".
+const SEG_CLASS = {
+  'done': 'done', 'complete': 'done',
+  'running': 'running',
+  'failed': 'failed', 'error': 'failed', 'interrupted': 'failed',
+  'stale': 'stale',
+  'not-started': '', 'queued': '', 'cancelled': '', 'running-or-interrupted': 'running',
+};
+
+function meter(stages) {
+  if (!Array.isArray(stages) || !stages.length) {
+    return { html: '<span class="meter unknown"><i></i><i></i><i></i></span>', done: null, counted: null };
+  }
+  // `counted` is the endpoint's own flag and it outranks the state string.
+  // Matching on state alone was wrong for exactly the case the module was built
+  // around: it deliberately does NOT implement 'cli-only' as a STATE — it keeps
+  // the graph stage's true state ('stale' on five real classes) and marks it
+  // counted:false — so the meter drew five segments while overall.done/total
+  // said 4 / 4, and every class rendered a ratio that disagreed with the bar
+  // printed next to it.
+  const counted = stages.filter(function (s) {
+    return s.counted !== false && UNCOUNTED.indexOf(String(s.state)) < 0;
+  });
+  if (!counted.length) {
+    return { html: '<span class="meter unknown"><i></i></span>', done: 0, counted: 0 };
+  }
+  const seg = counted.map(function (s) {
+    const st = String(s.state || '');
+    const cls = Object.prototype.hasOwnProperty.call(SEG_CLASS, st) ? SEG_CLASS[st] : 'unrecognised';
+    return '<i class="' + cls + '" title="' + esc((s.label || STAGE_LABEL[s.key] || s.key || 'stage'))
+      + ' — ' + esc(STATE_LABEL[st] || st || 'unknown') + '"></i>';
+  }).join('');
+  const done = counted.filter(function (s) { return String(s.state) === 'done'; }).length;
+  return { html: '<span class="meter">' + seg + '</span>', done: done, counted: counted.length };
+}
+
+/**
+ * The ratio must never contradict the meter drawn beside it.
+ *
+ * Two independent sources for the same number, never cross-checked, produced
+ * "1 / 9 stages" beside three solid done segments in an isolated probe, and the
+ * 4/4-vs-five-bars disagreement above on every real class. So: when there is a
+ * stage array, the number is COUNTED FROM IT — the same list the segments come
+ * from — and a disagreeing endpoint figure is reported as a disagreement rather
+ * than silently preferred.
+ *
+ * And {done:0,total:0} never renders as "0 / 0 stages". A class mid-first-sync
+ * legitimately has no denominator; printing one claims we measured a fraction
+ * of nothing. bridge/test/progress-page.test.js fails the build on that string.
+ */
+function ratioFor(m, overall) {
+  const od = num(overall.done), ot = num(overall.total);
+  if (m.counted === null) {
+    if (ot === null || Number(ot) === 0) return '<span class="unk">\u2014</span>';
+    return '<span class="num">' + esc(od === null ? '?' : od) + '/' + esc(ot) + '</span>';
+  }
+  if (m.counted === 0) return '<span class="unk">\u2014</span>';
+  const disagrees = ot !== null && od !== null && (Number(ot) !== m.counted || Number(od) !== m.done);
+  return '<span class="num"' + (disagrees
+      ? ' title="counted from the stages drawn beside it; the endpoint reported '
+        + esc(od) + ' / ' + esc(ot) + '"'
+      : '') + '>' + esc(m.done) + '/' + esc(m.counted) + (disagrees ? '*' : '') + '</span>';
+}
+
+// --- Detail bits ------------------------------------------------------------
+// Pulls the per-category extras the contract defines, from either the entry
+// itself or its `extra` object, and skips anything absent. Zeros are printed:
+// "reading 0" across every class is the finding, not a blank.
+const BIT_ORDER = [
+  ['indexed', 'indexed'], ['failed', 'failed'], ['pending', 'pending'],
+  ['skipped', 'skipped'], ['duplicates', 'dupes'], ['canvasNewer', 'canvas newer'],
+  ['itemCount', 'items'], ['datedCount', 'dated'], ['confidence', 'confidence'],
+  ['sourceFile', 'source'], ['currentScore', 'score'], ['currentGrade', 'grade'],
+  ['nodeCount', 'nodes'], ['edgeCount', 'edges'], ['density', 'density'],
+  ['medianDegree', 'median deg'],
+];
+
+// The endpoint writes its evidence as full sentences, on purpose — it is also
+// read by the CLI and by anyone diffing a run. This page is not that reader:
+// it wants the noun, not the argument for it. Every rule below is a lossless
+// rename of a shape index-progress.js actually emits; anything unrecognised
+// falls through to the generic trims (ISO stamps, em-dash tail, whitespace).
+function terse(v, max) {
+  let t = String(v == null ? '' : v).trim();
+  if (!t) return '';
+  let m;
+  if ((m = /^pid (\d+) is alive/.exec(t))) return 'pid ' + m[1];
+  if ((m = /^ignored \d+ non-class entr(?:y|ies) under [^:]*:\s*(.+)$/.exec(t))) return m[1];
+  if (/inputs exist yet/.test(t)) return 'no inputs';
+  // "syllabus_parsed.json @ 2026-08-25T16:48:20.595Z" — the anchor's name is
+  // the answer; the stamp is only useful as an age, which is one word.
+  if ((m = /^(\S+) @ (20\d\d-\d\d-\d\dT\S+)$/.exec(t))) {
+    const d = parseStamp(m[2]);
+    const age = d ? dur(Date.now() - d.getTime()) : null;
+    return age ? m[1] + ' ' + age + ' ago' : m[1];
+  }
+  if ((m = /does not read:\s*(.+)$/.exec(t))) t = 'unreadable: ' + m[1];
+  else if ((m = /^(\S+)\s+\([^)]*\)\s+is newer than\s+(\S+)/.exec(t))) return m[1] + ' > ' + m[2];
+  else if ((m = /^(\S+) has never been written/.exec(t))) return m[1] + ' never written';
+  t = t.replace(/\s*\(20\d\d-[^)]*\)/g, '');   // (2026-08-25T16:30:09.818Z)
+  t = t.replace(/\s+[\u2014;].*$/, '');           // trailing " — because ..." clause
+  t = t.replace(/\s+/g, ' ').trim();
+  const cap = max || 120;
+  return t.length > cap ? t.slice(0, cap - 1) + '\u2026' : t;
+}
+
+// Zero is the finding for these two: "0 items held" and "0 of them dated" are
+// exactly what a class that indexed but produced nothing looks like.
+const KEEP_ZERO = ['itemCount', 'datedCount'];
+
+function bits(cat) {
+  const src = {};
+  Object.keys(cat || {}).forEach(function (k) { src[k] = cat[k]; });
+  if (cat && cat.extra && typeof cat.extra === 'object') {
+    Object.keys(cat.extra).forEach(function (k) { src[k] = cat.extra[k]; });
+  }
+  const out = [];
+  BIT_ORDER.forEach(function (pair) {
+    const v = src[pair[0]];
+    if (v === undefined || v === null || v === '') return;
+    if (typeof v === 'object') return;
+    // A zero here means "none of this happened" — five of them in a row
+    // ("failed 0 pending 0 skipped 0 dupes 0 canvas newer 0") is the absence of
+    // news printed as news. Zero is only kept where it is itself the finding:
+    // KEEP_ZERO holds the counts whose emptiness is worth seeing.
+    if (v === 0 && KEEP_ZERO.indexOf(pair[0]) < 0) return;
+    if (v === false) return;                       // "indexed false" is not a fact
+    if (v === true) { out.push(esc(pair[1])); return; }   // not "indexed true"
+    out.push(esc(pair[1]) + ' <b>' + esc(v) + '</b>');
+  });
+  ['byKind', 'byCategory'].forEach(function (key) {
+    const o = src[key];
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    Object.keys(o).forEach(function (k) {
+      if (o[k] === 0) return;                      // "quiz 0 paper 0" is filler
+      out.push(esc(k) + ' <b>' + esc(o[k]) + '</b>');
+    });
+  });
+  // tabs.json lists the tabs VISIBLE IN COURSE NAVIGATION, not the features
+  // that are enabled — so "tab is off in Canvas" beside a real count produced
+  // the self-contradiction "Assignments 7 indexed · tab is off in Canvas" on
+  // BUSI 374 and BUSI 396. The endpoint now refuses to assert applicable:false
+  // when it holds items; this wording no longer claims more than the nav list
+  // can support either.
+  // "no tab" and "disabled" are different facts: the first is an instructor
+  // hiding a nav link, the second is Canvas refusing the feature outright. The
+  // note said the second one in a sentence; the state already carries it.
+  const st = String(src.state || '');
+  if (st === 'unavailable') out.push('<span class="unk">disabled</span>');
+  else if (src.applicable === false) out.push('<span class="unk">no tab</span>');
+  else if (src.tabHidden === true) out.push('<span class="unk">tab off</span>');
+  // An error note is the only one left that is the whole answer.
+  if (src.note && st === 'error') {
+    out.push('<span class="unk">' + esc(terse(src.note, 80)) + '</span>');
+  }
+  // join('') ran the fragments together ("Assignments 7tab off"); the separator
+  // is a space because the container is monospace and already gap-spaced.
+  return out.length ? ' <span class="bits">' + out.join('  ') + '</span>' : '';
+}
+
+function countCell(cat) {
+  const c = cat.count;
+  if (c === null || c === undefined) return UNK;
+  if (typeof c !== 'number' || !isFinite(c)) return UNK;
+  // "none published" is a claim about what CANVAS did, so it may only be made
+  // when a read actually happened. Keyed on the endpoint's own 'none-published'
+  // state, which it sets only after parsing calendar_events.json as an empty
+  // array — not on cat.key, which asserted it even in a cold install where
+  // nothing had ever been scraped.
+  if (c === 0 && String(cat.state) === 'none-published') return '<span class="unk">none published</span>';
+  if (c === 0) return '<span class="unk">none</span>';
+  return esc(c);
+}
+
+/**
+ * "This class has meetings on the calendar, but nobody knows what time."
+ *
+ * Three of the six real classes are in exactly that position — BUSI 305 and
+ * BUSI 380 carry all-day markers, BUSI 396 has no meeting at all — because no
+ * syllabus and no Canvas field states an hour. That is the correct answer, but
+ * it is only useful if the page says so where the user is looking at what is
+ * incomplete, rather than three clicks deep in the calendar's Populate panel.
+ */
+/** The one word that says where this class is. */
+function classState(c) {
+  const o = c.overall || {};
+  const st = String(o.state || '');
+  if (st === 'running') {
+    // The lock names its holder, so a class can be "running" while it is really
+    // queued behind another one for the model. Saying "running" for both is the
+    // single most misleading thing this page used to do.
+    if (o.blocked) return { text: 'waiting', cls: '' };
+    const rs = (Array.isArray(c.stages) ? c.stages : []).filter(function (x) {
+      return String(x.state) === 'running';
+    })[0];
+    return { text: rs && VERB[rs.key] ? VERB[rs.key].toLowerCase() : 'running', cls: 'run' };
+  }
+  if (st === 'failed' || st === 'error' || st === 'interrupted') return { text: STATE_LABEL[st] || st, cls: 'fail' };
+  if (!st) return { text: '\u2014', cls: '' };
+  return { text: STATE_LABEL[st] || st, cls: '' };
+}
+
+function renderClasses(d) {
+  const list = document.getElementById('classes');
+  const classes = Array.isArray(d.classes) ? d.classes : [];
+
+  if (!classes.length) {
+    list.innerHTML = '<li class="cls"><div class="status idle"><span class="k">NO CLASSES</span></div></li>';
+    return;
+  }
+
+  list.innerHTML = classes.map(function (c) {
+    const folder = String(c.folder || '');
+    const key = folder || (c.courseId ? 'course:' + c.courseId : '');
+    const open = OPEN.has(key);
+    const m = meter(c.stages);
+    const st = classState(c);
+
+    return '<li class="cls" data-folder="' + esc(key) + '" style="--class-color:' + esc(colorFor(folder)) + '">'
+      + '<button class="cls-head" type="button" aria-expanded="' + (open ? 'true' : 'false') + '">'
+        + '<span class="cls-dot"></span>'
+        + '<span class="cls-code">'
+          + esc(c.shortCode || compactCode(c.code) || folder || (c.courseId ? c.courseId : '?')) + '</span>'
+        + m.html
+        + '<span class="cls-ratio">' + ratioFor(m, c.overall || {}) + '</span>'
+        + '<span class="cls-state ' + st.cls + '">' + esc(st.text) + '</span>'
+        + '<span class="cls-caret">' + (open ? '\u2212' : '+') + '</span>'
+      + '</button>'
+      + '<div class="cls-body' + (open ? '' : ' hidden') + '">' + (open ? classBody(c) : '') + '</div>'
+      + '</li>';
+  }).join('');
+}
+
+/**
+ * The expanded row. Collapsed by default, so this is where diagnostic detail
+ * survives the simplification — but as a fixed-width list, not tables with
+ * paragraphs of explanation in the cells.
+ */
+function classBody(c) {
+  const stages = Array.isArray(c.stages) ? c.stages.slice() : [];
+  stages.sort(function (a, b) {
+    const ia = STAGE_ORDER.indexOf(String(a.key)), ib = STAGE_ORDER.indexOf(String(b.key));
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+
+  let html = '';
+  if (c.metadataError) {
+    html += '<div class="stage"><span class="s-name warn">metadata</span>'
+      + '<span>error</span><span class="s-why">' + esc(terse(c.metadataError, 120)) + '</span></div>';
+  }
+
+  html += stages.map(function (s) {
+    // FIELD NAMES: the endpoint emits staleReason/evidence, failureOutput/
+    // errorSidecar, exitCode, durationMs and anchorAt. An earlier version read
+    // note/error/exit/elapsedSec/updatedAt — none of which exist — so this
+    // column was empty on every stage of every real class. Both spellings are
+    // accepted so a fixture written against either still renders.
+    const el = num(s.elapsedSec) !== null ? dur(Number(s.elapsedSec) * 1000)
+             : (num(s.durationMs) !== null ? dur(Number(s.durationMs)) : null);
+    const sidecar = (s.errorSidecar && typeof s.errorSidecar === 'object') ? s.errorSidecar.evidence : null;
+    const failure = s.error || s.failureOutput || sidecar || null;
+    const exit = num(s.exit) !== null ? Number(s.exit)
+               : (num(s.exitCode) !== null ? Number(s.exitCode) : null);
+    const state = String(s.state || '');
+
+    let why = '';
+    if (s.counted === false) why = 'not counted \u00b7 ' + esc(String(s.notCountedReason || 'excluded').replace(/-/g, ' '));
+    else if (failure) why = '<span class="warn">' + esc(terse(failure, 160)) + '</span>';
+    else if (state === 'running' && el) why = esc(el);
+    else if (s.staleReason || s.evidence) why = esc(terse(s.staleReason || s.evidence, 90));
+    if (exit !== null && exit !== 0) why += ' <span class="warn">exit ' + esc(exit) + '</span>';
+
+    return '<div class="stage">'
+      + '<span class="s-name">' + esc(s.key || 'stage') + '</span>'
+      + '<span>' + esc(STATE_LABEL[state] || state || 'unknown') + '</span>'
+      + '<span class="s-why">' + why + '</span>'
+      + '</div>';
+  }).join('');
+
+  // Counts we hold per category. Kept because "reading 0 across every class"
+  // is the finding, not a blank — but inline, not a five-column table.
+  const cats = Array.isArray(c.categories) ? c.categories : [];
+  if (cats.length) {
+    html += '<div class="cats">' + cats.map(function (cat) {
+      return '<span>' + esc(cat.label || CAT_LABEL[cat.key] || cat.key || '?')
+        + ' ' + countCell(cat) + bits(cat) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  return html;
+}
+
+// --- Global section ---------------------------------------------------------
+function renderGlobal(d) {
+  const g = d.global || {};
+  const cal = g.calendar || null;
+  const el = document.getElementById('global');
+  // Warnings must survive a payload with no calendar block at all — that is
+  // precisely the shape a broken data root produces, and the shape whose
+  // warnings matter most.
+  if (!cal && !g.unscopedClasses) { el.innerHTML = renderWarnings(d); return; }
+
+  // Zero-valued kinds are printed, never filtered: "reading 0" across the whole
+  // term is the finding — one recurring item that could not be dated — and
+  // dropping it is what made an empty Readings calendar look like a bug.
+  let counts = UNK;
+  if (cal && cal.counts && typeof cal.counts === 'object') {
+    counts = Object.keys(cal.counts).map(function (k) {
+      return esc(k) + ' <b>' + esc(cal.counts[k]) + '</b>';
+    }).join('  ');
+  }
+
+  const rows = [line('CALENDAR', counts, '')];
+
+  const ubk = cal && cal.unscheduledByKind;
+  if (ubk && typeof ubk === 'object') {
+    const parts = Object.keys(ubk).filter(function (k) {
+      return num(ubk[k]) !== null && Number(ubk[k]) > 0;
+    }).map(function (k) { return esc(k) + ' <b>' + esc(ubk[k]) + '</b>'; });
+    if (parts.length) rows.push(line('UNDATED', parts.join('  '), ''));
+  }
+
+  if (cal && cal.window) {
+    rows.push(line('WINDOW', '<span class="num">' + esc(cal.window.from || '?')
+      + ' \u2192 ' + esc(cal.window.to || '?') + '</span>', ''));
+  }
+  if (num(g.unscopedClasses) !== null && Number(g.unscopedClasses) > 0) {
+    rows.push(line('UNSCOPED', esc(g.unscopedClasses) + ' classes', 'idle'));
+  }
+
+  el.innerHTML = rows.join('') + renderWarnings(d);
+}
+
+function renderWarnings(d) {
+  const warn = Array.isArray(d.warnings) ? d.warnings : [];
+  let html = '';
+  if (d.error) html += line('ERROR', '<span class="warn">' + esc(String(d.error).slice(0, 400)) + '</span>', '');
+  warn.forEach(function (w) {
+    html += line('UNSEEN', esc(terse(w, 90)), 'idle');
+  });
+  // predicateNotes and requiresNewWrites are not rendered. Both are standing
+  // developer notes about the module's own limits — paragraphs of file:line
+  // prose that never change between polls — and this page is read to find out
+  // what is happening right now.
+  return html;
+}
+
+// --- Footer -----------------------------------------------------------------
+function renderFoot(d) {
+  // The data root, the bridge pid and the requiresNewWrites essay were this
+  // page's plumbing, never the reader's question.
+  document.getElementById('foot').innerHTML = 'updated ' + clock(d.generatedAt);
+}
+
+// ---------------------------------------------------------------------------
+function render(d) {
+  // Colours can come from the class list itself if /api/class-colors is down.
+  if (!Object.keys(COLORS).length && Array.isArray(d.classes)) {
+    COLORS = fallbackColors(d.classes.map(function (c) { return slugOf(c.folder); }));
+  }
+  renderTopline(d);
+  renderClasses(d);
+  renderGlobal(d);
+  renderFoot(d);
+}
+
+function schedule(ms) {
+  clearTimeout(TIMER);
+  if (document.hidden) return;             // paused; visibilitychange restarts us
+  TIMER = setTimeout(tick, ms);
+}
+
+async function tick() {
+  if (BUSY || document.hidden) return;
+  BUSY = true;
+  try {
+    const d = await api('/api/index-progress');
+    LAST = d; LAST_AT = Date.now(); STALE = false;
+    clearBanner();
+    render(d);
+    const running = isWorking(d);
+    setPulse(running ? 'live' : '', running ? 'live' : 'idle');
+    schedule(running ? POLL_RUNNING_MS : POLL_IDLE_MS);
+  } catch (err) {
+    handleError(err);
+  } finally {
+    BUSY = false;
+  }
+}
+
+function handleError(err) {
+  const code = err && err.code;
+  setPulse('err', 'no answer');
+  // Anything still on screen is now a historical record, not a live reading.
+  // Re-render so the headlines lose the present tense and pick up their age.
+  if (LAST) { STALE = true; render(LAST); }
+
+  if (code === 401) {
+    banner('bad', 'The bridge rejected this page’s credentials.',
+      '<p>Connect once on the dashboard and this page will pick the secret up, '
+      + 'or paste it below. It is the <code>bridgeSecret</code> value in your data '
+      + 'folder’s <code>config.json</code> — 64 hex characters, not an install token.</p>',
+      '<label class="sr-only" for="sec">Bridge secret</label>'
+      + '<input type="password" id="sec" placeholder="Bridge secret (64 hex characters)" '
+      + 'aria-label="Bridge secret, 64 hex characters" autocomplete="off" />'
+      + '<button class="primary" id="sec-go">Connect</button>'
+      + '<p id="sec-msg" hidden></p>');
+    wireSecretGate();
+    return;
+  }
+
+  if (code === 404) {
+    const age404 = LAST_AT ? dur(Date.now() - LAST_AT) : null;
+    banner('bad', 'The progress endpoint is not mounted.',
+      '<p>This page is talking to a bridge that has no <code>GET /api/index-progress</code> '
+      + 'route. The page is complete; the route is the missing half — see '
+      + '<code>INTEGRATE-NEXT.md</code> at the repo root for the two lines that mount it.</p>'
+      + '<p>' + (LAST
+          ? 'Everything below was read ' + esc(age404 || 'an unknown time') + ' ago and is <b>not</b> being refreshed.'
+          : 'Nothing has been read, so nothing is shown.')
+      + '</p>');
+    schedule(POLL_IDLE_MS * 3);
+    return;
+  }
+
+  const since = LAST_AT ? dur(Date.now() - LAST_AT) : null;
+  banner('bad', 'Could not reach the bridge.',
+    '<p>' + esc(String((err && err.message) || 'network error')) + '. '
+    + (LAST
+        ? 'The figures below are ' + esc(since || 'of unknown age') + ' old and are <b>not</b> live.'
+        : 'Nothing has been read yet, so nothing is shown.')
+    + '</p><p>Retrying every ' + (POLL_IDLE_MS / 1000) + ' seconds.</p>');
+  schedule(POLL_IDLE_MS);
+}
+
+// The message NEVER contains the value that was typed — only its length. A page
+// that echoes a secret into the DOM has published it to every screenshot.
+function showSecretMsg(text) {
+  const p = document.getElementById('sec-msg');
+  if (!p) return;
+  p.textContent = text;
+  p.style.color = 'var(--alarm)';
+  p.hidden = !text;
+}
+
+function wireSecretGate() {
+  const field = document.getElementById('sec');
+  const go = document.getElementById('sec-go');
+  if (!field || !go) return;
+  const attempt = async function () {
+    const candidate = field.value.trim();
+    // Same shape check app.js does: pasting a 32-char install token here was a
+    // real, silent dead end.
+    if (!/^[0-9a-f]{64}$/i.test(candidate)) {
+      // One message element, reused. Appending a fresh <p> per attempt stacked
+      // three identical paragraphs after three clicks.
+      showSecretMsg(candidate.length === 0
+        ? 'Paste the bridge secret to connect.'
+        : 'That does not look like the bridge secret — expected 64 hex characters, got '
+          + candidate.length + '.');
+      return;
+    }
+    showSecretMsg('');
+    const previous = SECRET;
+    SECRET = candidate;
+    go.disabled = true;
+    try {
+      await api('/api/index-progress');
+      try { localStorage.setItem('bridgeSecret', candidate); } catch (e) {}
+      field.value = '';
+      loadColors();
+      tick();
+    } catch (e) {
+      SECRET = previous;   // never leave a rejected value in the global
+      go.disabled = false;
+      handleError(e);
+    }
+  };
+  go.addEventListener('click', attempt);
+  field.addEventListener('keydown', function (e) { if (e.key === 'Enter') attempt(); });
+}
+
+async function loadColors() {
+  try {
+    const d = await api('/api/class-colors');
+    if (d && d.colors) COLORS = d.colors;
+  } catch (e) { /* fallbackColors() covers it */ }
+}
+
+// Expand/collapse. Delegated, so it survives every re-render, and the open set
+// is what the renderer reads — a poll landing mid-read must not slam a row shut.
+document.getElementById('classes').addEventListener('click', function (ev) {
+  const head = ev.target.closest ? ev.target.closest('.cls-head') : null;
+  if (!head) return;
+  const li = head.closest('.cls');
+  const folder = li && li.dataset.folder;
+  if (!folder) return;
+  if (OPEN.has(folder)) OPEN.delete(folder); else OPEN.add(folder);
+  if (LAST) renderClasses(LAST);
+});
+
+// Pausing on a hidden tab is the difference between a status page and a
+// background load. The pipeline already competes for this machine's RAM.
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) {
+    clearTimeout(TIMER);
+    setPulse('', 'paused');
+  } else {
+    setPulse('', '');
+    tick();
+  }
+});
+
+(async function boot() {
+  setPulse('', '');
+  SECRET = await loadSecret();
+  loadColors();
+  tick();
+})();
+</script>
+</body>
+</html>

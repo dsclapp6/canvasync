@@ -1,0 +1,22 @@
+[
+  {
+    "id": 201,
+    "name": "Module 1: Consumer Theory",
+    "position": 1,
+    "items": [
+      { "id": 301, "title": "Lecture 1: Preferences and Utility", "type": "Page", "position": 1 },
+      { "id": 302, "title": "Reading: Varian Ch. 3-4", "type": "ExternalUrl", "position": 2 },
+      { "id": 303, "title": "Problem Set 1", "type": "Assignment", "position": 3 }
+    ]
+  },
+  {
+    "id": 202,
+    "name": "Module 2: Producer Theory",
+    "position": 2,
+    "items": [
+      { "id": 304, "title": "Lecture 5: Production Functions", "type": "Page", "position": 1 },
+      { "id": 305, "title": "Lecture 6: Cost Minimization", "type": "Page", "position": 2 },
+      { "id": 306, "title": "Problem Set 2", "type": "Assignment", "position": 3 }
+    ]
+  }
+]

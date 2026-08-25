@@ -1,0 +1,122 @@
+#toolbar-panel { margin-bottom: 16px; }
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-2);
+  box-shadow: var(--sit);
+}
+
+#toolbar .spacer { flex: 1; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover:not(:disabled) { background: var(--surface-muted); }
+
+.muted { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.term-group {
+  margin-bottom: 24px;
+}
+
+.term-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 8px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.term-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+.term-header .term-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.term-header .term-toggle {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 2px 6px;
+}
+.term-header .term-toggle:hover { text-decoration: underline; }
+
+.course-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  margin-bottom: 4px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s, border-color 0.12s;
+}
+.course-row:hover { background: var(--surface-muted); }
+
+.course-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  margin: 0;
+  cursor: pointer;
+}
+
+.course-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.course-row .course-code {
+  flex-shrink: 0;
+}
+
+.course-row .course-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.course-row .course-id {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.error-banner {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 6%, var(--surface));
+  border: 1px solid var(--err);
+  border-radius: var(--r-1);
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.hidden { display: none; }

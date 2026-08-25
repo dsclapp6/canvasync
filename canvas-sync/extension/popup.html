@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Canvas Sync</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+
+    <header>
+      <div id="status-header" class="status-header status-unknown">
+        <span id="status-icon" aria-hidden="true"></span>
+        <span id="status-label">Loading...</span>
+      </div>
+    </header>
+
+    <section class="info-grid" id="info-section">
+      <div class="info-row">
+        <span class="label">Last sync</span>
+        <span class="value" id="last-sync">—</span>
+      </div>
+      <div class="info-row">
+        <span class="label">Reason</span>
+        <span class="value" id="last-reason">—</span>
+      </div>
+      <div class="info-row">
+        <span class="label">Next weekly</span>
+        <span class="value" id="next-weekly">—</span>
+      </div>
+      <div class="info-row">
+        <span class="label">Courses tracked</span>
+        <span class="value" id="courses-tracked">—</span>
+      </div>
+      <div class="info-row">
+        <span class="label">Bridge</span>
+        <span class="value" id="bridge-status">—</span>
+      </div>
+      <div class="info-row">
+        <span class="label">Auto-sync</span>
+        <span class="value">
+          <label class="toggle-switch">
+            <input type="checkbox" id="auto-sync-toggle" />
+            <span class="toggle-slider"></span>
+          </label>
+        </span>
+      </div>
+    </section>
+
+    <!-- Last failure, surfaced in the popup itself. It was fetched but never
+         rendered, so a persistently failing sync looked identical to a healthy
+         one unless the user opened the separate progress page. -->
+    <p id="last-error" class="last-error hidden"></p>
+
+    <section id="tracked-classes">
+      <header>
+        <h2>Tracked classes</h2>
+        <button id="edit-classes-btn" type="button">Edit</button>
+      </header>
+      <ul id="classes-list"></ul>
+      <p id="classes-empty" class="classes-empty hidden">No courses cached — run a sync first.</p>
+    </section>
+
+    <!-- Setup panel (shown when this extension holds no bridge secret) -->
+    <section id="setup-section" class="setup-section hidden">
+      <p class="setup-description">
+        Connect to the local bridge to start syncing. In the CANVASync app open
+        <strong>Settings &rarr; Pair a Chrome extension</strong>, then paste the
+        install token here:
+      </p>
+      <input id="install-token" type="password" placeholder="Install token" autocomplete="off" />
+      <button id="connect-btn" class="btn btn-primary">Connect</button>
+      <div id="connect-error" class="error-text hidden"></div>
+    </section>
+
+    <!-- Always-available recovery once paired: lets a user re-enter a token
+         when the bridge stops accepting the stored secret. -->
+    <p id="repair-link-wrap" class="repair-link-wrap hidden">
+      <button id="repair-btn" type="button" class="link-btn">Re-pair with bridge…</button>
+    </p>
+
+    <hr class="divider" />
+
+    <section id="schedule-section">
+      <header>
+        <h2>Sync schedule</h2>
+        <button id="schedule-toggle-btn" type="button">Edit</button>
+      </header>
+      <div id="schedule-form" class="schedule-form hidden">
+        <div class="schedule-row">
+          <label for="weekly-enabled">Weekly sync</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="weekly-enabled" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="schedule-row">
+          <label for="weekly-day">Weekly day</label>
+          <select id="weekly-day">
+            <option value="0">Sunday</option><option value="1">Monday</option>
+            <option value="2">Tuesday</option><option value="3">Wednesday</option>
+            <option value="4">Thursday</option><option value="5">Friday</option>
+            <option value="6">Saturday</option>
+          </select>
+        </div>
+        <div class="schedule-row">
+          <label for="weekly-hour">Weekly time</label>
+          <select id="weekly-hour"></select>
+        </div>
+        <div class="schedule-row">
+          <label for="poll-hours">Also sync every</label>
+          <select id="poll-hours">
+            <option value="0">Off</option><option value="1">1 hour</option>
+            <option value="3">3 hours</option><option value="6">6 hours</option>
+            <option value="12">12 hours</option><option value="24">24 hours</option>
+          </select>
+        </div>
+        <div class="schedule-row">
+          <label for="debounce-hours">Canvas-visit cooldown (hours)</label>
+          <input type="number" id="debounce-hours" min="0" max="168" step="1" />
+        </div>
+        <button id="schedule-save-btn" class="btn btn-primary">Save schedule</button>
+        <div id="schedule-confirm" class="confirm-text hidden">Saved.</div>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <section class="actions">
+      <button id="force-sync-btn" class="btn btn-primary">Force sync now</button>
+      <button id="full-view-btn" class="btn btn-secondary">Open full progress view</button>
+      <button id="history-btn" class="btn btn-ghost">View past syncs</button>
+      <button id="manage-courses-btn" class="btn btn-ghost">Manage courses</button>
+      <div id="sync-progress" class="progress-text hidden"></div>
+
+      <button id="copy-path-btn" class="btn btn-secondary">Copy data folder path</button>
+      <div id="copy-confirm" class="confirm-text hidden">Copied.</div>
+
+      <button id="logs-toggle-btn" class="btn btn-ghost">View logs</button>
+    </section>
+
+    <section id="logs-section" class="logs-section hidden">
+      <ul id="logs-list"></ul>
+    </section>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

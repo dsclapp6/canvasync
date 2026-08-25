@@ -1,0 +1,355 @@
+/* popup.css — Canvas Sync extension popup. No framework, no build step.
+ *
+ * WARM PRINT — the same design language as the dashboard (bridge/public/
+ * style.css) and the app icon's ruled notebook paper, so the popup reads as a
+ * page of the same product and not a stray dark widget. Tokens are echoed by
+ * VALUE: an extension page cannot import the bridge's stylesheet, and must
+ * not fetch a font CDN, so the serif is the system's (Georgia carries the
+ * voice). Two hues only: petrol = interactive/ok, brick = failed/destructive.
+ * States are said in ink and weight, never opacity. */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --ground:  #F3EDDF;
+  --panel:   #FFFDF7;
+  --sunk:    #EBE3D2;
+  --rule:    #E2D8C6;
+  --rule-2:  #CBBEA6;
+  --edge:    #847A66;
+  --ink:     #211E18;
+  --muted:   #6A6152;
+  --accent:    #1D4E6F;
+  --accent-2:  #16405C;
+  --on-accent: #FFFDF7;
+  --alarm:     #96382C;
+  --on-alarm:  #FFFDF7;
+
+  --sit:   0 1px 0 rgba(43, 36, 24, 0.08);
+  --raise: 0 1px 2px rgba(43, 36, 24, 0.10), 0 2px 8px rgba(43, 36, 24, 0.06);
+  --r-1: 4px;
+  --r-2: 8px;
+
+  --serif: ui-serif, Georgia, "Times New Roman", serif;
+  --font:  -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono:  ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Legacy aliases — popup.js writes classes that predate the rename. */
+  --color-text:   var(--ink);
+  --color-muted:  var(--muted);
+  --color-border: var(--rule-2);
+  --color-accent: var(--accent);
+  --color-danger: var(--alarm);
+}
+
+body {
+  width: 340px;
+  min-height: 200px;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--ground);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { padding: 0 0 10px; }
+
+.hidden { display: none !important; }
+
+/* --- Status header --------------------------------------------------------
+   The popup's masthead: the product name in serif, the sync state beside it,
+   the whole band tinted by state — quietly, the way a printed form is. */
+
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 15px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule-2);
+  box-shadow: var(--sit);
+}
+
+.status-ok      { color: var(--accent); }
+.status-warn    { color: var(--alarm);  background: color-mix(in srgb, var(--alarm) 7%, var(--panel)); }
+.status-off     { color: var(--muted); }
+.status-info    { color: var(--ink); }
+.status-unknown { color: var(--muted); }
+
+#status-icon { font-size: 15px; line-height: 1; }
+
+/* --- Info grid ------------------------------------------------------------ */
+
+.info-grid { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--rule); }
+
+.info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.info-row:last-child { border-bottom: none; }
+
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--ink);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.value.online  { color: var(--accent); font-weight: 600; }
+.value.offline { color: var(--alarm);  font-weight: 600; }
+
+/* --- Setup / errors ------------------------------------------------------- */
+
+.setup-section { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+.setup-description { font-size: 12px; color: var(--muted); }
+.setup-description strong { color: var(--ink); }
+
+.last-error {
+  margin: 8px 16px 0;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--alarm);
+  background: color-mix(in srgb, var(--alarm) 6%, var(--panel));
+  border: 1px solid var(--alarm);
+  border-radius: var(--r-1);
+  overflow-wrap: anywhere;
+}
+
+.repair-link-wrap { padding: 6px 16px 0; }
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.link-btn:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+
+#install-token {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: var(--sunk);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+}
+#install-token:focus { background: var(--panel); border-color: var(--accent); outline: none; }
+
+.divider { border: none; border-top: 1px solid var(--rule-2); margin: 10px 0; }
+
+/* --- Buttons — pressable, like the dashboard's. --------------------------- */
+
+.btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  box-shadow: var(--sit);
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: border-color 130ms ease-out, background-color 130ms ease-out, transform 130ms ease-out;
+}
+.btn:hover:not(:disabled) { border-color: var(--ink); }
+.btn:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+.btn:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent-2);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-2); border-color: var(--accent-2); }
+
+.btn-danger {
+  background: var(--alarm);
+  border-color: var(--alarm);
+  color: var(--on-alarm);
+  font-weight: 600;
+}
+.btn-danger:hover:not(:disabled) { border-color: var(--ink); }
+
+.btn-secondary { background: var(--panel); }
+.btn-secondary:hover:not(:disabled) { background: var(--sunk); border-color: var(--ink); }
+
+.btn-ghost {
+  background: none;
+  border-color: var(--rule-2);
+  box-shadow: none;
+  color: var(--muted);
+}
+.btn-ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--edge); }
+
+.progress-text, .confirm-text {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  padding-top: 2px;
+}
+.error-text {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--alarm);
+  overflow-wrap: anywhere;
+}
+
+/* --- Sections ------------------------------------------------------------- */
+
+.actions { padding: 10px 16px 0; display: flex; flex-direction: column; gap: 6px; }
+
+#tracked-classes { padding: 10px 16px; }
+#tracked-classes > header,
+#schedule-section > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rule-2);
+  margin-bottom: 4px;
+}
+#tracked-classes h2,
+#schedule-section h2 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#edit-classes-btn,
+#schedule-section > header button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+#edit-classes-btn:hover,
+#schedule-section > header button:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+
+#classes-list { list-style: none; }
+.class-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+}
+.class-row:last-child { border-bottom: none; }
+.class-code { font-weight: 600; white-space: nowrap; }
+.class-name {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.classes-empty { font-size: 12px; color: var(--muted); padding: 4px 0; }
+
+/* --- Schedule form -------------------------------------------------------- */
+
+#schedule-section { padding: 0 16px 10px; }
+.schedule-form { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
+.schedule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.schedule-row label:first-child { font-size: 12px; color: var(--muted); }
+.schedule-row select, .schedule-row input[type="number"] {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--sunk);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  padding: 4px 6px;
+  max-width: 150px;
+}
+
+/* --- Toggle switch — same drawn switch as the dashboard's Functions card. -- */
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  cursor: pointer;
+}
+.toggle-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--sunk);
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  transition: background-color 130ms ease-out, border-color 130ms ease-out;
+}
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  box-shadow: var(--sit);
+  transition: transform 130ms ease-out, border-color 130ms ease-out;
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--accent); border-color: var(--accent-2); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(14px); border-color: var(--accent-2); }
+.toggle-switch input:disabled + .toggle-slider { background: var(--rule); border-color: var(--rule-2); cursor: default; }
+
+/* --- Logs ------------------------------------------------------------------ */
+
+.logs-section { padding: 6px 16px 0; }
+#logs-list {
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+#logs-list li { color: var(--muted); overflow-wrap: anywhere; }
+#logs-list li.level-error { color: var(--alarm); }
+#logs-list li.level-warn  { color: var(--alarm); }
+#logs-list li.level-info  { color: var(--muted); }

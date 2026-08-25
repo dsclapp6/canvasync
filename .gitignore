@@ -1,0 +1,12 @@
+# Dependencies (reinstalled via npm install / first launch)
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# macOS
+.DS_Store
+
+# Local Claude settings
+.claude/settings.local.json

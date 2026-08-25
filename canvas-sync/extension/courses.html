@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Canvas Sync — Manage Courses</title>
+  <link rel="stylesheet" href="progress.css" />
+  <link rel="stylesheet" href="courses.css" />
+</head>
+<body>
+  <header>
+    <h1>Manage courses</h1>
+    <div id="summary">
+      <span id="status-line">Loading courses from Canvas…</span>
+      <a href="progress.html" class="btn btn-ghost">Back to progress</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" id="toolbar-panel">
+      <div id="toolbar">
+        <button id="select-current" class="btn btn-ghost" disabled>Select current term only</button>
+        <button id="select-all" class="btn btn-ghost" disabled>Select all</button>
+        <button id="clear-all" class="btn btn-ghost" disabled>Clear</button>
+        <span class="spacer"></span>
+        <span id="selection-count" class="muted">0 selected</span>
+        <button id="save-btn" class="btn" disabled>Save selection</button>
+      </div>
+    </section>
+
+    <div id="terms-container"></div>
+    <p id="error-banner" class="error-banner hidden"></p>
+  </main>
+
+  <script src="courses.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "id": 12345,
+  "name": "Intermediate Microeconomics",
+  "course_code": "ECON 370",
+  "term": "Spring 2026",
+  "instructor": "Dr. Sandra Ortega",
+  "instructor_email": "sortega@university.edu",
+  "enrollment_term_id": 202601,
+  "sis_course_id": "ECON370-S26-001"
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "id": 501,
+    "title": "Midterm logistics update",
+    "message": "The midterm will be held in Econ Hall 201 as scheduled on May 15. Please bring your student ID. One handwritten page of notes is permitted. No electronic devices.",
+    "posted_at": "2026-04-18T10:00:00Z",
+    "author": { "display_name": "Dr. Sandra Ortega" }
+  },
+  {
+    "id": 502,
+    "title": "Welcome to ECON 370",
+    "message": "Welcome to Intermediate Microeconomics! Please read the syllabus carefully before our first class meeting on January 20. Office hours begin the second week of classes.",
+    "posted_at": "2026-01-15T09:00:00Z",
+    "author": { "display_name": "Dr. Sandra Ortega" }
+  }
+]

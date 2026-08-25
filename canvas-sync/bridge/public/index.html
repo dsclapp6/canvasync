@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CANVASync</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,500;0,600;0,700;1,400;1,600&display=swap" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="auth-gate" class="auth-gate hidden">
+    <div class="auth-card">
+      <h1>CANVASync</h1>
+      <p>Enter the bridge secret to connect — 64 hex characters, the
+        <code>bridgeSecret</code> value in your data folder's <code>config.json</code>
+        (usually <code>~/canvas-sync-data/config.json</code>). This is <em>not</em> an
+        install token. The desktop app fills it in automatically.</p>
+      <p class="auth-hint">Copy it to your clipboard:<br />
+        <code>node -e "console.log(JSON.parse(require('fs').readFileSync(process.env.HOME+'/canvas-sync-data/config.json','utf8')).bridgeSecret)" | tr -d '\n' | pbcopy</code>
+      </p>
+      <input id="auth-secret" type="password" placeholder="Bridge secret (64 hex characters)" autocomplete="off" />
+      <button id="auth-connect" class="primary">Connect</button>
+      <div id="auth-error" class="error hidden"></div>
+    </div>
+  </div>
+
+  <div id="shell" class="shell hidden">
+    <nav class="topbar">
+      <div class="brand">
+        CANVASync
+        <span id="bridge-dot" class="dot" title="Bridge status"></span>
+      </div>
+      <div class="topnav">
+        <button data-view="classes" class="nav-btn active">Classes</button>
+        <button data-view="calendar" class="nav-btn">Calendar</button>
+        <button data-view="settings" class="nav-btn">Settings</button>
+        <!-- An anchor, not a data-view button: progress.html is a standalone
+             page, so it needs nothing from app.js's navTo(). Without this the
+             page is unreachable — the Electron shell loads /app/ in a window
+             with no URL bar. -->
+        <a class="nav-btn" href="/app/progress.html">Status</a>
+      </div>
+      <div>
+        <button id="run-pipeline-btn" title="Re-run parse/extract/mine/context over synced data">Rebuild summaries</button>
+      </div>
+    </nav>
+
+    <!-- Classes view -->
+    <main id="view-classes" class="view">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <span>Classes <span id="class-count"></span></span>
+          <div class="seg seg-sm hidden" id="class-scope">
+            <button type="button" class="seg-btn active" data-scope="current">Current</button>
+            <button type="button" class="seg-btn" data-scope="all">All</button>
+          </div>
+        </div>
+        <ul id="class-list"></ul>
+        <div id="class-empty" class="muted hidden">No classes synced. Open Canvas in Chrome with the
+          extension installed, or use Force sync in the extension popup.</div>
+        <div id="class-scope-empty" class="muted hidden">None of the synced classes are in your
+          current selection. Switch to <b>All</b>, or pick your classes in the extension.</div>
+        <div id="sidebar-foot" class="sidebar-foot">
+          <button type="button" id="picker-open" class="linky">Choose which classes sync…</button>
+          <button type="button" id="cleanup-open" class="linky hidden"></button>
+        </div>
+      </aside>
+      <section class="detail">
+        <div id="class-home">
+          <header class="home-head">
+            <h2 id="home-term"></h2>
+            <div id="home-stats" class="home-stats"></div>
+          </header>
+          <div id="home-cards" class="home-cards"></div>
+          <section id="home-upcoming" class="home-upcoming hidden">
+            <h3>Coming up</h3>
+            <ul id="home-up-list"></ul>
+          </section>
+        </div>
+        <div id="picker-panel" class="hidden">
+          <header class="detail-head">
+            <div>
+              <h2>Which classes sync</h2>
+              <div id="picker-sub" class="muted"></div>
+            </div>
+            <button type="button" id="picker-close">Close</button>
+          </header>
+          <p class="note">Canvas counts every past semester as an active enrolment, which is
+            why unrelated classes turn up.</p>
+          <div id="picker-list"></div>
+          <div class="cleanup-actions">
+            <button type="button" id="picker-current">Select current term</button>
+            <button type="button" id="picker-none">Select none</button>
+            <span class="spacer"></span>
+            <span id="picker-count" class="muted"></span>
+            <button type="button" id="picker-save" class="primary">Save selection</button>
+          </div>
+          <div id="picker-result" class="muted"></div>
+        </div>
+        <div id="cleanup-panel" class="hidden">
+          <header class="detail-head">
+            <div>
+              <h2>Old classes</h2>
+              <div id="cleanup-sub" class="muted"></div>
+            </div>
+            <button type="button" id="cleanup-close">Close</button>
+          </header>
+          <p class="note">Removing one deletes its folder under <code>classes/</code> and pulls
+            its events out of the calendar worklist. It is not removed from Canvas, and re-selecting
+            it in the extension will sync it again from scratch.</p>
+          <div id="cleanup-list"></div>
+          <div class="cleanup-actions">
+            <button type="button" id="cleanup-all">Select all</button>
+            <button type="button" id="cleanup-none">Select none</button>
+            <span class="spacer"></span>
+            <button type="button" id="cleanup-go" class="danger" disabled></button>
+          </div>
+          <div id="cleanup-result" class="muted"></div>
+        </div>
+        <!-- One assignment, read in the app. Canvas is one click away rather
+             than the only way in. Rendered by renderAssignment(). -->
+        <div id="assignment-panel" class="hidden">
+          <header class="detail-head">
+            <div>
+              <button type="button" id="assignment-back" class="linky back-link">&larr; Back</button>
+              <h2 id="assignment-title"></h2>
+              <div id="assignment-sub" class="muted"></div>
+            </div>
+            <div class="assignment-actions">
+              <a id="assignment-open" class="btn-link hidden" target="_blank" rel="noopener noreferrer">Open in Canvas</a>
+              <a id="assignment-submit" class="btn-link primary hidden" target="_blank" rel="noopener noreferrer">Submit</a>
+            </div>
+          </header>
+          <div id="assignment-body"></div>
+        </div>
+        <!-- One class file, read in the app. Same back-button panel pattern as
+             the assignment page above. Rendered by renderFileView(). -->
+        <div id="file-panel" class="hidden">
+          <header class="detail-head">
+            <div>
+              <button type="button" id="file-back" class="linky back-link">&larr; Back</button>
+              <h2 id="file-title"></h2>
+              <div id="file-sub" class="muted"></div>
+            </div>
+            <div class="assignment-actions">
+              <button type="button" id="file-open">Open original</button>
+              <button type="button" id="file-reveal" class="app-only hidden">Show in Finder</button>
+            </div>
+          </header>
+          <div id="file-body"></div>
+        </div>
+        <div id="detail" class="hidden">
+          <header class="detail-head">
+            <div>
+              <h2 id="detail-title"></h2>
+              <div id="detail-sub" class="muted"></div>
+            </div>
+            <div id="detail-grade" class="grade-chip hidden"></div>
+          </header>
+          <div class="tabs">
+            <button data-tab="tasks" class="tab active">Tasks</button>
+            <button data-tab="overview" class="tab">Overview</button>
+            <button data-tab="grades" class="tab">Grades</button>
+            <button data-tab="files" class="tab">Files</button>
+            <button data-tab="pack" class="tab">Class Summarized</button>
+            <!-- Not a tab: the chat is a rail BESIDE whatever tab is open, so
+                 an answer can be read next to the task it is about. -->
+            <button type="button" id="chat-toggle" class="ghost-btn chat-toggle" aria-pressed="false">Ask</button>
+          </div>
+          <div id="tab-tasks" class="tab-panel"></div>
+          <div id="tab-overview" class="tab-panel hidden">
+            <!-- When this class meets, and the only place to correct it. A
+                 syllabus that never states a time is common — two of six here —
+                 so "the app cannot know" has to be resolvable, not a dead end.
+                 Rendered by renderMeetingTimes(). -->
+            <div id="meet-host"></div>
+            <div id="overview-md" class="md-body"></div>
+          </div>
+          <div id="tab-grades" class="tab-panel hidden"></div>
+          <div id="tab-files" class="tab-panel hidden"></div>
+          <div id="tab-pack" class="tab-panel hidden"></div>
+        </div>
+      </section>
+      <!-- Ask this class: one question, one lock-guarded model pass, sources
+           cited. The engine is scripts/class-chat.js via POST /api/ask; this
+           rail only renders what it returns. Wired by wireChat(). -->
+      <aside id="chat-rail" class="chat-rail hidden" aria-label="Ask this class">
+        <header class="chat-head">
+          <span id="chat-class" class="chat-class"></span>
+          <span class="spacer"></span>
+          <button type="button" id="chat-close" class="linky">close</button>
+        </header>
+        <div id="chat-log" class="chat-log"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" type="text" maxlength="2000"
+                 placeholder="Which readings go with…" autocomplete="off" />
+          <button type="submit" id="chat-send" class="primary">Ask</button>
+        </form>
+      </aside>
+    </main>
+
+    <!-- Calendar view -->
+    <main id="view-calendar" class="view hidden">
+      <section class="single">
+        <h2>Calendar</h2>
+
+        <!-- Everything the worklist can find is built, always. These filter
+             what is DRAWN, so unticking never loses anything and never has to
+             wait for a rebuild. Rendered by renderCalToolbar(). -->
+        <div id="cal-toolbar" class="cal-toolbar hidden">
+          <div class="cal-bar">
+            <div class="cal-summary" id="cal-summary"></div>
+            <div class="cal-controls">
+              <!-- The three interfaces. A stacked list answers "what is coming
+                   up"; it cannot answer "what does Tuesday look like" or "how
+                   heavy is October". CALENDAR-SPEC 1. -->
+              <div class="seg" role="group" aria-label="Calendar view">
+                <button type="button" class="seg-btn" data-calview="list" aria-pressed="false">List</button>
+                <button type="button" class="seg-btn" data-calview="week" aria-pressed="false">Week</button>
+                <button type="button" class="seg-btn" data-calview="month" aria-pressed="false">Month</button>
+              </div>
+              <!-- Grouping is a list-only idea: in a grid the grouping IS the
+                   grid, so this hides itself in Week and Month. -->
+              <div class="seg" id="cal-group-seg" role="group" aria-label="Group calendar items by">
+                <button type="button" class="seg-btn active" data-group="day">Day</button>
+                <button type="button" class="seg-btn" data-group="class">Class</button>
+              </div>
+              <!-- Finished work is dropped from the worklist by design, so the
+                   checkbox that would un-finish it vanished with the row. This
+                   brings those rows back. CALENDAR-SPEC 2.5. -->
+              <button type="button" id="cal-showdone" class="ghost-btn hidden" aria-pressed="false">Show completed</button>
+            </div>
+          </div>
+          <!-- Which kinds show. A SELECTION, not switches: nothing picked means
+               all of them, so there is no "All" button and no state where the
+               calendar is silently empty. cal-plan.js proves that exhaustively. -->
+          <div class="cal-filters" id="cal-kind-filters" role="group" aria-label="Show these kinds"></div>
+          <!-- Which classes show, and what colour each one is. The swatch opens
+               the picker; the name toggles the class. Rendered by
+               renderClassChips(). -->
+          <div class="cal-filters" id="cal-classes" role="group" aria-label="Show these classes"></div>
+          <!-- Which week or month the grid is showing. Rebuilt by
+               renderCalPeriod(); empty and hidden in List view. -->
+          <div id="cal-period" class="cal-period hidden"></div>
+        </div>
+        <!-- Why a kind or a class has nothing on the calendar. An empty
+             Readings toggle and a class with no meetings both used to look
+             identical to a sync that had failed. CALENDAR-SPEC 4.5, 4.6. -->
+        <div id="cal-notes" class="cal-notes hidden"></div>
+        <div id="cal-ops"></div>
+      </section>
+    </main>
+
+    <!-- Settings view. Activity lives here too — it is a diagnostic, not a
+         destination, so it no longer earns a slot in the primary nav. -->
+    <main id="view-settings" class="view hidden">
+      <section class="single">
+        <h2>Settings</h2>
+
+        <div class="card" id="app-only-card">
+          <h3>Bridge</h3>
+          <div id="bridge-info" class="muted"></div>
+          <div class="row-actions">
+            <button id="bridge-restart-btn" class="app-only hidden">Restart bridge</button>
+            <button id="pair-btn">Pair a Chrome extension</button>
+          </div>
+          <div id="pair-result" class="pair-result hidden"></div>
+        </div>
+
+        <!-- Every pipeline function, individually toggleable. A switch off
+             means trigger.js skips that stage entirely (CSYNC_STAGE_*), and
+             the Status page reports it as off rather than as eternally stale.
+             Wired in loadSettings() / the save handler. -->
+        <div class="card">
+          <h3>Functions</h3>
+          <div class="fn-row">
+            <label for="fn-parse">Parse syllabus</label>
+            <label class="switch"><input type="checkbox" id="fn-parse" data-fn="CSYNC_STAGE_PARSE" /><span class="knob"></span></label>
+          </div>
+          <div class="fn-row">
+            <label for="fn-extract">Extract file text</label>
+            <label class="switch"><input type="checkbox" id="fn-extract" data-fn="CSYNC_STAGE_EXTRACT" /><span class="knob"></span></label>
+          </div>
+          <div class="fn-row">
+            <label for="fn-mine">Mine assignments <span class="fn-tag">AI</span></label>
+            <label class="switch"><input type="checkbox" id="fn-mine" data-fn="CSYNC_STAGE_MINE" /><span class="knob"></span></label>
+          </div>
+          <div class="fn-row">
+            <label for="fn-context">Build class summary <span class="fn-tag">AI</span></label>
+            <label class="switch"><input type="checkbox" id="fn-context" data-fn="CSYNC_STAGE_CONTEXT" /><span class="knob"></span></label>
+          </div>
+          <div class="fn-row">
+            <label for="fn-calendar">Calendar worklist</label>
+            <label class="switch"><input type="checkbox" id="fn-calendar" data-fn="CSYNC_STAGE_CALENDAR" /><span class="knob"></span></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Anthropic API key</h3>
+          <div id="ai-key-state" class="muted mono"></div>
+          <div class="form-row">
+            <label for="ai-key-input">API key</label>
+            <input id="ai-key-input" type="password" autocomplete="off" spellcheck="false"
+                   placeholder="sk-ant-…" />
+          </div>
+          <div class="row-actions">
+            <button id="ai-key-save">Save key</button>
+            <button id="ai-key-remove" class="danger hidden">Remove</button>
+            <span id="ai-key-msg" class="muted"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>AI backend</h3>
+          <div class="form-row">
+            <label>Backend</label>
+            <select id="set-backend">
+              <option value="">auto — claude CLI, local fallback</option>
+              <option value="claude">claude CLI only</option>
+              <option value="local">local model only</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Claude model</label>
+            <input id="set-claude-model" placeholder="claude-opus-5" />
+          </div>
+          <div class="form-row">
+            <label>Local model</label>
+            <input id="set-local-model" placeholder="mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit" />
+          </div>
+          <div class="form-row">
+            <label>Local python</label>
+            <input id="set-local-python" placeholder="~/mlx-env/bin/python" />
+          </div>
+          <div class="row-actions app-only hidden">
+            <button id="model-check-btn">Check local model</button>
+            <button id="model-download-btn" class="hidden">Download local model</button>
+            <span id="model-status" class="muted"></span>
+          </div>
+        </div>
+
+        <!-- The calendars. Subscribe once in any calendar app and it refreshes
+             itself; every sync rewrites the files. Rendered by
+             renderSubscriptions(). -->
+        <div class="card">
+          <h3>Calendar subscriptions</h3>
+          <div id="subs-list"></div>
+        </div>
+
+        <div class="row-actions">
+          <button id="settings-save-btn" class="primary">Save settings</button>
+          <span id="settings-confirm" class="muted hidden">Saved. Applies on the next pipeline pass.</span>
+        </div>
+
+        <div class="card">
+          <h3>Activity</h3>
+          <div class="row-actions">
+            <button id="log-refresh-btn">Refresh</button>
+          </div>
+          <pre id="log-lines" class="log-box"></pre>
+        </div>
+
+      </section>
+    </main>
+  </div>
+
+  <!-- type="module" so app.js can import ./cal-grid.js. The date
+       arithmetic behind Week and Month is tested in
+       bridge/test/cal-grid.test.js; it does not get to hide inside a
+       render function where nothing can reach it. -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

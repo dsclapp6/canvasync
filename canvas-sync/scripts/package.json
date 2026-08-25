@@ -1,0 +1,21 @@
+{
+  "name": "canvas-sync-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "parse": "node parse-syllabus.js",
+    "build": "node build-context.js",
+    "sync": "node sync-all-contexts.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12",
+    "mammoth": "^1.12.0",
+    "officeparser": "^6.1.0",
+    "pdf-parse": "^1.1.1",
+    "tesseract.js": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

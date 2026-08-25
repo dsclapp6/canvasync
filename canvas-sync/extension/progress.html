@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Canvas Sync — Progress</title>
+  <link rel="stylesheet" href="progress.css" />
+</head>
+<body>
+  <header>
+    <h1>Canvas Sync</h1>
+    <div id="summary">
+      <span id="overall-status">Waiting for a sync to start…</span>
+      <a href="courses.html" class="btn btn-ghost">Manage courses</a>
+      <button id="force-sync" class="btn">Force sync now</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" id="in-progress-panel">
+      <h2>In progress</h2>
+      <div id="in-progress-list" class="course-list"></div>
+      <p class="empty-hint" id="in-progress-empty">No courses currently syncing.</p>
+    </section>
+
+    <section class="panel" id="done-panel">
+      <h2>Done</h2>
+      <div id="done-list" class="course-list"></div>
+      <p class="empty-hint" id="done-empty">No courses completed yet.</p>
+    </section>
+
+    <section class="panel" id="history-panel">
+      <div class="history-header">
+        <h2>Past syncs</h2>
+        <button id="clear-history" class="btn btn-ghost" hidden>Clear history</button>
+      </div>
+      <ul id="history-list" class="history-list"></ul>
+      <p class="empty-hint" id="history-empty">No past syncs recorded yet.</p>
+    </section>
+  </main>
+
+  <footer>
+    <span id="started-at"></span>
+    <span id="completed-at"></span>
+  </footer>
+
+  <script src="progress.js"></script>
+</body>
+</html>

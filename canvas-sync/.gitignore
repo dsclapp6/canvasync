@@ -1,0 +1,39 @@
+# Never commit runtime data. These are absolute/home paths that git does not
+# actually expand — kept only as documentation of where data lives; the real
+# protection is that the data root sits outside the repo entirely.
+canvas-sync-data/
+CANVASync/
+config.json
+*.secret
+*.hash
+install-token.*
+raw/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Extension build
+extension/dist/
+extension/*.zip

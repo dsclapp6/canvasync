@@ -1,0 +1,47 @@
+{
+  "extracted_at": "2026-01-12T08:00:00Z",
+  "source_file": "syllabus.html",
+  "source_hash": "abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+  "course": {
+    "title": "Intermediate Microeconomics",
+    "code": "ECON 370",
+    "term": "Spring 2026",
+    "instructor": {
+      "name": "Dr. Sandra Ortega",
+      "email": "sortega@university.edu",
+      "office_hours": "Mon/Wed 2:00-4:00pm, Econ Hall 312"
+    },
+    "meeting_schedule": "MWF 10:00-10:50am, Econ Hall 201"
+  },
+  "grading": {
+    "components": [
+      { "name": "Problem Sets (5 total)", "weight_pct": 20, "notes": "Lowest dropped" },
+      { "name": "Midterm Exam", "weight_pct": 30, "notes": "In-class" },
+      { "name": "Final Exam", "weight_pct": 40, "notes": "Cumulative" },
+      { "name": "Participation", "weight_pct": 10, "notes": null }
+    ],
+    "letter_scale": "A: 93-100, A-: 90-92, B+: 87-89, B: 83-86, B-: 80-82, C+: 77-79, C: 73-76, C-: 70-72, D: 60-69, F: below 60",
+    "late_policy": "Late assignments receive a 10% deduction per day. No late exams without prior arrangement."
+  },
+  "schedule": [
+    { "date": "2026-01-20", "week": 1, "type": "lecture", "title": "Introduction and Course Overview", "description": null, "due": false, "tentative": false },
+    { "date": "2026-01-27", "week": 2, "type": "assignment", "title": "Syllabus Quiz", "description": "Due on Canvas", "due": true, "tentative": false },
+    { "date": "2026-02-14", "week": 4, "type": "assignment", "title": "Problem Set 1", "description": "Supply and demand", "due": true, "tentative": false },
+    { "date": "2026-03-14", "week": 8, "type": "holiday", "title": "Spring Break — No Class", "description": null, "due": false, "tentative": false },
+    { "date": "2026-04-05", "week": 11, "type": "assignment", "title": "Problem Set 2", "description": "Utility and demand", "due": true, "tentative": false },
+    { "date": "2026-05-01", "week": 14, "type": "assignment", "title": "Problem Set 3", "description": "Consumer theory", "due": true, "tentative": false },
+    { "date": "2026-05-15", "week": 16, "type": "exam", "title": "Midterm Exam", "description": "Econ Hall 201, closed book", "due": true, "tentative": false },
+    { "date": "2026-06-05", "week": 20, "type": "exam", "title": "Final Exam", "description": "TBD by registrar", "due": true, "tentative": true }
+  ],
+  "policies": {
+    "attendance": "Attendance is expected. More than 3 unexcused absences may affect your participation grade.",
+    "academic_integrity": "All work must be your own. Collaboration on problem sets is encouraged for understanding but submitted work must be written independently. Exams are strictly individual.",
+    "accommodations": "Students with disabilities should contact the Office of Disability Services and provide documentation to the instructor within the first two weeks of class.",
+    "other": [
+      "Electronic devices must be silenced during class. Laptops may be used for note-taking only.",
+      "Email responses within 48 business hours. For urgent matters, visit office hours."
+    ]
+  },
+  "extraction_confidence": "high",
+  "extraction_notes": "All major sections clearly present. Final exam date marked tentative pending registrar schedule."
+}

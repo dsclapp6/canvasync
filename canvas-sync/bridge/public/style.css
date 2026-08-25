@@ -1,0 +1,2121 @@
+/* CANVASync dashboard — served by the bridge at /app.
+ *
+ * WARM PRINT. The app is a paper instrument: a term's worth of work laid out
+ * like a well-set notebook, not a SaaS dashboard. Rebuilt 2026-08-25 from
+ * research the user asked for; the synthesis, so the next rewrite argues with
+ * reasons and not with taste:
+ *
+ *   1. TYPE CARRIES THE HIERARCHY. Three voices with strict jobs — Plex Serif
+ *      speaks (titles, the things with names), Plex Sans works (controls,
+ *      labels, prose), Plex Mono counts (dates, times, ids, anything read in a
+ *      column, always tabular). Sizes sit on one scale with real steps between
+ *      levels; body is 14/1.55 and labels letterspace at +6% per Butterick
+ *      (caps need air; lowercase never gets tracked).
+ *
+ *   2. MATERIAL, NOT DECORATION. The ground is paper with actual grain (2.5%
+ *      noise — felt, not seen). Depth exists only where the interface is
+ *      genuinely layered: popovers, toasts and drag-worthy things get a warm
+ *      ink-tinted shadow; a card gets a hairline and one pixel of sit. Flat
+ *      everywhere was why this read generic — depth that maps to structure is
+ *      information, depth that decorates is noise.
+ *
+ *   3. AFFORDANCE IS HONEST. A button looks pressable (edge + letterpress
+ *      shadow, and it physically presses on :active). A link underlines on
+ *      hover. A checkbox is drawn, and ticking it feels like ticking it. Flat
+ *      design's real failure was controls indistinguishable from labels.
+ *
+ *   4. COLOUR IS INFORMATION — unchanged law. Petrol = the action or the
+ *      focus, brick = overdue/destructive, a class colour identifies a class
+ *      (as a dot, a rule, an edge — never a wash). Everything else is paper
+ *      and ink. States are said in INK WEIGHT, never opacity (spec 3.6).
+ *
+ *   5. SOFT GEOMETRY. Corners round at 4/8/12px — enough to read humane,
+ *      never bubbly. Grids and tables stay ruled and square inside rounded
+ *      frames, like tables printed on a page.
+ *
+ *   6. THE CALENDAR IS A ROOM, NOT A COLUMN. Week and Month fill the whole
+ *      viewport — the toolbar is the only chrome, the grid flexes into every
+ *      remaining pixel, and nothing is ellipsized to death inside a 96px
+ *      column (titles clamp at two lines and columns get real width). The
+ *      List keeps a readable measure, because lists are read, not surveyed.
+ *
+ * Contrast is computed, not eyeballed — floors: text 4.5:1, control edges
+ * 3:1 (WCAG 1.4.11). Measured on these exact tokens:
+ *   ink 14.2:1 ground · 16.3:1 panel      muted 5.2 / 6.0 / 4.8 (ground/panel/sunk)
+ *   accent 7.6:1 ground · on-accent 8.7:1  alarm 6.2:1 · on-alarm 7.1:1
+ *   fill 11.3:1 · edge 4.2 panel / 3.6 ground / 3.3 sunk · palette worst 4.6:1
+ */
+
+:root {
+  /* Paper. */
+  --ground:  #F3EDDF;   /* the page */
+  --panel:   #FFFDF7;   /* raised surfaces — cards, rails, grids */
+  --sunk:    #EBE3D2;   /* set into the page — inputs, code, table heads */
+  --rule:    #E2D8C6;   /* hairlines between rows */
+  --rule-2:  #CBBEA6;   /* structural rules — section edges, grid frames */
+  --edge:    #847A66;   /* the boundary of a control (3.3:1 floor holds) */
+
+  /* Ink. */
+  --ink:     #211E18;
+  --muted:   #6A6152;
+
+  /* The two meaningful hues. */
+  --accent:    #1D4E6F;  /* petrol — the action, the focus, today */
+  --accent-2:  #16405C;  /* petrol, pressed */
+  --on-accent: #FFFDF7;
+  --alarm:     #96382C;  /* brick — overdue, destructive, failed */
+  --on-alarm:  #FFFDF7;
+  --fill:      #33302A;  /* dark stamp for multi-select "on" */
+  --on-fill:   #F3EDDF;
+
+  /* Depth — warm, ink-tinted. Never gray-blue on cream. */
+  --sit:    0 1px 0 rgba(43, 36, 24, 0.08);                       /* letterpress */
+  --raise:  0 1px 2px rgba(43, 36, 24, 0.10), 0 2px 8px rgba(43, 36, 24, 0.06);
+  --float:  0 2px 4px rgba(43, 36, 24, 0.12), 0 12px 32px rgba(43, 36, 24, 0.14);
+
+  /* Shape. */
+  --r-1: 4px;    /* controls, chips, small marks */
+  --r-2: 8px;    /* cards, popovers, grid frames */
+  --r-3: 12px;   /* standalone panels — the auth card */
+
+  /* Voice. */
+  --serif: "IBM Plex Serif", ui-serif, Georgia, "Times New Roman", serif;
+  --sans:  "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono:  "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Scale. Six sizes with real steps; the floor is Canvas's own 12px. */
+  --t-legend: 12px;   /* labels, counts, metadata */
+  --t-small:  14px;   /* body */
+  --t-title:  16px;   /* card + group headings */
+  --t-head:   19px;   /* panel headings, the brand */
+  --t-page:   24px;   /* the title of a view */
+  --t-hero:   31px;   /* the standalone page headings */
+
+  /* Weight. Four with jobs: 400 text, 500 label, 600 heading, 700 emphasis. */
+  --w-text:  400;
+  --w-label: 500;
+  --w-head:  600;
+  --w-bold:  700;
+
+  /* Space — 4px unit, hairline steps kept because hairline gaps are real. */
+  --s-1:  2px;
+  --s-2:  4px;
+  --s-3:  6px;
+  --s-4:  8px;
+  --s-5: 12px;
+  --s-6: 16px;
+  --s-7: 24px;
+  --s-8: 32px;
+  --s-9: 48px;
+
+  /* Motion — quick, decisive, one curve. */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --fast: 130ms;
+  --slow: 220ms;
+}
+
+* { box-sizing: border-box; margin: 0; }
+
+html { overflow-x: hidden; }
+
+body {
+  font: var(--t-small)/1.55 var(--sans);
+  background: var(--ground);
+  color: var(--ink);
+  height: 100vh;
+  overflow: hidden;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* The grain. A whisper of paper over everything — pointer-transparent, and
+   quiet enough (2.5%) that no contrast figure above moves. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::selection { background: var(--accent); color: var(--on-accent); }
+
+/* Crafted scrollbars — the browser's gray channel is the one un-designed
+   element an Electron shell always leaks. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: var(--rule-2);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--edge); background-clip: padding-box; border: 2px solid transparent; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.92em;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  padding: 0 var(--s-2);
+  /* A data-root path is one long unbreakable token; it must wrap, not shove
+     the page sideways. */
+  overflow-wrap: anywhere;
+}
+
+/* The label voice: how every small heading over a column of data is set.
+   Tracked caps per Butterick — caps need air, lowercase never gets any. */
+.sidebar-head, .rail-head,
+.card h3,
+.task-group-title,
+.file-group-head,
+.home-upcoming h3 {
+  font-family: var(--sans);
+  font-size: var(--t-legend);
+  font-weight: var(--w-head);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* --- Controls -------------------------------------------------------------
+   One button shape, honestly pressable: an edge, a letterpress sit, and a
+   1px physical press on :active. Default is quiet paper; .primary is the one
+   petrol action a screen gets; .danger is brick and only for irreversibles. */
+button {
+  font: inherit;
+  font-weight: var(--w-label);
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  padding: var(--s-3) var(--s-5);
+  cursor: pointer;
+  box-shadow: var(--sit);
+  transition: border-color var(--fast) var(--ease), background-color var(--fast) var(--ease),
+              box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+button:hover { border-color: var(--ink); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent-2);
+  color: var(--on-accent);
+  font-weight: var(--w-head);
+}
+button.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
+button.danger {
+  background: var(--alarm);
+  border-color: var(--alarm);
+  color: var(--on-alarm);
+  font-weight: var(--w-head);
+}
+button.danger:hover { border-color: var(--ink); }
+button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+button:disabled:hover { border-color: var(--edge); }
+button:disabled:active { transform: none; }
+
+input, select, textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--sunk);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  padding: var(--s-3) var(--s-4);
+  transition: border-color var(--fast) var(--ease), background-color var(--fast) var(--ease);
+}
+input:hover, select:hover, textarea:hover { border-color: var(--muted); }
+input:focus, select:focus, textarea:focus { background: var(--panel); border-color: var(--accent); }
+input[type="checkbox"] { accent-color: var(--accent); }
+input::placeholder, textarea::placeholder { color: var(--muted); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-1); }
+
+/* The switch — a function that is on or off. Drawn, not the browser's:
+   a track that fills petrol and a paper knob that travels. Used by the
+   Functions card in Settings. */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  cursor: pointer;
+}
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.switch .knob {
+  position: absolute;
+  inset: 0;
+  background: var(--sunk);
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.switch .knob::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  box-shadow: var(--sit);
+  transition: transform var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.switch input:checked + .knob { background: var(--accent); border-color: var(--accent-2); }
+.switch input:checked + .knob::before { transform: translateX(14px); border-color: var(--accent-2); }
+.switch input:focus-visible + .knob { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Text-button: an action that belongs in prose, not a control cluster. */
+.linky {
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  font-family: var(--sans);
+  font-weight: var(--w-text);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+.linky:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; border-color: transparent; }
+.linky:active { transform: none; }
+
+/* A title that opens something — inherits the text it replaces. */
+.linky-title {
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.linky-title:hover { text-decoration: underline; text-underline-offset: 2px; }
+.linky-title:active { transform: none; }
+
+/* --- Auth gate ----------------------------------------------------------- */
+.auth-gate {
+  position: fixed; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--ground);
+  padding: var(--s-6);
+}
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-3);
+  box-shadow: var(--raise);
+  padding: var(--s-8);
+  max-width: 460px;
+  display: flex; flex-direction: column; gap: var(--s-5);
+}
+.auth-card h1 {
+  font-family: var(--serif);
+  font-weight: var(--w-head);
+  font-size: var(--t-hero);
+  letter-spacing: 0.005em;
+  line-height: 1.15;
+}
+.auth-hint { font-size: var(--t-legend); color: var(--muted); }
+.auth-hint code {
+  display: block;
+  margin-top: var(--s-2);
+  padding: var(--s-4);
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  font-size: var(--t-legend);
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.error { color: var(--alarm); font-size: var(--t-small); }
+
+/* --- Shell --------------------------------------------------------------- */
+.shell { display: flex; flex-direction: column; height: 100vh; }
+
+/* The masthead. A nameplate, not a toolbar: the serif wordmark carries the
+   app's voice, the views read as an editorial contents line, and the one
+   global action sits at the far edge. */
+.topbar {
+  display: flex; align-items: center; gap: var(--s-8);
+  padding: var(--s-4) var(--s-7);
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule-2);
+  box-shadow: var(--sit);
+  position: relative;
+  z-index: 2;
+  flex-wrap: wrap;
+  row-gap: var(--s-4);
+}
+.brand {
+  font-family: var(--serif);
+  font-weight: var(--w-head);
+  font-size: var(--t-head);
+  letter-spacing: 0.01em;
+  display: flex; align-items: center; gap: var(--s-4);
+}
+/* The margin-line mark — the app icon's ruled page, drawn at 14px. */
+.brand::before {
+  content: "";
+  width: 14px; height: 14px;
+  flex: none;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  background:
+    linear-gradient(to right, transparent 3.5px, #C96F5E 3.5px, #C96F5E 4.5px, transparent 4.5px),
+    linear-gradient(to bottom, transparent 5px, var(--rule-2) 5px, var(--rule-2) 5.5px, transparent 5.5px, transparent 9px, var(--rule-2) 9px, var(--rule-2) 9.5px, transparent 9.5px),
+    var(--ground);
+}
+/* Bridge status: brick until the bridge answers, then a quiet neutral mark —
+   "fine" does not need a colour. */
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--alarm); }
+.dot.ok { background: var(--rule-2); }
+
+.topnav { display: flex; gap: var(--s-2); flex: 1; }
+.nav-btn {
+  border: none;
+  border-radius: var(--r-1);
+  box-shadow: none;
+  background: none;
+  font-weight: var(--w-label);
+  font-size: var(--t-small);
+  color: var(--muted);
+  padding: var(--s-2) var(--s-5) var(--s-3);
+  position: relative;
+  text-decoration: none;
+  display: inline-block;
+}
+.nav-btn:hover { color: var(--ink); background: var(--sunk); border-color: transparent; }
+.nav-btn:active { transform: none; }
+.nav-btn.active { color: var(--ink); font-weight: var(--w-head); background: none; }
+/* The active view is underlined the way a contents line is — a short petrol
+   rule under the word itself. */
+.nav-btn.active::after {
+  content: "";
+  position: absolute;
+  left: var(--s-5); right: var(--s-5); bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+/* --- Views --------------------------------------------------------------- */
+.view { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+.single { flex: 1; overflow-y: auto; padding: var(--s-7) var(--s-8) var(--s-9); }
+/* Reading views hold a measure; the calendar (below) deliberately does not. */
+#view-settings .single { max-width: 920px; }
+.single > h2 {
+  font-family: var(--serif);
+  font-weight: var(--w-head);
+  font-size: var(--t-hero);
+  letter-spacing: 0.005em;
+  line-height: 1.15;
+  margin-bottom: var(--s-4);
+}
+.single > .muted { max-width: 68ch; }
+
+/* Classes view — fixed rail, fluid page. */
+#view-classes { display: grid; grid-template-columns: 320px minmax(0, 1fr); }
+
+.sidebar {
+  border-right: 1px solid var(--rule-2);
+  background: var(--panel);
+  overflow-y: auto;
+  padding: var(--s-5);
+}
+.sidebar-head, .rail-head {
+  padding: var(--s-2) var(--s-2) var(--s-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+}
+
+#class-list { list-style: none; display: flex; flex-direction: column; }
+#class-list li {
+  padding: var(--s-4) var(--s-4) var(--s-4) var(--s-5);
+  border-bottom: 1px solid var(--rule);
+  /* The class colour, calm: a 3px rule at the row's edge, nothing behind it. */
+  border-left: 3px solid var(--class-color, transparent);
+  border-radius: 0 var(--r-1) var(--r-1) 0;
+  cursor: pointer;
+  transition: background-color var(--fast) var(--ease);
+}
+#class-list li:hover { background: var(--sunk); }
+#class-list li.active { background: var(--sunk); }
+#class-list li.active .cl-code { color: var(--ink); }
+/* Out-of-scope classes (visible under "All") read present-but-inactive: said
+   in colour and weight, never opacity — fading ink on cream walks it into
+   the paper. */
+#class-list li.out-of-scope .cl-code { color: var(--muted); font-weight: var(--w-text); }
+#class-list li.out-of-scope .cl-name { color: var(--muted); }
+.cl-code { font-weight: var(--w-head); display: flex; align-items: center; gap: var(--s-4); }
+.cl-name {
+  font-size: var(--t-legend); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cl-meta {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  margin-top: var(--s-2);
+  display: flex; gap: var(--s-5); flex-wrap: wrap;
+}
+.cl-flag {
+  color: var(--muted);
+  border: 1px solid var(--rule-2);
+  border-radius: 999px;
+  padding: 0 var(--s-3);
+  font-size: var(--t-legend);
+}
+
+.sidebar-foot {
+  margin-top: var(--s-6);
+  padding: var(--s-5) var(--s-2) var(--s-2);
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-4);
+}
+
+/* Segmented control — one active at a time; a filter, never the action, so
+   "on" is the dark stamp and not petrol. */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  background: var(--panel);
+  box-shadow: var(--sit);
+  overflow: hidden;
+}
+.seg-btn {
+  font-family: var(--sans);
+  font-size: var(--t-legend);
+  font-weight: var(--w-label);
+  padding: var(--s-2) var(--s-5);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  border-right: 1px solid var(--rule);
+}
+.seg-btn:last-child { border-right: none; }
+.seg-btn:hover { color: var(--ink); background: var(--sunk); border-color: var(--rule); }
+.seg-btn:active { transform: none; }
+.seg-btn.active {
+  background: var(--fill);
+  color: var(--on-fill);
+  font-weight: var(--w-head);
+}
+.seg-btn.active:hover { background: var(--fill); color: var(--on-fill); }
+.seg-sm .seg-btn { font-size: var(--t-legend); padding: var(--s-1) var(--s-4); }
+
+/* --- Class picker + stale-class cleanup ---------------------------------- */
+.picker-term { margin-bottom: var(--s-6); }
+.picker-term h3 {
+  font-family: var(--serif);
+  font-weight: var(--w-head);
+  font-size: var(--t-title);
+  color: var(--ink);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px solid var(--rule-2);
+  margin-bottom: var(--s-2);
+}
+.picker-row, .cleanup-row {
+  display: grid;
+  align-items: baseline;
+  gap: var(--s-5);
+  padding: var(--s-4) var(--s-3);
+  border-bottom: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  cursor: pointer;
+}
+.picker-row { grid-template-columns: auto 150px minmax(0, 1fr); }
+.cleanup-row { grid-template-columns: auto auto 150px minmax(0, 1fr) auto auto; }
+.picker-row:hover, .cleanup-row:hover { background: var(--sunk); }
+.picker-row input, .cleanup-row input { cursor: pointer; }
+.pk-code, .cu-code { font-weight: var(--w-head); font-size: var(--t-small); }
+.pk-name, .cu-name {
+  color: var(--muted);
+  font-size: var(--t-legend);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cu-term, .cu-size {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cleanup-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  margin-top: var(--s-6);
+  flex-wrap: wrap;
+}
+.cleanup-actions .spacer { flex: 1; }
+#cleanup-result, #picker-result { margin-top: var(--s-5); font-size: var(--t-legend); }
+
+@media (max-width: 820px) {
+  .picker-row { grid-template-columns: auto minmax(0, 1fr); }
+  .picker-row .pk-name { display: none; }
+  .cleanup-row { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+  .cleanup-row .cu-name, .cleanup-row .cu-term { display: none; }
+}
+
+/* --- Detail -------------------------------------------------------------- */
+.detail { overflow-y: auto; padding: var(--s-7) var(--s-8) var(--s-9); }
+.detail-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--s-6); margin-bottom: var(--s-6);
+}
+.detail-head h2 {
+  font-family: var(--serif);
+  font-size: var(--t-page);
+  font-weight: var(--w-head);
+  letter-spacing: 0.005em;
+  line-height: 1.2;
+}
+.detail-head > div:first-child { min-width: 0; }
+#detail-sub, #assignment-sub, #file-sub { font-size: var(--t-legend); margin-top: var(--s-2); overflow-wrap: anywhere; }
+
+.grade-chip {
+  font-family: var(--mono);
+  font-weight: var(--w-bold);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-small);
+  color: var(--ink);
+  background: var(--sunk);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-1);
+  padding: var(--s-3) var(--s-5);
+  white-space: nowrap;
+}
+
+/* A short explanatory block above a form. Ruled, not boxed. */
+.note {
+  border-left: 2px solid var(--rule-2);
+  padding: var(--s-2) 0 var(--s-2) var(--s-5);
+  margin-bottom: var(--s-6);
+  font-size: var(--t-small);
+  color: var(--muted);
+  max-width: 72ch;
+}
+.note code { background: var(--sunk); }
+
+.tabs { display: flex; gap: var(--s-6); border-bottom: 1px solid var(--rule-2); margin-bottom: var(--s-6); flex-wrap: wrap; }
+.tab {
+  border: none; border-radius: 0; box-shadow: none; background: none;
+  font-weight: var(--w-label);
+  color: var(--muted);
+  padding: var(--s-3) 0;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.tab:hover { color: var(--ink); border-bottom-color: var(--rule-2); background: none; }
+.tab:active { transform: none; }
+.tab.active {
+  color: var(--ink);
+  font-weight: var(--w-head);
+  border-bottom-color: var(--accent);
+}
+
+/* --- Tasks — ruled rows, not cards. -------------------------------------- */
+.task-group-title {
+  margin: var(--s-7) 0 var(--s-2);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px solid var(--rule-2);
+}
+.task {
+  padding: var(--s-4) var(--s-2) var(--s-4) var(--s-5);
+  border-bottom: 1px solid var(--rule);
+  border-left: 2px solid transparent;
+}
+/* An AI-added task — mined from the syllabus, no Canvas row behind it — is
+   marked in this app's one texture for "no Canvas page": dashed. The edge is
+   dashed, the badge is dashed, and the title steps into italic, so it can
+   never be mistaken for something with a submit box. */
+.task.ai-added { border-left: 2px dashed var(--rule-2); }
+.task.ai-added .task-title { font-style: italic; }
+.task-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-5); }
+.task-title { font-weight: var(--w-head); flex: 1; min-width: 0; }
+.task-due {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--t-legend);
+}
+/* Only overdue gets a colour: a hundred coloured dates is a hundred alarms
+   nobody reads. Soon and today are said in weight. */
+.task-due.soon { color: var(--ink); }
+.task-due.today { color: var(--ink); font-weight: var(--w-bold); }
+.task-due.overdue { color: var(--alarm); }
+
+.task-badges { display: flex; gap: var(--s-3); margin-top: var(--s-2); flex-wrap: wrap; }
+.badge {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 0 var(--s-3);
+}
+.badge.implicit, .badge.moved { color: var(--ink); border-color: var(--rule-2); }
+.badge.ai-added { color: var(--ink); border: 1px dashed var(--rule-2); }
+
+/* A done task stays visible — struck through, one step down in ink, never
+   faded (opacity on cream walks a row into the paper). */
+.task.is-done { color: var(--muted); }
+.task.is-done .task-title { text-decoration: line-through; color: var(--muted); }
+.task.is-done .badge.implicit,
+.task.is-done .badge.ai-added,
+.task.is-done .badge.moved { color: var(--muted); }
+.task.is-done .task-due.soon,
+.task.is-done .task-due.today,
+.task.is-done .task-due.overdue { color: var(--muted); font-weight: var(--w-text); }
+
+/* Blocked is brick — the one state that is a problem; priority is ink. */
+.task.flag-priority { border-left-color: var(--ink); }
+.task.flag-blocked  { border-left-color: var(--alarm); }
+
+.task-check { cursor: pointer; margin-right: var(--s-1); flex: none; }
+.task-toggle { margin-top: var(--s-4); }
+
+/* Editor — revealed under a task, never a modal. */
+.task-editor {
+  margin-top: var(--s-4);
+  padding: var(--s-5);
+  background: var(--sunk);
+  border-left: 2px solid var(--rule-2);
+  border-radius: 0 var(--r-1) var(--r-1) 0;
+}
+.te-row { display: flex; align-items: center; gap: var(--s-5); flex-wrap: wrap; margin-bottom: var(--s-4); }
+.te-label {
+  color: var(--muted);
+  font-size: var(--t-legend);
+  font-weight: var(--w-head);
+}
+.task-editor textarea {
+  width: 100%;
+  font: inherit;
+  font-size: var(--t-small);
+  background: var(--panel);
+  padding: var(--s-4);
+  resize: vertical;
+}
+
+.task-checkpoints { margin-top: var(--s-5); }
+.cp-list { list-style: none; }
+.cp-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: var(--s-5);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.cp-row.done .cp-title { text-decoration: line-through; color: var(--muted); }
+.cp-row input[type=checkbox] { cursor: pointer; }
+.cp-title { font-size: var(--t-small); }
+.cp-date {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cp-del { font-size: var(--t-legend); }
+.cp-add { display: flex; gap: var(--s-4); margin-top: var(--s-4); flex-wrap: wrap; }
+.cp-add input[type=text] { flex: 1; min-width: 180px; }
+
+.task-desc { font-size: var(--t-small); margin-top: var(--s-2); max-width: 72ch; }
+.task-materials { font-size: var(--t-legend); color: var(--muted); margin-top: var(--s-2); }
+.task-materials li { margin-left: var(--s-6); }
+
+.task-source-note {
+  margin-bottom: var(--s-6);
+  padding-bottom: var(--s-5);
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--t-legend);
+}
+
+/* --- Files — grouped by where on Canvas each file was found. -------------- */
+.files-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s-5); margin-bottom: var(--s-5); flex-wrap: wrap;
+}
+.file-group { margin-bottom: var(--s-7); }
+.file-group-head {
+  margin: 0;
+  padding: 0 var(--s-4) var(--s-2);
+  border-bottom: 1px solid var(--rule-2);
+}
+.file-group-head .muted { font-weight: var(--w-text); letter-spacing: 0; text-transform: none; }
+.file-group table.files th { display: none; }
+.file-name { line-height: 1.35; }
+.file-src { font-size: var(--t-legend); color: var(--muted); margin-top: var(--s-1); }
+
+table.files { width: 100%; border-collapse: collapse; }
+table.files td {
+  text-align: left;
+  height: 36px;
+  vertical-align: middle;
+  padding: var(--s-2) var(--s-4);
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--t-small);
+}
+table.files th {
+  text-align: left;
+  height: 32px;
+  padding: 0 var(--s-4);
+  border-bottom: 1px solid var(--rule-2);
+  font-family: var(--sans);
+  font-weight: var(--w-head);
+  font-size: var(--t-legend);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+table.files td:nth-child(2), table.files td:nth-child(3) {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  white-space: nowrap;
+}
+table.files td.actions { text-align: right; white-space: nowrap; }
+table.files button { padding: var(--s-1) var(--s-4); font-size: var(--t-legend); font-weight: var(--w-label); }
+table.files tr:hover td { background: var(--sunk); }
+
+/* --- Class Summarized (the AI_CONTEXT pack on disk) ---------------------- */
+.pack-file {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: var(--s-5);
+  min-height: 36px;
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.pack-file button { padding: var(--s-1) var(--s-4); font-size: var(--t-legend); font-weight: var(--w-label); }
+
+/* --- Calendar ------------------------------------------------------------
+   THE ROOM. The calendar view is the one place the app drops its reading
+   measure: the toolbar is the only chrome, and whatever view is chosen owns
+   every remaining pixel. #cal-ops is the scroll container; in Week and Month
+   the grid fills it exactly, in List the rows scroll through it. */
+#view-calendar .single {
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+  padding: var(--s-6) var(--s-7) 0;
+}
+#view-calendar .single > h2 { margin-bottom: var(--s-2); font-size: var(--t-page); }
+
+#cal-ops {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  margin-top: var(--s-4);
+  padding-bottom: var(--s-6);
+}
+/* The list is read, so it keeps a measure inside the wide room. */
+#cal-ops > .cal-month, #cal-ops > .cal-day, #cal-ops > .cal-class {
+  width: 100%;
+  max-width: 1020px;
+}
+
+.cal-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  margin: var(--s-2) 0 0;
+  padding-bottom: var(--s-4);
+  border-bottom: 1px solid var(--rule-2);
+  flex: none;
+}
+.cal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--s-5);
+}
+.cal-summary {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cal-controls { display: flex; gap: var(--s-4); flex-wrap: wrap; }
+
+/* Month rule — a quiet divider across a multi-month window, in the serif. */
+.cal-month {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--muted);
+  margin: var(--s-7) 0 var(--s-2);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px solid var(--rule-2);
+  font-size: var(--t-title);
+}
+.cal-month:first-child { margin-top: var(--s-5); }
+
+/* --- Day-grouped list --- */
+.cal-day { margin: var(--s-5) 0 var(--s-2); }
+.cal-day-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-5);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  background: var(--ground);
+  z-index: 1;
+}
+.cal-day-name {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  font-weight: var(--w-bold);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.cal-day-rel { font-size: var(--t-legend); color: var(--muted); }
+.cal-day-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cal-day.past .cal-day-name { color: var(--muted); }
+
+.cal-class-group { margin-top: var(--s-4); }
+.cal-class-label {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  padding: var(--s-2) 0 var(--s-1) var(--s-4);
+}
+
+/* --- Class-grouped list --- */
+.cal-class { margin-bottom: var(--s-7); }
+.cal-class-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-2) 0 var(--s-2) var(--s-4);
+  margin-top: var(--s-6);
+  border-bottom: 1px solid var(--rule-2);
+  position: sticky;
+  top: 0;
+  background: var(--ground);
+  z-index: 1;
+}
+.cal-class-name { font-family: var(--serif); font-size: var(--t-title); font-weight: var(--w-head); color: var(--ink); }
+.cal-class-day { margin-top: var(--s-4); }
+.cal-class-date {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding: var(--s-2) 0 var(--s-1);
+}
+/* A past day is said by its place in the list; italic, never faded. */
+.cal-class-day.past .cal-class-date { font-style: italic; }
+
+/* The class colour, calm: a 2px rule on the group's edge — never a fill. */
+.cal-class-label,
+.cal-class-head { border-left: 2px solid var(--class-color, var(--rule-2)); }
+
+/* --- Rows (shared by both groupings) --- */
+.cal-rows { border-left: 1px solid var(--rule); padding-left: var(--s-5); }
+.cal-row {
+  display: grid;
+  grid-template-columns: 16px 96px minmax(0, 1fr) auto;
+  column-gap: var(--s-5);
+  align-items: baseline;
+  padding: var(--s-2) 0;
+  font-size: var(--t-small);
+  border-bottom: 1px solid var(--rule);
+}
+.cal-row:last-child { border-bottom: none; }
+.cal-when {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  /* Wraps rather than overflows: "10:50 AM–12:05 PM" is wider than any
+     sensible fixed column. */
+  overflow-wrap: anywhere;
+}
+.cal-title { color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+/* Nearly every op carries a link; a persistent underline would rule the whole
+   column, so the affordance appears on hover. */
+.cal-title a { color: inherit; text-decoration: none; }
+.cal-title a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.cal-row.overdue .cal-when { color: var(--alarm); }
+
+.cal-tags { display: flex; align-items: center; gap: var(--s-3); white-space: nowrap; flex-wrap: wrap; }
+.cal-pts {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cal-cat, .cal-kind, .cal-loc {
+  font-family: var(--mono);
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 0 var(--s-3);
+  font-size: var(--t-legend);
+}
+/* An exam is the one thing you cannot quietly reschedule. */
+.cal-cat.exam { color: var(--alarm); border-color: var(--alarm); }
+
+.cal-check {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  align-self: center;
+}
+.cal-check-gap { display: block; }
+.cal-row.is-done .cal-title,
+.cal-row.is-done .cal-when { color: var(--muted); text-decoration: line-through; }
+.cal-row.is-done .cal-tags { color: var(--muted); }
+.cal-row.is-done .cal-cat,
+.cal-row.is-done .cal-kind,
+.cal-row.is-done .cal-loc,
+.cal-row.is-done .cal-pts { color: var(--muted); border-color: var(--rule-2); }
+/* A finished item is never overdue, whatever its date said a moment ago. */
+.cal-row.is-done.overdue .cal-when { color: var(--muted); }
+.cal-row.meeting .cal-title { color: var(--muted); }
+
+/* Straight to Canvas from a row, for when submitting is the point. */
+.cal-submit {
+  font-family: var(--mono);
+  text-decoration: none;
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  padding: var(--s-1) var(--s-3);
+  box-shadow: var(--sit);
+  transition: border-color var(--fast) var(--ease), background-color var(--fast) var(--ease);
+  font-size: var(--t-legend);
+}
+.cal-submit:hover { background: var(--sunk); border-color: var(--ink); }
+
+@media (max-width: 700px) {
+  .cal-row { grid-template-columns: 16px 78px minmax(0, 1fr); }
+  .cal-tags { grid-column: 3; padding-bottom: var(--s-2); }
+}
+
+/* Why a kind or class has nothing on the calendar — an explanation, not a
+   warning. CALENDAR-SPEC 4.5, 4.6. */
+.cal-notes { margin: var(--s-4) 0 0; display: flex; flex-direction: column; gap: var(--s-1); flex: none; }
+.cal-note {
+  margin: 0;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  padding-left: var(--s-4);
+  border-left: 2px solid var(--class-color, var(--rule-2));
+}
+.note-class {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  margin-right: var(--s-3);
+}
+
+/* --- Week and Month -------------------------------------------------------
+   CALENDAR-SPEC §1, now sized like a calendar: the grid FILLS the view.
+   Height: gridwrap flexes into all remaining space and the grid inside is at
+   least that tall, so a light week stretches to the floor and a heavy one
+   scrolls. Width: full room. On a narrow screen the grid keeps its seven
+   columns and scrolls INSIDE its own box — the page never pans (spec 3.7). */
+.cal-gridwrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-2);
+  background: var(--panel);
+  box-shadow: var(--sit);
+  /* Layout containment, measured, not decorative: on a 375px phone viewport
+     Chrome's mobile mode promoted the month grid's min-width into the LAYOUT
+     viewport (innerWidth 436, a 61px sideways pan) even though this box
+     scrolls it. Containment makes the room a layout island and the page
+     stays 375 wide — spec 3.7's phone case. */
+  contain: layout;
+}
+
+/* Period navigator — which week or month is on screen. */
+.cal-period {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  width: 100%;
+  padding-top: var(--s-4);
+  flex: none;
+}
+.period-label {
+  font-family: var(--serif);
+  font-size: var(--t-title);
+  font-weight: var(--w-head);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+.period-nav {
+  font-size: var(--t-small);
+  line-height: 1;
+  padding: var(--s-2) var(--s-4);
+  color: var(--ink);
+  border-color: var(--edge);
+}
+.period-today {
+  padding: var(--s-2) var(--s-4);
+  margin-left: auto;
+  border-color: var(--edge);
+  font-size: var(--t-legend);
+  font-weight: var(--w-label);
+}
+
+/* A quiet toggle that is neither a primary action nor a segment. */
+.ghost-btn {
+  padding: var(--s-2) var(--s-4);
+  color: var(--muted);
+  border-color: var(--rule-2);
+  box-shadow: none;
+  font-size: var(--t-legend);
+  font-weight: var(--w-label);
+}
+.ghost-btn:hover { color: var(--ink); border-color: var(--edge); }
+/* On, in ink weight and a border — never opacity. */
+.ghost-btn.active { color: var(--ink); border-color: var(--edge); background: var(--sunk); }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- Week: seven columns, Monday first, floor to ceiling --- */
+.cal-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(120px, 1fr));
+  min-width: 840px;
+  min-height: 100%;
+}
+.cal-daycol {
+  min-width: 0;
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+}
+.cal-daycol:last-child { border-right: none; }
+.cal-daycol-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--rule-2);
+  background: var(--sunk);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.daycol-name {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  font-weight: var(--w-bold);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.daycol-count {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* A day already lived through: one step down in ink, never faded out. */
+.cal-daycol.past .daycol-name { color: var(--muted); font-weight: var(--w-text); }
+.cal-daycol.past .cal-daycol-body { background: var(--ground); }
+/* Today is the one column worth finding at a glance. */
+.cal-daycol.today .cal-daycol-head {
+  background: var(--accent);
+  border-bottom-color: var(--accent-2);
+}
+.cal-daycol.today .daycol-name,
+.cal-daycol.today .daycol-count { color: var(--on-accent); }
+.cal-daycol-body {
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-height: 120px;
+  flex: 1;
+}
+.daycol-empty {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  padding-top: var(--s-4);
+}
+
+/* --- Month: whole weeks, one tile per day, rows share the floor --- */
+.cal-monthgrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(110px, 1fr));
+  /* Row 1 is the weekday header and stays auto; every implicit row after it
+     is a week of tiles, splitting the leftover height evenly so a 4-week
+     month reaches the floor instead of stopping at its content. */
+  grid-template-rows: auto;
+  grid-auto-rows: minmax(96px, 1fr);
+  min-width: 770px;
+  min-height: 100%;
+}
+.cal-wdh {
+  font-family: var(--sans);
+  font-size: var(--t-legend);
+  font-weight: var(--w-head);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: var(--s-2) var(--s-4);
+  background: var(--sunk);
+  border-bottom: 1px solid var(--rule-2);
+  border-right: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.cal-wdh:nth-child(7) { border-right: none; }
+.cal-tile {
+  min-height: 96px;
+  min-width: 0;
+  padding: var(--s-2) var(--s-2) var(--s-3);
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  overflow: hidden;
+}
+/* An expanded tile may hold more than its row; it scrolls itself rather than
+   shoving five siblings taller. */
+.cal-tile.expanded { overflow-y: auto; }
+.cal-tile:nth-child(7n) { border-right: none; }
+.tile-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); flex: none; }
+.tile-day {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.tile-count {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Neighbouring months keep the weeks whole; one step down in ink. */
+.cal-tile.adjacent { background: var(--ground); }
+.cal-tile.adjacent .tile-day { color: var(--muted); }
+/* Today: the day number stamped in petrol, round — a mark, not a slab. */
+.cal-tile.today { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.cal-tile.today .tile-day {
+  background: var(--accent);
+  color: var(--on-accent);
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--s-2);
+  border-radius: 999px;
+  font-weight: var(--w-bold);
+}
+.tile-body { display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; }
+.tile-more {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  border: none;
+  box-shadow: none;
+  background: none;
+  padding: var(--s-1) 0 0;
+  text-align: left;
+  align-self: flex-start;
+}
+.tile-more:hover { color: var(--ink); text-decoration: underline; border-color: transparent; }
+.tile-more:active { transform: none; }
+
+/* --- The chip: one item, inside a week column or a month tile ---
+   Same controls as a list row — a checkbox that exists in only one of three
+   views is a place the user learns not to trust. Now a small card that can
+   BREATHE: two lines of title before truncation, not one strangled line. */
+.cal-chip {
+  display: grid;
+  grid-template-columns: 12px auto minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--s-2);
+  min-width: 0;
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--t-legend);
+  line-height: 1.4;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--class-color, var(--rule-2));
+  border-radius: var(--r-1);
+  box-shadow: var(--sit);
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.cal-chip:hover { border-color: var(--rule-2); border-left-color: var(--class-color, var(--rule-2)); box-shadow: var(--raise); }
+.cal-chip .cal-check { width: 11px; height: 11px; margin-top: 3px; align-self: start; }
+.cal-chip .cal-check-gap { width: 11px; }
+.chip-when {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Two lines, then an ellipsis. The one-line strangle was how items got
+   "terribly cut off"; two lines names almost everything this data holds. */
+.chip-title {
+  min-width: 0;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.chip-title a, .chip-title button {
+  color: inherit;
+  text-decoration: none;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  max-width: 100%;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.chip-title a:hover, .chip-title button:hover { text-decoration: underline; text-underline-offset: 2px; }
+.chip-title button:active { transform: none; }
+.cal-chip.meeting .chip-title { color: var(--muted); }
+.cal-chip.meeting { background: var(--ground); box-shadow: none; }
+.cal-chip.overdue { border-left-color: var(--alarm); }
+.cal-chip.overdue .chip-when { color: var(--alarm); }
+.cal-chip.is-done .chip-title,
+.cal-chip.is-done .chip-when { color: var(--muted); text-decoration: line-through; }
+.cal-chip.is-done.overdue { border-left-color: var(--class-color, var(--rule-2)); }
+.cal-chip.is-done.overdue .chip-when { color: var(--muted); }
+
+/* Submit, compressed to a glyph; the accessible name stays "Submit on
+   Canvas" via .sr-only. */
+.cal-submit.dense {
+  padding: 0 var(--s-2);
+  font-size: var(--t-legend);
+  letter-spacing: 0;
+  border-color: var(--rule-2);
+  box-shadow: none;
+  line-height: 1.4;
+}
+.cal-submit.dense:hover { border-color: var(--ink); }
+
+/* An op with neither a Canvas page nor a submit URL says so — a control that
+   goes nowhere reads as broken rather than absent. */
+.cal-nolink {
+  font-family: var(--mono);
+  color: var(--muted);
+  border: 1px dashed var(--rule-2);
+  border-radius: var(--r-1);
+  padding: 0 var(--s-2);
+  font-size: var(--t-legend);
+}
+/* The AI-added pill is the answer to "what do I submit for this?": nothing.
+   One step up in ink so it reads before the hunt starts, not after. */
+.cal-nolink.ai { color: var(--ink); }
+.cal-chip .cal-nolink { border: none; padding: 0 var(--s-1); font-size: var(--t-legend); }
+
+/* AI-added on the calendar, same dialect as the task list: italic title, and
+   in Week/Month the class-colour edge goes dashed. */
+.cal-row.ai-added .cal-title { font-style: italic; }
+.cal-chip.ai-added { border-left-style: dashed; }
+.cal-chip.ai-added .chip-title { font-style: italic; }
+
+@media (max-width: 700px) {
+  .cal-period { padding-top: var(--s-3); }
+  .period-label { font-size: var(--t-small); }
+  #view-calendar .single { padding: var(--s-5) var(--s-5) 0; }
+}
+
+/* --- Filter chips ---------------------------------------------------------
+   What is SHOWN, not what is built. Multi-select stamps: "on" is the dark
+   fill, never petrol — six petrol rectangles was the loudest thing on the
+   old page. */
+.cal-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  font-weight: var(--w-text);
+  padding: var(--s-2) var(--s-4);
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  box-shadow: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.filter-chip:hover { color: var(--ink); background: var(--sunk); }
+.filter-chip:active { transform: none; }
+.filter-chip.on {
+  background: var(--fill);
+  border-color: var(--fill);
+  color: var(--on-fill);
+}
+.filter-chip.on:hover { background: var(--fill); color: var(--on-fill); }
+.filter-chip.on .chip-count { color: var(--on-fill); }
+.chip-count {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+}
+/* A kind with no items keeps its chip — the zero IS the answer, and
+   cal-notes says why underneath. */
+.filter-chip.empty:not(.on) { color: var(--muted); border-color: var(--rule); }
+.filter-chip.empty .chip-count { color: var(--muted); }
+
+/* --- Meeting times --------------------------------------------------------
+   On the class's own Overview tab, where "when does this meet" is asked. */
+.meet-block {
+  padding-bottom: var(--s-6);
+  margin-bottom: var(--s-6);
+  border-bottom: 1px solid var(--rule);
+}
+.meet-block h3 {
+  margin: 0 0 var(--s-2);
+  color: var(--muted);
+  font-size: var(--t-title);
+  font-weight: var(--w-head);
+}
+.meet-when { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--t-small); }
+.meet-block.unset .meet-when { color: var(--muted); font-style: italic; }
+.meet-actions { display: flex; gap: var(--s-4); margin-top: var(--s-3); align-items: center; flex-wrap: wrap; }
+.meet-editor {
+  margin-top: var(--s-4);
+  padding: var(--s-5);
+  background: var(--sunk);
+  border-left: 2px solid var(--rule-2);
+  border-radius: 0 var(--r-1) var(--r-1) 0;
+}
+.meet-days { display: flex; gap: var(--s-2); flex-wrap: wrap; margin-bottom: var(--s-4); }
+.meet-day {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  min-width: 34px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.meet-day:hover { color: var(--ink); }
+.meet-day input { position: absolute; opacity: 0; pointer-events: none; }
+.meet-day:has(input:checked) {
+  background: var(--fill);
+  border-color: var(--fill);
+  color: var(--on-fill);
+  font-weight: var(--w-head);
+}
+.meet-fields { display: flex; gap: var(--s-5); flex-wrap: wrap; align-items: flex-end; margin-bottom: var(--s-4); }
+.meet-fields label {
+  display: flex; flex-direction: column; gap: var(--s-1);
+  font-size: var(--t-legend); color: var(--muted); font-weight: var(--w-label);
+}
+.meet-fields input { background: var(--panel); }
+.meet-room input { min-width: 220px; }
+.meet-error { color: var(--alarm); font-size: var(--t-legend); margin-top: var(--s-2); }
+
+/* --- Class chips (calendar toolbar): visibility + colour ------------------ */
+.class-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  position: relative;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: none;
+  transition: background-color var(--fast) var(--ease);
+}
+.class-chip:hover { background: var(--sunk); }
+.class-chip .chip-name {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--ink);
+  background: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 0 999px 999px 0;
+  padding: var(--s-2) var(--s-4) var(--s-2) var(--s-2);
+  cursor: pointer;
+}
+.class-chip .chip-name:active { transform: none; }
+/* The swatch: this class's colour as a pressed wax dot. Opens the picker. */
+.chip-swatch {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin: 2px 0 2px 3px;
+  padding: 0;
+  border: 1px solid rgba(33, 30, 24, 0.25);
+  border-radius: 50%;
+  box-shadow: none;
+  background: var(--class-color, var(--rule-2));
+  cursor: pointer;
+  transition: transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.chip-swatch:hover:not(:disabled) { transform: scale(1.12); box-shadow: var(--raise); }
+.chip-swatch:disabled { cursor: default; }
+.chip-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Hidden class: hollow ring, muted name, dashed frame — ink says off, not
+   opacity. */
+.class-chip.off { border-style: dashed; border-color: var(--rule-2); }
+.class-chip.off .chip-name { color: var(--muted); text-decoration: line-through; }
+.class-chip.off .chip-swatch {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--class-color, var(--rule-2));
+  border-color: transparent;
+}
+.class-chip.picking { background: var(--sunk); }
+.class-chip.picking .chip-swatch { transform: scale(1.12); }
+
+/* The colour picker popover: genuinely raised, so genuinely shadowed. */
+.color-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-2);
+  box-shadow: var(--float);
+  padding: var(--s-4);
+  min-width: 196px;
+  animation: pop-in var(--fast) var(--ease);
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-3px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+.pop-picks { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.pop-picks.recents { margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--rule); }
+.pick {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(33, 30, 24, 0.25);
+  border-radius: 50%;
+  box-shadow: none;
+  background: var(--pick-color);
+  color: var(--pick-ink);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.pick:hover { transform: scale(1.15); box-shadow: var(--raise); }
+.pick.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--pick-color); }
+.pop-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule);
+}
+.pop-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  cursor: pointer;
+}
+.pop-custom input[type=color] {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(33, 30, 24, 0.25);
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  overflow: hidden;
+}
+.pop-custom input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+.pop-custom input[type=color]::-webkit-color-swatch { border: none; border-radius: 50%; }
+
+/* --- Settings ------------------------------------------------------------- */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-2);
+  box-shadow: var(--sit);
+  padding: var(--s-6) var(--s-7);
+  margin-bottom: var(--s-6);
+}
+.card:first-of-type { margin-top: var(--s-6); }
+.card h3 { margin-bottom: var(--s-5); }
+.card > .muted { max-width: 72ch; font-size: var(--t-small); }
+
+#bridge-info { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--t-legend); overflow-wrap: anywhere; }
+
+.form-row { display: flex; align-items: center; gap: var(--s-5); margin: var(--s-4) 0; flex-wrap: wrap; }
+.form-row label { min-width: 120px; font-size: var(--t-legend); color: var(--muted); font-weight: var(--w-label); }
+.form-row input:not([type="checkbox"]), .form-row select {
+  flex: 1; min-width: 200px; max-width: 380px;
+}
+
+/* One function, one row, one switch. The name is the whole explanation —
+   anything more would be prose restating a control. */
+.fn-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.fn-row:last-of-type { border-bottom: none; }
+.fn-row label[for] { flex: 1; cursor: pointer; font-size: var(--t-small); }
+.fn-tag {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 0 var(--s-3);
+}
+
+.row-actions { display: flex; align-items: center; gap: var(--s-4); margin-top: var(--s-5); flex-wrap: wrap; }
+.pair-result {
+  margin-top: var(--s-5);
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  overflow-wrap: anywhere;
+}
+.footnote { margin-top: var(--s-6); font-size: var(--t-legend); max-width: 72ch; }
+
+.log-box {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  line-height: 1.6;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  padding: var(--s-5);
+  overflow-x: auto;
+  margin-top: var(--s-4);
+  max-height: 40vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+/* --- Rendered markdown ---------------------------------------------------- */
+.md-body { max-width: 72ch; }
+.md-body h1, .md-body h2, .md-body h3 { font-family: var(--serif); font-weight: var(--w-head); line-height: 1.25; }
+.md-body h1 { font-size: var(--t-page); margin: var(--s-6) 0 var(--s-4); }
+.md-body h2 { font-size: var(--t-head); margin: var(--s-6) 0 var(--s-3); }
+.md-body h3 { font-size: var(--t-title); margin: var(--s-5) 0 var(--s-2); }
+.md-body p, .md-body ul { margin-bottom: var(--s-4); }
+.md-body li { margin-left: var(--s-6); margin-bottom: var(--s-1); }
+.md-body em { font-style: italic; }
+.md-body hr { border: none; border-top: 1px solid var(--rule-2); margin: var(--s-6) 0; }
+.md-body a, .assignment-desc a { color: var(--accent); text-decoration: none; }
+.md-body a:hover, .assignment-desc a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.md-body table { border-collapse: collapse; margin: var(--s-4) 0; }
+.md-body th {
+  text-align: left;
+  font-family: var(--sans);
+  font-size: var(--t-legend);
+  font-weight: var(--w-head);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  padding: var(--s-2) var(--s-4);
+}
+.md-body td { border: 1px solid var(--rule); padding: var(--s-2) var(--s-4); }
+
+/* --- Assignment + file panels --------------------------------------------- */
+.back-link { margin-bottom: var(--s-3); display: inline-block; }
+.assignment-actions { display: flex; gap: var(--s-4); align-items: flex-start; flex-wrap: wrap; flex: none; }
+.btn-link {
+  display: inline-block;
+  font: inherit;
+  font-weight: var(--w-label);
+  font-size: var(--t-small);
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-1);
+  box-shadow: var(--sit);
+  padding: var(--s-3) var(--s-5);
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color var(--fast) var(--ease), background-color var(--fast) var(--ease);
+}
+.btn-link:hover { border-color: var(--ink); }
+.btn-link.primary {
+  background: var(--accent);
+  border-color: var(--accent-2);
+  color: var(--on-accent);
+  font-weight: var(--w-head);
+}
+.btn-link.primary:hover { background: var(--accent-2); }
+.assignment-actions button, .assignment-actions .btn-link { white-space: nowrap; }
+
+#assignment-body, #file-body { margin-top: var(--s-4); }
+#assignment-body h3, #file-body h3 {
+  font-size: var(--t-legend);
+  font-weight: var(--w-head);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: var(--s-6) 0 var(--s-3);
+}
+#assignment-body ul, #file-body ul { list-style: none; }
+#assignment-body li, #file-body li { padding: var(--s-2) 0; border-bottom: 1px solid var(--rule); }
+.assignment-desc { max-width: 68ch; }
+.assignment-desc img { max-width: 100%; height: auto; border-radius: var(--r-1); }
+.assignment-desc table { border-collapse: collapse; margin: var(--s-4) 0; max-width: 100%; }
+.assignment-desc td, .assignment-desc th { border: 1px solid var(--rule); padding: var(--s-2) var(--s-4); }
+.assignment-files { margin-top: var(--s-5); }
+
+.file-text {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  padding: var(--s-6);
+  max-width: 90ch;
+}
+.file-view-img { max-width: 100%; height: auto; border: 1px solid var(--rule); border-radius: var(--r-1); }
+.file-md { max-width: 72ch; }
+
+/* --- Notices + toast ------------------------------------------------------ */
+.notice {
+  border-left: 2px solid var(--rule-2);
+  padding: var(--s-2) 0 var(--s-2) var(--s-5);
+  margin: var(--s-4) 0;
+  font-size: var(--t-small);
+  color: var(--muted);
+  max-width: 72ch;
+}
+.notice.alarm { border-left-color: var(--alarm); color: var(--alarm); }
+/* Same dashed dialect as everywhere else AI-added appears. */
+.notice.ai-added { border-left-style: dashed; }
+
+/* The course-pack launch link in the class subtitle: ink, quiet underline. */
+.course-pack-link { color: var(--ink); text-decoration: none; }
+.course-pack-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+.toast {
+  position: fixed;
+  bottom: var(--s-7);
+  left: 50%;
+  transform: translate(-50%, var(--s-4));
+  z-index: 20;
+  max-width: 560px;
+  background: var(--fill);
+  color: var(--on-fill);
+  border-radius: var(--r-2);
+  box-shadow: var(--float);
+  padding: var(--s-4) var(--s-6);
+  font-size: var(--t-small);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--slow) var(--ease), transform var(--slow) var(--ease);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+
+/* --- Home (the term at a glance) ------------------------------------------ */
+#class-home { max-width: 1100px; }
+.home-head { display: flex; align-items: baseline; gap: var(--s-6); flex-wrap: wrap; margin-bottom: var(--s-6); }
+.home-head h2 {
+  font-family: var(--serif);
+  font-size: var(--t-hero);
+  font-weight: var(--w-head);
+  letter-spacing: 0.005em;
+  line-height: 1.15;
+}
+.home-stats {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  display: flex;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+.home-stats span + span::before { content: "·"; margin-right: var(--s-4); color: var(--rule-2); }
+
+.home-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--s-5);
+}
+.home-card {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  border-top: 3px solid var(--class-color, var(--rule-2));
+  border-radius: var(--r-2);
+  box-shadow: var(--sit);
+  padding: var(--s-5) var(--s-6);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  transition: box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.home-card:hover { box-shadow: var(--raise); transform: translateY(-1px); border-color: var(--rule-2); }
+.home-card:active { transform: none; box-shadow: var(--sit); }
+.home-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hc-code { font-weight: var(--w-head); display: flex; align-items: baseline; gap: var(--s-4); justify-content: space-between; }
+.hc-name {
+  font-size: var(--t-legend);
+  color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hc-grade {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--w-bold);
+  font-size: var(--t-small);
+}
+.hc-pct { color: var(--ink); }
+.hc-pct.none { color: var(--muted); font-weight: var(--w-text); font-style: italic; }
+.hc-meta {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  display: flex; gap: var(--s-4); flex-wrap: wrap;
+}
+.hc-band { margin-top: var(--s-2); }
+.hc-weights { display: flex; gap: 2px; height: 6px; border-radius: 3px; overflow: hidden; }
+.hc-seg { display: block; height: 100%; }
+.hc-seg > i { display: block; height: 100%; background: var(--class-color, var(--accent)); }
+.hc-scheme { font-size: var(--t-legend); color: var(--muted); margin-top: var(--s-2); }
+
+.home-upcoming { margin-top: var(--s-8); }
+.home-upcoming h3 { padding-bottom: var(--s-2); border-bottom: 1px solid var(--rule-2); margin-bottom: var(--s-2); }
+#home-up-list { list-style: none; }
+.hu-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-5);
+  padding: var(--s-3) var(--s-2);
+  border-bottom: 1px solid var(--rule);
+  border-radius: var(--r-1);
+}
+.hu-row:hover { background: var(--sunk); }
+.hu-day {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  min-width: 11ch; flex: none;
+}
+.hu-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hu-kind { font-size: var(--t-legend); color: var(--muted); flex: none; }
+
+/* --- Grades ---------------------------------------------------------------- */
+.gr-head { display: flex; align-items: baseline; gap: var(--s-5); flex-wrap: wrap; margin-bottom: var(--s-4); }
+.gr-now {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-page);
+  font-weight: var(--w-bold);
+}
+.gr-of { font-size: var(--t-legend); color: var(--muted); }
+.gr-scheme { font-size: var(--t-legend); color: var(--muted); }
+.gr-band { display: flex; align-items: center; gap: var(--s-4); min-width: 240px; flex: 1; }
+.gr-band-num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--t-legend); color: var(--muted); }
+.gr-band-bar {
+  position: relative; flex: 1; height: 6px;
+  background: var(--sunk);
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--rule);
+  overflow: hidden;
+}
+.gr-band-bar > i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+.gr-sub { font-size: var(--t-legend); color: var(--muted); margin-bottom: var(--s-5); }
+
+.gr-table { width: 100%; border-collapse: collapse; margin-top: var(--s-4); }
+.gr-table th {
+  text-align: left;
+  font-family: var(--sans);
+  font-weight: var(--w-head);
+  font-size: var(--t-legend);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  padding: var(--s-2) var(--s-4);
+  border-bottom: 1px solid var(--rule-2);
+}
+.gr-table th.num { text-align: right; }
+.gr-table td { padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--rule); font-size: var(--t-small); }
+.gr-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+}
+.gr-bucket, .gr-state { font-size: var(--t-legend); color: var(--muted); }
+.gr-items td { background: var(--panel); }
+.gr-item.missing td { color: var(--alarm); }
+.gr-item.excused td, .gr-item.hidden td { color: var(--muted); font-style: italic; }
+.gr-pct { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.gr-pct.none { color: var(--muted); }
+.gr-drop { font-size: var(--t-legend); color: var(--muted); }
+.gr-stated { font-size: var(--t-legend); color: var(--muted); }
+.gr-notes { margin-top: var(--s-5); font-size: var(--t-legend); color: var(--muted); }
+.gr-notes li { margin-left: var(--s-6); margin-bottom: var(--s-1); }
+
+/* --- Calendar subscriptions ------------------------------------------------ */
+.sub-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, auto) auto 1fr auto;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.sub-row:last-child { border-bottom: none; }
+.sub-name { font-weight: var(--w-head); font-size: var(--t-small); }
+.sub-count {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-legend);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sub-url {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 700px) {
+  .sub-row { grid-template-columns: 1fr auto; }
+  .sub-url { display: none; }
+}
+
+/* --- Narrow shells --------------------------------------------------------- */
+@media (max-width: 900px) {
+  #view-classes { grid-template-columns: 260px minmax(0, 1fr); }
+  .single { padding: var(--s-6) var(--s-6) var(--s-8); }
+  .detail { padding: var(--s-6) var(--s-6) var(--s-8); }
+}
+@media (max-width: 760px) {
+  #view-classes {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, auto) minmax(0, 1fr);
+  }
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--rule-2);
+    max-height: 34vh;
+  }
+}
+
+/* --- Ask this class (the chat rail) ---------------------------------------
+   A rail, not a tab: it sits beside whatever tab is open so an answer can be
+   read next to the task it is about. Questions are set into the paper (sunk),
+   answers are ink on the panel with their sources listed under them — the
+   page reads as correspondence, not as a messenger app. */
+#view-classes { position: relative; }
+#view-classes.chat-open { grid-template-columns: 320px minmax(0, 1fr) 340px; }
+.tabs .chat-toggle { margin-left: auto; }
+
+.chat-rail {
+  border-left: 1px solid var(--rule-2);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chat-head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-4);
+  padding: var(--s-5) var(--s-6);
+  border-bottom: 1px solid var(--rule-2);
+}
+.chat-head .spacer { flex: 1; }
+.chat-class {
+  font-family: var(--serif);
+  font-size: var(--t-title);
+  font-weight: var(--w-head);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-5) var(--s-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+}
+.chat-q {
+  align-self: flex-end;
+  max-width: 92%;
+  background: var(--sunk);
+  border-radius: var(--r-2);
+  padding: var(--s-3) var(--s-5);
+  font-weight: var(--w-label);
+}
+.chat-a { font-size: var(--t-small); }
+.chat-a b { font-family: var(--mono); font-size: var(--t-legend); font-weight: var(--w-head); }
+/* "I don't have that" is a finding, not an answer bubble. */
+.chat-a.none { color: var(--muted); font-style: italic; }
+.chat-note { font-size: var(--t-legend); color: var(--muted); }
+.chat-note.err { color: var(--alarm); }
+.chat-sources {
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.chat-src {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  min-width: 0;
+}
+.chat-src .s-tag { font-family: var(--mono); color: var(--ink); flex: none; }
+.chat-src .s-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-src a { color: var(--accent); text-decoration: none; flex: none; }
+.chat-src a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.chat-src .linky { flex: none; }
+.chat-form {
+  flex: none;
+  display: flex;
+  gap: var(--s-3);
+  padding: var(--s-5) var(--s-6);
+  border-top: 1px solid var(--rule);
+}
+.chat-form input { flex: 1; min-width: 0; }
+
+/* Narrow shells: the rail floats over the page instead of crushing it. */
+@media (max-width: 1100px) {
+  #view-classes.chat-open { grid-template-columns: 320px minmax(0, 1fr); }
+  #view-classes.chat-open .chat-rail {
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: min(360px, 92vw);
+    box-shadow: var(--float);
+    z-index: 4;
+  }
+}
+@media (max-width: 900px) {
+  #view-classes.chat-open { grid-template-columns: 260px minmax(0, 1fr); }
+}
+
+/* The page itself never pans sideways; anything wider than the room scrolls
+   inside its own box (spec 3.7 — and the html rule is load-bearing: with the
+   root left visible the viewport takes body's value and the measurement lies). */
+body { overflow-x: hidden; }
+
+/* Motion is a courtesy, not a requirement. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,11 @@
+[
+  {
+    "id": 601,
+    "title": "Syllabus Quiz",
+    "due_at": "2026-01-27T23:59:00Z",
+    "points_possible": 10,
+    "question_count": 5,
+    "quiz_type": "assignment",
+    "html_url": "https://canvas.university.edu/courses/12345/quizzes/601"
+  }
+]

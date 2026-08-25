@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+// csync-calendar — push Canvas assignments + essay checkpoints to Google Calendar.
+// Reads only from the local canvas-sync data folder. Never touches Canvas.
+
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { runSetupFlow } from '../lib/oauth.js';
+import { saveCredentials, loadCredentials, loadConfig, saveConfig, loadMapping } from '../lib/state.js';
+import { syncAll, listClassDirs, prune } from '../lib/sync.js';
+import { calendarDir } from '../lib/sync-home.js';
+
+const argv = process.argv.slice(2);
+const cmd = argv[0] || 'help';
+
+function flag(name) { return argv.includes(name); }
+function opt(name) {
+  const i = argv.indexOf(name);
+  return i >= 0 ? argv[i + 1] : null;
+}
+
+async function main() {
+  switch (cmd) {
+    case 'setup':    return setup();
+    case 'sync':     return sync();
+    case 'dry-run':  return sync(true);
+    case 'classes':  return listClasses();
+    case 'config':   return showConfig();
+    case 'reset':    return reset();
+    case 'prune':    return runPrune();
+    case 'help':
+    case '--help':
+    case '-h':       return help();
+    default:
+      console.error(`Unknown command: ${cmd}`);
+      help();
+      process.exit(2);
+  }
+}
+
+function help() {
+  console.log(`
+csync-calendar — push synced Canvas assignments to Google Calendar
+
+Commands:
+  setup                    One-time OAuth. Needs a Google Cloud Desktop client.
+  sync   [--class <slug>] [--model <name>]
+                           Plan and push events for all selected classes.
+  dry-run [--class <slug>] Show what would change without writing.
+  classes                  List synced classes visible to this tool.
+  config                   Print current calendarId + timezone.
+  prune  [--dry-run]       Remove stale mapping entries (older than 30d).
+  reset  --confirm         Wipe tokens + mapping (keeps credentials).
+
+Data folder: ${calendarDir()}
+`);
+}
+
+async function readline(question) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  return new Promise((resolve) => rl.question(question, (a) => { rl.close(); resolve(a.trim()); }));
+}
+
+async function setup() {
+  console.log(`
+canvas-calendar setup
+---------------------
+You need a Google Cloud OAuth Desktop client first:
+  1. https://console.cloud.google.com → create a project (any name).
+  2. APIs & Services → Enable "Google Calendar API".
+  3. OAuth consent screen → External → add your email as a test user.
+  4. Credentials → Create Credentials → OAuth client ID → Application type: Desktop app.
+  5. Copy the Client ID and Client Secret; paste them below.
+
+Credentials are stored at ${calendarDir()}/credentials.json (chmod 600) and NEVER leave your machine.
+`);
+
+  const existing = await loadCredentials();
+  let clientId, clientSecret;
+  if (existing && (existing.installed || existing.web)) {
+    const which = existing.installed ?? existing.web;
+    const reuse = (await readline(`Found existing credentials for client ${which.client_id}. Reuse? [Y/n] `)).toLowerCase();
+    if (reuse === '' || reuse === 'y') {
+      clientId = which.client_id;
+      clientSecret = which.client_secret;
+    }
+  }
+  if (!clientId) {
+    clientId     = await readline('Client ID: ');
+    clientSecret = await readline('Client Secret: ');
+    if (!clientId || !clientSecret) {
+      console.error('Aborted — both values required.');
+      process.exit(1);
+    }
+    await saveCredentials({ installed: { client_id: clientId, client_secret: clientSecret } });
+  }
+
+  console.log('\nOpening browser for authorization…');
+  await runSetupFlow({ clientId, clientSecret });
+  console.log('\nAuthorized. Run: csync-calendar sync');
+}
+
+async function sync(dryRun = false) {
+  const model = opt('--model');
+  const onlyClass = opt('--class');
+  const summary = await syncAll({ dryRun, onlyClass, model });
+  console.log(`\n${dryRun ? '[dry run] ' : ''}created=${summary.created} updated=${summary.updated} unchanged=${summary.unchanged} skipped=${summary.skipped}`);
+}
+
+async function listClasses() {
+  const dirs = await listClassDirs();
+  if (dirs.length === 0) {
+    console.log('No synced classes found. Is canvas-sync running?');
+    return;
+  }
+  for (const d of dirs) {
+    const metaPath = d + '/metadata.json';
+    let code = '', name = '';
+    try {
+      const m = JSON.parse(await readFile(metaPath, 'utf8'));
+      code = m.course_code || '';
+      name = m.name || '';
+    } catch {}
+    console.log(`  ${d.split('/').pop().padEnd(44)} ${code.padEnd(10)} ${name}`);
+  }
+}
+
+async function showConfig() {
+  const cfg = await loadConfig();
+  console.log(JSON.stringify(cfg, null, 2));
+  const mapping = await loadMapping();
+  console.log(`Mapped events: ${Object.keys(mapping).length}`);
+}
+
+async function reset() {
+  if (!flag('--confirm')) {
+    console.error('reset requires --confirm (removes tokens.json and mapping.json)');
+    process.exit(2);
+  }
+  const { rm } = await import('node:fs/promises');
+  const { paths } = await import('../lib/state.js');
+  for (const p of [paths.tokens(), paths.mapping()]) {
+    try { await rm(p, { force: true }); console.log(`removed ${p}`); } catch {}
+  }
+  console.log('credentials.json and config.json preserved.');
+}
+
+async function runPrune() {
+  const dryRun = flag('--dry-run');
+  const result = await prune({ dryRun });
+  console.log(`${dryRun ? '[dry run] ' : ''}deleted=${result.deleted}`);
+}
+
+main().catch((err) => {
+  console.error('Error:', err?.message || err);
+  if (process.env.DEBUG) console.error(err?.stack);
+  process.exit(1);
+});
