@@ -224,6 +224,17 @@ async function repairJson(brokenRaw) {
   return raw;
 }
 
+/**
+ * Is an existing parse already the answer for this exact source?
+ *
+ * Both halves matter: the hash proves the syllabus has not changed, and
+ * parseHasContent proves the previous run actually produced something (an
+ * empty scaffold must be re-parsed, not preserved).
+ */
+export function parseIsCurrent(previous, sourceHash) {
+  return Boolean(sourceHash) && previous?.source_hash === sourceHash && parseHasContent(previous);
+}
+
 // Does a parse actually contain anything a downstream stage could use?
 export function parseHasContent(p) {
   return Boolean(p?.course?.code || p?.course?.title)
@@ -301,6 +312,8 @@ async function main() {
   const sourceHash = await sha256File(sourcePath);
   const sourceFile = sourcePath.split('/').pop();
 
+  const OUT_PATH = join(absClassDir, 'syllabus_parsed.json');
+
   if (process.env.CLAUDE_SKIP === '1') {
     // OPEN: CLAUDE_SKIP=1 skips the claude CLI call and writes a deterministic
     // stub result. Used in automated tests where no AI model is available.
@@ -313,10 +326,29 @@ async function main() {
       instructor: { name: 'Test Instructor', email: 'test@example.edu', office_hours: 'MWF 2-3pm' },
       meeting_schedule: 'MWF 10:00-10:50am'
     };
-    const outPath = join(absClassDir, 'syllabus_parsed.json');
-    await atomicWriteJson(outPath, stub);
-    process.stderr.write(`Written: ${outPath}\n`);
+    await atomicWriteJson(OUT_PATH, stub);
+    process.stderr.write(`Written: ${OUT_PATH}\n`);
     process.exit(0);
+  }
+
+  // Has this exact syllabus already been parsed? Answered HERE rather than in
+  // each orchestrator, because the answer lives in the parse's own output and
+  // every caller needs it. The bridge rewrites syllabus.html byte-identically
+  // on every /ingest/course, so a plain mtime check calls this stage stale on
+  // every sync forever — and this is the most expensive stage there is:
+  // minutes on the local model, holding the machine-wide lock, with mine and
+  // build queued behind it. sync-all-contexts confirms with syllabus.hash,
+  // but that file only exists for UPLOADED syllabi; the previous parse's
+  // own source_hash covers HTML-only classes too. Re-stamp rather than just
+  // exiting, so the output's mtime clears the source and the caller stops
+  // asking. `--force` re-parses regardless.
+  if (!process.argv.includes('--force')) {
+    const previous = await readJsonSafe(OUT_PATH);
+    if (parseIsCurrent(previous, sourceHash)) {
+      await atomicWriteJson(OUT_PATH, previous);
+      process.stderr.write(`Syllabus unchanged since the last parse (${sourceFile}) — kept it. Use --force to re-parse.\n`);
+      process.exit(0);
+    }
   }
 
   const promptTemplate = await readFile(join(__dirname, 'prompts', 'syllabus-extraction.md'), 'utf8');
@@ -409,7 +441,7 @@ async function main() {
     parsed.extraction_notes = (parsed.extraction_notes || '') + ' Source was likely scanned/OCR-limited.';
   }
 
-  const outPath = join(absClassDir, 'syllabus_parsed.json');
+  const outPath = OUT_PATH;
   await atomicWriteJson(outPath, parsed);
   // A failure sidecar left next to a good parse reads as a current failure.
   await rm(join(absClassDir, 'syllabus_parsed.json.ERROR'), { force: true });

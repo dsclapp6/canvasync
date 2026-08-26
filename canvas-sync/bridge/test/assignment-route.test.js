@@ -16,6 +16,7 @@ import { createServer } from './helpers/server-factory.js';
 
 const SECRET = 'test-secret-assignment';
 const FOLDER = '92294-busi-305-001';
+const LONG_ID = 's2a-concept-check-consider-different-ways-to-define-your-customers';
 let server, baseUrl, tmpHome;
 
 before(async () => {
@@ -35,6 +36,10 @@ before(async () => {
   await fs.writeFile(path.join(classDir, 'assignments_mined.json'), JSON.stringify({ items: [
     { id: 'proj-1', title: 'Course Project', category: 'project', canvas_assignment_id: 71 },
     { id: 'exam-1', title: 'Midterm Exam', kind: 'implicit', category: 'exam', due_date: '2026-10-07' },
+    // A real 66-character id from BUSI 380's mined file. The model writes the
+    // id, so its length is whatever the title was.
+    { id: LONG_ID, title: 'S2a Concept Check: consider different ways to define your customers',
+      category: 'homework', canvas_assignment_id: 71 },
   ] }));
   server = await createServer();
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -93,4 +98,21 @@ test('a mined-only item is origin syllabus, with nothing to open or submit', asy
   assert.equal(body.canvas_id, null);
   assert.equal(body.url, null);
   assert.equal(body.submit_url, null);
+});
+
+test('a long mined id opens — the calendar addresses rows by exactly this id', async () => {
+  // The route capped ids at 64 chars while the miner writes whatever the
+  // model produced (BUSI 380 really holds ids of 65 and 66). Those calendar
+  // rows 400'd into a toast and no panel — a dead link — while the tick
+  // checkbox on the same row worked, because user-state allows 200.
+  assert.equal(LONG_ID.length, 66);
+  const res = await get(`/api/class/${FOLDER}/assignment/${LONG_ID}`);
+  assert.equal(res.status, 200, 'a mined id the miner can write must be openable');
+  assert.equal(res.body.origin, 'canvas', 'and it follows its claim to the Canvas row');
+  assert.ok(res.body.url, 'with real Canvas links, not a dead panel');
+});
+
+test('an id longer than the shared 200-char ceiling is still refused', async () => {
+  const res = await get(`/api/class/${FOLDER}/assignment/${'x'.repeat(201)}`);
+  assert.equal(res.status, 400);
 });

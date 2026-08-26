@@ -9,7 +9,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { parseHasContent } from '../parse-syllabus.js';
+import { parseHasContent, parseIsCurrent } from '../parse-syllabus.js';
 import { sectionSyllabusFullText } from '../mine-assignments.js';
 
 // --- parseHasContent -------------------------------------------------------
@@ -80,4 +80,31 @@ test('says so when no syllabus exists anywhere', async () => {
   const bare = await mkdtemp(join(tmpdir(), 'ccsync-syllabus-none-'));
   const md = await sectionSyllabusFullText(bare, []);
   assert.ok(md.includes('(no syllabus found)'));
+});
+
+// --- parseIsCurrent --------------------------------------------------------
+// The bridge rewrites syllabus.html byte-identically on every ingest, so every
+// mtime-based orchestrator calls the parse stage stale on every sync — and it
+// is the most expensive stage there is (minutes on the local model, holding
+// the machine-wide lock). The previous parse's own source_hash is the answer,
+// and unlike syllabus.hash it exists for HTML-only classes too.
+
+test('parseIsCurrent: same hash and real content means no re-parse', () => {
+  const prev = { source_hash: 'abc123', course: { code: 'BUSI 380' } };
+  assert.equal(parseIsCurrent(prev, 'abc123'), true);
+});
+
+test('parseIsCurrent: a changed syllabus re-parses', () => {
+  const prev = { source_hash: 'abc123', course: { code: 'BUSI 380' } };
+  assert.equal(parseIsCurrent(prev, 'def456'), false);
+});
+
+test('parseIsCurrent: an empty previous parse is not an answer to keep', () => {
+  // The empty-parse rejection path can leave a scaffold behind; matching
+  // hashes must not make it permanent.
+  assert.equal(parseIsCurrent({ source_hash: 'abc123', course: {}, schedule: [] }, 'abc123'), false);
+  assert.equal(parseIsCurrent(null, 'abc123'), false);
+  assert.equal(parseIsCurrent({ course: { code: 'X' } }, 'abc123'), false, 'no stored hash — cannot claim current');
+  assert.equal(parseIsCurrent({ source_hash: undefined, course: { code: 'X' } }, undefined), false,
+    'two undefined hashes must not compare equal');
 });

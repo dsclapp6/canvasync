@@ -449,8 +449,15 @@ export function buildApp(config) {
   // and AI-free — sync-calendar.js only reads JSON — so a plan change can
   // repopulate the worklist in a second without running the pipeline.
   let calRebuild = { running: false, at: null, ok: null };
+  // A request that arrives mid-run is REMEMBERED, not dropped. sync-calendar
+  // reads each class's state as it walks, so a run already in flight can bake
+  // in the pre-change answer; returning false and forgetting left the change
+  // out of worklist.json and all four .ics files until some unrelated trigger
+  // fired — and CALENDAR-SPEC 7.5 promises the opposite. One re-spawn is
+  // enough however many requests pile up: the next run reads current disk.
+  let calRebuildAgain = false;
   function spawnWorklistRebuild() {
-    if (calRebuild.running) return false;
+    if (calRebuild.running) { calRebuildAgain = true; return true; }
     try {
       const script = path.join(REPO_ROOT, 'scripts', 'sync-calendar.js');
       const child = spawn(process.execPath, [script], {
@@ -464,7 +471,10 @@ export function buildApp(config) {
         console.error('[bridge] worklist rebuild spawn failed:', err.message);
         calRebuild = { ...calRebuild, running: false, ok: false };
       });
-      child.on('exit', (code) => { calRebuild = { ...calRebuild, running: false, ok: code === 0 }; });
+      child.on('exit', (code) => {
+        calRebuild = { ...calRebuild, running: false, ok: code === 0 };
+        if (calRebuildAgain) { calRebuildAgain = false; spawnWorklistRebuild(); }
+      });
       return true;
     } catch (err) {
       console.error('[bridge] worklist rebuild spawn failed:', err.message);
@@ -489,9 +499,6 @@ export function buildApp(config) {
       spawnWorklistRebuild();
     }, delayMs);
   }
-  // Exposed for the shutdown path and tests: is a rebuild still owed?
-  function worklistRebuildPending() { return taskRebuildPending; }
-  void worklistRebuildPending;
 
   // POST /class/delete — per plan 3c
   v11Router.post('/class/delete', async (req, res) => {
@@ -1080,7 +1087,12 @@ export function buildApp(config) {
   dashRouter.get('/class/:folderName/assignment/:assignmentId', async (req, res) => {
     const { folderName, assignmentId } = req.params;
     if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(assignmentId)) {
+    // 200, matching the ceiling user-state.js already accepts for a task id.
+    // At 64 this route rejected ids the miner really writes — BUSI 380 has
+    // two at 65 and 66 chars — so their calendar rows were dead links while
+    // the tick checkbox on the SAME row worked, and the class page opened
+    // them fine by Canvas id. One id space, one bound.
+    if (!/^[A-Za-z0-9_-]{1,200}$/.test(assignmentId)) {
       return res.status(400).json({ error: 'invalid assignmentId' });
     }
     const dir = path.join(syncHome(), 'classes', folderName);

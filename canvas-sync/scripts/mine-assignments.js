@@ -257,7 +257,11 @@ function validateMined(obj) {
   const cleaned = [];
   for (const raw of items) {
     if (!raw || typeof raw !== 'object' || !raw.title) continue;
-    let id = typeof raw.id === 'string' && raw.id ? raw.id : slugify(raw.title);
+    // Clamped to the id space every consumer accepts (bridge assignment
+    // route, user-state task ids): an unbounded model-authored id became a
+    // dead calendar link. Every other field here is range-checked; this one
+    // was not.
+    let id = (typeof raw.id === 'string' && raw.id ? raw.id : slugify(raw.title)).slice(0, 200);
     while (seen.has(id)) id = `${id}-2`;
     seen.add(id);
     cleaned.push({

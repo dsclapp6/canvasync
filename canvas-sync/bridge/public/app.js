@@ -511,8 +511,14 @@ function wireNav() {
     // simply wrong.
     const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
     const run = tail.then(async () => {
-      const intent = CAL_DONE_PENDING.get(key);
-      if (intent === undefined) return; // a seed already reconciled this key
+      // The pending map is the newest intent when it still holds one, and
+      // THIS click's own value otherwise. It must never be read as "nothing
+      // to send": seedCalDone retires an entry the moment the (deliberately
+      // stale) worklist agrees with it, which for a fresh un-tick is
+      // immediately — so bailing on `undefined` dropped the user's last
+      // toggle silently, exactly the wedge this queue exists to prevent.
+      // Re-POSTing a value the server already holds is idempotent.
+      const intent = CAL_DONE_PENDING.has(key) ? CAL_DONE_PENDING.get(key) : done;
       try {
         await api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
           method: 'POST',
@@ -529,6 +535,10 @@ function wireNav() {
           row?.classList.toggle('is-done', !intent);
           toast(`Could not save that: ${err.message}`);
         }
+      } finally {
+        // Drop the tail once it is the last one: the settled promise's
+        // closure pins `box` and `row`, detached after any re-render.
+        if (CAL_POST_QUEUE.get(key) === run) CAL_POST_QUEUE.delete(key);
       }
     });
     CAL_POST_QUEUE.set(key, run);
