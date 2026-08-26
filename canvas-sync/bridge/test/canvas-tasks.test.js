@@ -278,3 +278,39 @@ test('a recurring item resolved by title must not swallow the dated row it reach
   assert.equal(dated.origin, 'canvas');
   assert.ok(dated.submit_url, 'the graded deadline keeps its Submit URL');
 });
+
+test('deterministic readings are a union member even when mining found none', () => {
+  const readings = { items: [{
+    id: 'reading-2026-09-01-customers', title: 'Read for Customer strategy',
+    category: 'reading', due_date: '2026-09-01', recurring: null,
+    description: 'Read Chapter 3.', origin: 'syllabus', indexed: true,
+  }] };
+  const { items, source } = tasksForClass({ mined: { items: [] }, readings, assignments: [] });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, 'reading-2026-09-01-customers');
+  assert.equal(items[0].origin, 'syllabus');
+  assert.equal(source, 'mined');
+});
+
+test('model and index copies of the same dated reading merge without losing index detail', () => {
+  const mined = { items: [{
+    id: 'week-two-reading', title: 'Week 2 reading', category: 'reading',
+    due_date: '2026-09-01', recurring: 'before each class',
+    description: 'Read Chapter 3.',
+    related_materials: [{ file: 'Chapter 3.pdf', why: 'assigned chapter' }],
+  }] };
+  const readings = { items: [{
+    id: 'reading-2026-09-01-customers', title: 'Read for Customer strategy',
+    category: 'reading', due_date: '2026-09-01', recurring: null,
+    description: 'Read Chapter 3 and both channel-strategy articles.',
+    sources: [{ type: 'syllabus', ref: 'schedule 2026-09-01' }],
+    related_materials: [{ file: 'Syllabus.pdf', why: 'lists the reading' }],
+    origin: 'syllabus', indexed: true,
+  }] };
+  const { items } = tasksForClass({ mined, readings, assignments: [] });
+  assert.equal(items.length, 1, 'one dated reading, not model + index duplicates');
+  assert.equal(items[0].id, 'week-two-reading', 'existing user-state identity survives');
+  assert.equal(items[0].recurring, null, 'explicit occurrence is not discarded as an undated recurrence');
+  assert.match(items[0].description, /both channel-strategy articles/);
+  assert.deepEqual(items[0].related_materials.map(m => m.file), ['Chapter 3.pdf', 'Syllabus.pdf']);
+});

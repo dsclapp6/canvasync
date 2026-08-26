@@ -65,7 +65,8 @@ const BUILD_SOURCES = [
   'metadata.json', 'assignments.json', 'assignment_groups.json', 'modules.json',
   'announcements.json', 'pages.json', 'quizzes.json', 'discussions.json',
   'calendar_events.json', 'grades.json', 'tabs.json', 'files_index.json',
-  'syllabus_parsed.json', 'assignments_mined.json', 'materials/last_extracted.txt',
+  'syllabus_parsed.json', 'assignments_mined.json', 'readings_index.json',
+  'materials/last_extracted.txt',
 ];
 
 // grades/files_index/metadata/tabs are deliberately absent: a changed grade must
@@ -73,7 +74,7 @@ const BUILD_SOURCES = [
 const MINE_SOURCES = [
   'assignments.json', 'assignment_groups.json', 'modules.json', 'announcements.json',
   'pages.json', 'quizzes.json', 'discussions.json', 'calendar_events.json',
-  'syllabus_parsed.json', 'materials/last_extracted.txt',
+  'syllabus_parsed.json', 'readings_index.json', 'materials/last_extracted.txt',
 ];
 
 const GRAPH_SOURCES = [
@@ -114,6 +115,16 @@ export const STAGES = [
     // neither of those can anchor it.
     anchor: 'materials/last_extracted.txt', errorSidecar: null,
     orchestrators: ['bridge/trigger.js:336', 'scripts/sync-all-contexts.js:186'],
+    counted: true, notCountedReason: null,
+  },
+  {
+    key: 'index', label: 'Dated readings', script: 'index-readings.js', needsModel: false,
+    inputs: [
+      'metadata.json', 'syllabus_parsed.json', 'syllabus.html',
+      'files_index.json', 'materials/last_extracted.txt',
+    ],
+    anchor: 'readings_index.json', errorSidecar: null,
+    orchestrators: ['bridge/trigger.js:368', 'scripts/sync-all-contexts.js:193'],
     counted: true, notCountedReason: null,
   },
   {

@@ -139,6 +139,13 @@ const CLASS_FILES = {
   'syllabus.html': SYLLABUS_HTML,
   'syllabus.hash': createHash('sha256').update(SYLLABUS_HTML).digest('hex'),
   'syllabus_parsed.json': { extracted_at: '2026-08-24T00:00:00Z', assignments: [] },
+  'readings_index.json': {
+    version: 1,
+    source: { structured: 'syllabus_parsed.json', raw: 'syllabus.html', syllabus_file: null },
+    coverage: { structured: 0, raw_fallback: 0, total: 0 },
+    items: [],
+    indexed_at: '2026-08-24T00:00:00Z',
+  },
   'assignments_mined.json': { items: [], notes: 'fixture' },
   'materials/last_extracted.txt': '2026-08-24T00:00:00Z',
   'AI_CONTEXT/last_built.txt': '2026-08-24T00:00:00Z',
@@ -159,6 +166,7 @@ async function writeClass(dir, files = CLASS_FILES) {
 const AGE = {
   data: 300,       // the raw Canvas JSON, syllabus.html, extracted text bodies
   extracted: 240,  // materials/last_extracted.txt, syllabus_parsed.json
+  indexed: 210,    // readings_index.json
   mined: 180,      // assignments_mined.json
   graph: 120,      // correlation_graph.json, when the test wants one already there
   built: 60,       // AI_CONTEXT/last_built.txt
@@ -179,6 +187,7 @@ async function stampClass(dir, { graphAge = null } = {}) {
   for (const f of RAW_DATA) await stampAge(join(dir, f), AGE.data);
   await stampAge(join(dir, 'materials/last_extracted.txt'), AGE.extracted);
   await stampAge(join(dir, 'syllabus_parsed.json'), AGE.extracted);
+  await stampAge(join(dir, 'readings_index.json'), AGE.indexed);
   await stampAge(join(dir, 'assignments_mined.json'), AGE.mined);
   await stampAge(join(dir, 'AI_CONTEXT/last_built.txt'), AGE.built);
   if (graphAge !== null) await stampAge(join(dir, GRAPH_FILE), graphAge);
@@ -350,7 +359,7 @@ test('a graph older than syllabus.html is rebuilt', async () => {
 
   const res = await runSyncAll(home);
   assert.equal(res.code, 0, res.stderr);
-  assert.equal(actionFor(res.stdout), 'graph', res.stdout);
+  assert.equal(actionFor(res.stdout), 'index+graph', res.stdout);
   assert.equal((await readGraph(dir)).sentinel, undefined, 'the stale graph survived the run');
 });
 
@@ -370,7 +379,8 @@ test('a class directory with no data at all gets no graph', async () => {
 
 test('the summary table has room for every stage that can run', async () => {
   // ACTION holds the '+'-joined stage list and the column TRUNCATES. With the
-  // graph stage the longest run is "parse+extract+mine+graph+build" — 30
+  // reading index + graph stages make the longest run
+  // "parse+extract+index+mine+graph+build" — 36
   // characters — and a narrower column would report it as a run that stopped
   // somewhere in the middle.
   const { home } = await makeHome({ withGraph: true });
@@ -380,6 +390,6 @@ test('the summary table has room for every stage that can run', async () => {
   assert.ok(header, `no summary header in:\n${res.stdout}`);
   const actionStart = header.indexOf('ACTION');
   const actionWidth = header.indexOf('MS') - actionStart - 1;
-  assert.ok(actionWidth >= 'parse+extract+mine+graph+build'.length,
+  assert.ok(actionWidth >= 'parse+extract+index+mine+graph+build'.length,
     `ACTION column is ${actionWidth} wide — the full stage list would be truncated`);
 });

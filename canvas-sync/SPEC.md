@@ -145,6 +145,7 @@ behaviour, not the audit trail.
 | F5 | Calendar: one color per class, selection chips, row checkboxes | DONE (code) | `bridge/public/app.js` `classColor()` / `classHueMap()`, `cal-classes` chips, `data-cal-done` checkbox. The pure selection transitions are covered in `bridge/test/cal-plan.test.js`; the DOM wiring itself has no automated harness |
 | F6 | `url` / `submit_url` as worklist fields, `Submit:` in event descriptions | DONE (code) | `scripts/sync-calendar.js`: op fields in `opsForItem`, `- url:` / `- submit_url:` in `renderWorklistMd`, `Submit: <url>` in the description builder. `submit_url` is emitted only when it differs from `url` |
 | F7 | Truncated-JSON salvage for syllabus parses | DONE (code+tests+live) | `salvageTruncatedJson()` in `scripts/parse-syllabus.js`; all 5 classes have a `syllabus_parsed.json` |
+| F8 | Dated readings cannot be omitted by the assignment-mining model | DONE (code+tests+live) | `reading-index.js` + `scripts/index-readings.js`: structured schedule is the floor, newest extracted syllabus is the raw-text fallback, `tasksForClass()` unions the index everywhere. Live dry-run: 39 reading ops (ECON 205 1, BUSI 305 15, BUSI 380 23), up from 0; 0 readings left unscheduled |
 
 ### F1. The meeting-time recovery chain
 

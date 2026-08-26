@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { aiInvoke, readJsonSafe, atomicWriteJson } from './_util.js';
+import { indexClassReadings } from './index-readings.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -173,6 +174,17 @@ function sectionCalendarEvents(events) {
     description: clip(stripHtml(e.description), 300) || null,
   }));
   return `## Course calendar events\n\n${JSON.stringify(rows, null, 1)}\n`;
+}
+
+function sectionReadingIndex(readings) {
+  const rows = (Array.isArray(readings?.items) ? readings.items : []).map(item => ({
+    id: item.id,
+    title: item.title,
+    due_date: item.due_date,
+    description: item.description,
+    sources: item.sources,
+  }));
+  return `## Deterministic dated reading index (completeness floor; do not omit these)\n\n${JSON.stringify(rows, null, 1)}\n`;
 }
 
 function isSyllabusFile(e) {
@@ -350,6 +362,11 @@ async function main() {
 
   const outPath = join(classDir, 'assignments_mined.json');
 
+  // Build this before any AI call. Even if the local model fails, truncates,
+  // or returns a plausible list with every reading absent, calendar/class
+  // consumers can still read the independent index.
+  const { index: readingsIndex } = await indexClassReadings(classDir);
+
   if (process.env.CLAUDE_SKIP === '1') {
     const stub = stubFromCanvas(assignments, quizzes);
     stub.mined_at = new Date().toISOString();
@@ -372,6 +389,7 @@ async function main() {
     sectionMessages('Announcements', announcements, 'title', 'message', 'posted_at'),
     sectionMessages('Discussions', discussions, 'title', 'message', 'posted_at'),
     sectionCalendarEvents(calendarEvents),
+    sectionReadingIndex(readingsIndex),
     await sectionMaterials(classDir, filesIndex),
   ];
   const corpus = corpusParts.join('\n');

@@ -81,6 +81,9 @@ async function writeFullClass(root, folder) {
     source_hash: hash, extraction_confidence: 'high',
   });
   await writeFile(path.join(dir, 'materials', 'last_extracted.txt'), at(2).toISOString(), 'utf8');
+  await writeJson(path.join(dir, 'readings_index.json'), {
+    version: 1, coverage: { structured: 0, raw_fallback: 0, total: 0 }, items: [],
+  });
   await writeJson(path.join(dir, 'correlation_graph.json'), {
     builtAt: at(3).toISOString(),
     stats: { nodeCount: 5, edgeCount: 3, density: 0.3, medianDegree: 2, skipped: { unusable: 1 } },
@@ -105,6 +108,7 @@ async function writeFullClass(root, folder) {
   await touch(path.join(dir, 'syllabus.hash'), T0);
   await touch(path.join(dir, 'syllabus_parsed.json'), at(1));
   await touch(path.join(dir, 'materials', 'last_extracted.txt'), at(2));
+  await touch(path.join(dir, 'readings_index.json'), at(3));
   await touch(path.join(dir, 'correlation_graph.json'), at(3));
   await touch(path.join(dir, 'assignments_mined.json'), at(4));
   await touch(path.join(dir, 'AI_CONTEXT', 'last_built.txt'), at(5));
@@ -149,7 +153,7 @@ test('an empty class directory is a class that has not started, not a class that
   assert.equal(c.overall.total, 0);
   assert.equal(c.overall.percent, null);
   assert.equal(c.overall.state, 'not-started');
-  for (const key of ['parse', 'extract', 'mine', 'build']) {
+  for (const key of ['parse', 'extract', 'index', 'mine', 'build']) {
     assert.equal(stageOf(c, key).state, 'n-a', `${key} has no inputs, which is not a gap to be counted`);
   }
 });
@@ -179,13 +183,14 @@ test('a class holding only metadata.json must report the context stage not-start
   assert.equal(c.code, 'MATH 100');
   assert.equal(stageOf(c, 'parse').state, 'n-a', 'no syllabus was ever delivered');
   assert.equal(stageOf(c, 'extract').state, 'n-a', 'no files_index.json');
+  assert.equal(stageOf(c, 'index').state, 'not-started', 'metadata can supply the term year once a reading source arrives');
   assert.equal(stageOf(c, 'mine').state, 'n-a', 'metadata.json is deliberately not a mining source');
   assert.equal(stageOf(c, 'build').state, 'not-started');
   assert.equal(stageOf(c, 'build').stale, true, 'a source exists and the anchor does not');
-  assert.equal(c.overall.total, 1);
+  assert.equal(c.overall.total, 2);
   assert.equal(c.overall.done, 0);
   assert.equal(c.overall.percent, 0);
-  assert.match(c.overall.denominator, /1 counted stage\(s\): build/);
+  assert.match(c.overall.denominator, /2 counted stage\(s\): index, build/);
 });
 
 test('a fully indexed class reports every counted stage done, and says which stages it refused to count', async () => {
@@ -194,13 +199,13 @@ test('a fully indexed class reports every counted stage done, and says which sta
   const p = await indexProgress(root, NO_SCAN);
   const c = classOf(p, '20001-busi-101-001');
 
-  for (const key of ['parse', 'extract', 'mine', 'build']) {
+  for (const key of ['parse', 'extract', 'index', 'mine', 'build']) {
     assert.equal(stageOf(c, key).state, 'done', `${key}: ${stageOf(c, key).evidence}`);
   }
-  assert.equal(c.overall.done, 4);
-  assert.equal(c.overall.total, 4);
+  assert.equal(c.overall.done, 5);
+  assert.equal(c.overall.total, 5);
   assert.equal(c.overall.percent, 100);
-  assert.match(c.overall.denominator, /4 counted stage\(s\): parse, extract, mine, build/,
+  assert.match(c.overall.denominator, /5 counted stage\(s\): parse, extract, index, mine, build/,
     'the denominator must appear next to the percentage, always');
 
   // graph and pack2 exist on disk / in the stage list but are excluded, with a
@@ -272,8 +277,8 @@ test('a source newer than the mined output must read as stale, not as done', asy
   assert.equal(stageOf(c, 'build').state, 'stale');
   assert.equal(stageOf(c, 'parse').state, 'done', 'a changed modules.json has nothing to do with the syllabus');
   assert.equal(c.overall.state, 'stale');
-  assert.equal(c.overall.done, 2);
-  assert.equal(c.overall.percent, 50);
+  assert.equal(c.overall.done, 3);
+  assert.equal(c.overall.percent, 60);
 });
 
 test('a byte-identical syllabus rewrite must not re-fire the AI parse stage forever', async () => {

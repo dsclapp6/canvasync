@@ -66,6 +66,7 @@ const DATA_FILES = [
   'pages.json', 'quizzes.json', 'discussions.json', 'calendar_events.json',
   'grades.json', 'tabs.json',
   'files_index.json', 'metadata.json', 'syllabus_parsed.json', 'assignments_mined.json',
+  'readings_index.json',
   'materials/last_extracted.txt',
 ];
 
@@ -97,6 +98,13 @@ async function needsExtract(classDir) {
 
 async function needsMine(classDir) {
   return outputStale(classDir, 'assignments_mined.json', MINE_SOURCES);
+}
+
+async function needsReadingIndex(classDir) {
+  return outputStale(classDir, 'readings_index.json', [
+    'metadata.json', 'syllabus_parsed.json', 'syllabus.html',
+    'files_index.json', 'materials/last_extracted.txt',
+  ]);
 }
 
 async function needsBuild(classDir) {
@@ -168,7 +176,7 @@ async function processClass(classDir, classDirName, limit) {
 
   // Full per-class pipeline, in dependency order. Each stage re-checks
   // staleness after the previous one ran, so one pass brings the class
-  // fully up to date: parse → extract → mine → graph → context/pack.
+  // fully up to date: parse → extract → reading index → mine → graph → context/pack.
   //
   // graph sits second-to-last on purpose. It scores every item against every
   // other from the text, so it MUST run after extract: the materials/*.txt
@@ -184,6 +192,9 @@ async function processClass(classDir, classDirName, limit) {
   const stages = [
     ['parse',   'parse-syllabus.js',       needsParse],
     ['extract', 'extract-course-files.js', needsExtract],
+    // Not model-backed and intentionally has no dashboard kill switch. The
+    // readings floor is a correctness invariant, not an AI feature.
+    ['index',   'index-readings.js',       needsReadingIndex],
     ['mine',    'mine-assignments.js',     needsMine],
     ['graph',   'build-graph.js',          needsGraph],
     ['build',   'build-context.js',        needsBuild],
@@ -193,7 +204,7 @@ async function processClass(classDir, classDirName, limit) {
     // The dashboard's Functions switches (CSYNC_STAGE_* in settings.json)
     // govern this orchestrator too — a stage the user turned off must not run
     // from the CLI either, or "off" only means "off until someone force-syncs".
-    if (!(await stageEnabled(label))) continue;
+    if (label !== 'index' && !(await stageEnabled(label))) continue;
     if (!(await check(classDir))) continue;
     ran.push(label);
     const r = await runScript(script, classDir, label);
@@ -332,15 +343,15 @@ async function main() {
 
 function printSummary(results) {
   // ACTION holds the '+'-joined stage list, and pad() TRUNCATES. The full
-  // chain is now "parse+extract+mine+graph+build" — 30 characters — so a
-  // 26-wide column would report a run that did everything as one that stopped
+  // chain is now "parse+extract+index+mine+graph+build" — 36 characters — so a
+  // narrower column would report a run that did everything as one that stopped
   // at "…+graph+b". Widen it with the pipeline, or the table starts lying
   // about the slowest runs, which are the ones anyone reads it for.
-  const header = `${'CLASS'.padEnd(40)} ${'ACTION'.padEnd(32)} ${'MS'.padEnd(8)} OUTCOME`;
+  const header = `${'CLASS'.padEnd(40)} ${'ACTION'.padEnd(38)} ${'MS'.padEnd(8)} OUTCOME`;
   const sep = '-'.repeat(header.length);
   process.stdout.write('\n' + sep + '\n' + header + '\n' + sep + '\n');
   for (const r of results) {
-    const line = `${pad(r.class, 40)} ${pad(r.action, 32)} ${pad(r.duration, 8)} ${r.outcome}`;
+    const line = `${pad(r.class, 40)} ${pad(r.action, 38)} ${pad(r.duration, 8)} ${r.outcome}`;
     process.stdout.write(line + '\n');
   }
   process.stdout.write(sep + '\n');

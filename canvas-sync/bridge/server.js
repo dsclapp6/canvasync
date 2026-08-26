@@ -27,6 +27,7 @@ import {
 } from '../calendar-kinds.js';
 import { canvasItemUrl, canvasSubmitUrl } from '../canvas-links.js';
 import { tasksForClass } from '../canvas-tasks.js';
+import { readingsWithScheduleFloor } from '../reading-index.js';
 import { modelLockStatus, anthropicKeyStatus } from '../scripts/_util.js';
 import { DEFAULT_PALETTE, COLORS_FILE, resolveColors, applyColorPatch } from '../class-colors.js';
 import { countMeetings } from '../scripts/cal-meetings.js';
@@ -860,9 +861,10 @@ export function buildApp(config) {
     const out = [];
     for (const folder of folders) {
       const dir = path.join(classesDir, folder);
-      const [metadata, mined, filesIndex, grades, assignments, groups, syllabusParsed] = await Promise.all([
+      const [metadata, mined, readings, filesIndex, grades, assignments, groups, syllabusParsed] = await Promise.all([
         readJsonOrNull(path.join(dir, 'metadata.json')),
         readJsonOrNull(path.join(dir, 'assignments_mined.json')),
+        readJsonOrNull(path.join(dir, 'readings_index.json')),
         readJsonOrNull(path.join(dir, 'files_index.json')),
         readJsonOrNull(path.join(dir, 'grades.json')),
         readJsonOrNull(path.join(dir, 'assignments.json')),
@@ -889,7 +891,8 @@ export function buildApp(config) {
         // unclaimed dated Canvas rows, and an un-mined class still has work.
         taskCount: (() => {
           try {
-            const { items } = tasksForClass({ mined, assignments });
+            const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
+            const { items } = tasksForClass({ mined, readings: readingFloor, assignments });
             return items.length > 0 || mined || assignments ? items.length : null;
           } catch { return Array.isArray(mined?.items) ? mined.items.length : null; }
         })(),
@@ -1047,10 +1050,11 @@ export function buildApp(config) {
     const dir = path.join(syncHome(), 'classes', folderName);
     try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
 
-    const [metadata, context, minedRaw, filesIndex, grades, tabs, syllabusParsed, assignments, assignmentGroups, coursePacks, pages] = await Promise.all([
+    const [metadata, context, minedRaw, readings, filesIndex, grades, tabs, syllabusParsed, assignments, assignmentGroups, coursePacks, pages] = await Promise.all([
       readJsonOrNull(path.join(dir, 'metadata.json')),
       readJsonOrNull(path.join(dir, 'AI_CONTEXT', 'context.json')),
       readJsonOrNull(path.join(dir, 'assignments_mined.json')),
+      readJsonOrNull(path.join(dir, 'readings_index.json')),
       readJsonOrNull(path.join(dir, 'files_index.json')),
       readJsonOrNull(path.join(dir, 'grades.json')),
       readJsonOrNull(path.join(dir, 'tabs.json')),
@@ -1063,7 +1067,10 @@ export function buildApp(config) {
     // Until mining runs, Canvas is the task list. Serving nothing here was
     // showing "no tasks yet" for classes with dozens of Canvas assignments —
     // the same fallback the calendar has always had.
-    const { items: taskItems, source: taskSource } = tasksForClass({ mined: minedRaw, assignments });
+    const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
+    const { items: taskItems, source: taskSource } = tasksForClass({
+      mined: minedRaw, readings: readingFloor, assignments,
+    });
     const userState = await readUserState(dir);
     // Provenance is derived from the sibling JSON rather than stored, so it
     // backfills classes synced before file-origins.js existed.
@@ -1119,26 +1126,33 @@ export function buildApp(config) {
     const dir = path.join(syncHome(), 'classes', folderName);
     try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
 
-    const [assignments, quizzes, filesIndex, metadata, mined, pages] = await Promise.all([
+    const [assignments, quizzes, filesIndex, metadata, mined, readings, syllabusParsed, pages] = await Promise.all([
       readJsonOrNull(path.join(dir, 'assignments.json')),
       readJsonOrNull(path.join(dir, 'quizzes.json')),
       readJsonOrNull(path.join(dir, 'files_index.json')),
       readJsonOrNull(path.join(dir, 'metadata.json')),
       readJsonOrNull(path.join(dir, 'assignments_mined.json')),
+      readJsonOrNull(path.join(dir, 'readings_index.json')),
+      readJsonOrNull(path.join(dir, 'syllabus_parsed.json')),
       readJsonOrNull(path.join(dir, 'pages.json')),
     ]);
 
     const wanted = String(assignmentId).replace(/^canvas-/, '');
+    const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
+    const sourceItems = [
+      ...(Array.isArray(mined?.items) ? mined.items : []),
+      ...(Array.isArray(readingFloor?.items) ? readingFloor.items : []),
+    ];
     // Mined-only work (found in slides, never a Canvas object) has no Canvas
     // row; serve what the miner knows rather than 404ing on the user.
-    const minedItem = (mined?.items || []).find(
+    const minedItem = sourceItems.find(
       x => String(x?.id) === assignmentId || String(x?.canvas_assignment_id ?? '') === wanted) || null;
     // The merge is the identity everything else writes under. A mined item
     // the merge DECLINES (an aggregate whose claimed row is dated, a
     // recurring item that would swallow one) keeps living in the raw file,
     // and keying user state off it returned {} for work the user had already
     // ticked — the panel showed it outstanding. Ask the merge who this is.
-    const mergedItems = tasksForClass({ mined, assignments }).items;
+    const mergedItems = tasksForClass({ mined, readings: readingFloor, assignments }).items;
     const mergedSelf = mergedItems.find(x => String(x?.id) === assignmentId)
       || (minedItem && mergedItems.find(x => String(x?.id) === String(minedItem.id)))
       || mergedItems.find(x => String(x?.canvas_assignment_id ?? '') === wanted)
@@ -1154,7 +1168,7 @@ export function buildApp(config) {
     if (!a && mergedSelf?.canvas_assignment_id != null) {
       a = (assignments || []).find(x => String(x?.id) === String(mergedSelf.canvas_assignment_id)) || null;
     }
-    if (!a && !minedItem) return res.status(404).json({ error: 'assignment not found' });
+    if (!a && !mergedSelf) return res.status(404).json({ error: 'assignment not found' });
 
     const quiz = a?.quiz_id ? (quizzes || []).find(q => String(q?.id) === String(a.quiz_id)) || null : null;
     const userState = await readUserState(dir);
@@ -1181,7 +1195,7 @@ export function buildApp(config) {
         .map(f => ({ name: f.displayName, localPath: f.localPath, size: f.size }));
     } catch { /* provenance is a nicety here, not a requirement */ }
     const linkedMinedItem = linkRelatedMaterials(
-      minedItem,
+      mergedSelf ?? minedItem,
       materialSources(filesForMaterials, pages ?? []),
     );
 
@@ -1190,9 +1204,11 @@ export function buildApp(config) {
       course_code: metadata?.course_code ?? null,
       id: stateKey,
       canvas_id: a?.id ?? null,
-      name: a?.name ?? minedItem?.title ?? 'Untitled',
+      name: a?.name ?? mergedSelf?.title ?? minedItem?.title ?? 'Untitled',
       due_at: a?.due_at ?? null,
-      points_possible: a?.points_possible ?? minedItem?.points_possible ?? null,
+      due_date: mergedSelf?.due_date ?? null,
+      due_time: mergedSelf?.due_time ?? null,
+      points_possible: a?.points_possible ?? mergedSelf?.points_possible ?? minedItem?.points_possible ?? null,
       submission_types: a?.submission_types ?? [],
       is_quiz: Boolean(a?.quiz_id),
       quiz: quiz ? { id: quiz.id, question_count: quiz.question_count ?? null, time_limit: quiz.time_limit ?? null } : null,

@@ -1249,6 +1249,10 @@ function renderAssignment() {
     const diff = daysUntilIso(a.due_at);
     const rel = diff == null ? '' : ` · ${dueRelHtml(diff, '', { done: !!a.user_state?.done })}`;
     bits.push(`Due ${esc(fmtDateTime(a.due_at))}${rel}`);
+  } else if (a.due_date) {
+    const diff = daysUntil(a.due_date);
+    const rel = diff == null ? '' : ` · ${dueRelHtml(diff, '', { done: !!a.user_state?.done })}`;
+    bits.push(`Due ${esc(fmtShortDate(a.due_date))}${a.due_time ? ` at ${esc(fmtTime12(a.due_time))}` : ''}${rel}`);
   }
   if (a.points_possible != null) bits.push(esc(`${a.points_possible} pts`));
   if (a.is_quiz) {
@@ -1278,14 +1282,14 @@ function renderAssignment() {
   }
 
   const parts = [];
-  // Say what this IS before anything else: an AI-added item has no Canvas row,
+  // Say what this IS before anything else: a syllabus-added item has no Canvas row,
   // so there is no submit box to hunt for. Strictly the server's word — a
   // bridge that predates the origin field also predates the claim-following
   // lookup, so its `canvas_id` is null for merged items too and inferring from
   // it would pin this notice on real Canvas work.
   const aiAdded = a.origin === 'syllabus';
   if (aiAdded) {
-    parts.push('<div class="notice ai-added">Added by AI from the syllabus — not a Canvas assignment. There is nothing to submit on Canvas.</div>');
+    parts.push('<div class="notice ai-added">Added from the syllabus — not a Canvas assignment. There is nothing to submit on Canvas.</div>');
   }
   if (a.locked_for_user) {
     parts.push(`<div class="notice">Locked on Canvas${a.lock_explanation ? ` — ${esc(a.lock_explanation)}` : ''}</div>`);
@@ -3845,10 +3849,10 @@ function renderCalKinds(all) {
  * An empty Readings filter and a class with no meetings both used to look
  * exactly like a sync that had failed: zero rows and no explanation. BUSI 396
  * shows 0 meetings because its four "schedule" rows are module date ranges
- * rather than class sessions, `reading` is 0 ops because the miner is told to
- * collapse recurring readings into one undated item, and ENTR 222 holds office
- * hours by appointment only. All three are correct behaviour and all three are
- * invisible without this. CALENDAR-SPEC 4.5, 4.6.
+ * rather than class sessions, a genuinely undated recurring reading still has
+ * no honest calendar slot, and ENTR 222 holds office hours by appointment only.
+ * These cases are invisible without the notes. Explicit dated readings now
+ * come from the deterministic reading index. CALENDAR-SPEC 4.5, 4.6.
  *
  * Global notes always; per-class notes only when the filter has narrowed to a
  * few kinds, or the unfiltered view prints a paragraph per class per kind.

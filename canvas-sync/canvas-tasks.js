@@ -147,13 +147,55 @@ function aggregateCount(title) {
  * the deadline and gets a veto on the category via `canvas_category`. Neither
  * gets to delete the other's work — see the claim rules inside.
  *
+ * `readings` is the deterministic readings_index.json companion. It is kept
+ * separate from assignments_mined.json so a weak or failed model run cannot
+ * overwrite the explicit dated readings recovered from the syllabus.
+ *
  * Returns { items, source } so the UI can say which it is looking at:
  *   'mined'  — mining only (Canvas has nothing dated to add)
  *   'canvas' — Canvas only (mining has not run)
  *   'mixed'  — both
  */
-export function tasksForClass({ mined, assignments }) {
-  const minedItems = Array.isArray(mined?.items) ? mined.items : [];
+export function tasksForClass({ mined, assignments, readings } = {}) {
+  const modelItems = Array.isArray(mined?.items) ? mined.items : [];
+  const indexedReadings = Array.isArray(readings?.items) ? readings.items : [];
+
+  // A model may repeat a reading the deterministic index already found. The
+  // index is the completeness floor (it carries the full schedule text); the
+  // model remains useful for links and source enrichment. Merge one reading
+  // per explicit date, preserving the model id so existing user notes/checks
+  // do not move to a new key after this upgrade.
+  const minedItems = modelItems.map(item => ({ ...item }));
+  for (const indexed of indexedReadings) {
+    if (!indexed || indexed.category !== 'reading') continue;
+    const matchAt = minedItems.findIndex(item => item?.category === 'reading'
+      && ((item.id && item.id === indexed.id)
+        || (item.due_date && item.due_date === indexed.due_date)));
+    if (matchAt === -1) {
+      minedItems.push(indexed);
+      continue;
+    }
+    const model = minedItems[matchAt];
+    const sources = [...(Array.isArray(indexed.sources) ? indexed.sources : [])];
+    for (const source of Array.isArray(model.sources) ? model.sources : []) {
+      if (!sources.some(s => s?.type === source?.type && s?.ref === source?.ref)) sources.push(source);
+    }
+    const related = [...(Array.isArray(model.related_materials) ? model.related_materials : [])];
+    for (const material of Array.isArray(indexed.related_materials) ? indexed.related_materials : []) {
+      if (!related.some(m => m?.file === material?.file)) related.push(material);
+    }
+    minedItems[matchAt] = {
+      ...model,
+      ...indexed,
+      id: model.id || indexed.id,
+      sources,
+      related_materials: related,
+      // An explicit session date is an occurrence, not an undated recurrence.
+      // Keeping the model's `recurring` flag here would make sync-calendar
+      // route the item to a note and discard the dated event again.
+      recurring: null,
+    };
+  }
   const rows = (assignments || []).filter(a => a && a.id != null);
   const byId = new Map(rows.map(a => [String(a.id), a]));
   const datedIds = new Set(rows.filter(a => a.due_at).map(a => String(a.id)));

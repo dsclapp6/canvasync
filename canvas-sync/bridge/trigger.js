@@ -8,6 +8,7 @@ import { createWriteStream, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, isInScope } from '../scope.js';
+import { indexClassReadings } from '../scripts/index-readings.js';
 
 // One shared definition for every entry point — see ../data-root.js.
 const syncHome = dataRoot;
@@ -360,17 +361,23 @@ async function processClassDir(classDir, fn) {
     [p('files_index.json')],
     [p('files')]);
 
-  // 3. Mine the exhaustive task list (AI) → assignments_mined.json
+  // Deterministic and cheap. This runs independently of the AI mining switch:
+  // turning the model off must never turn explicit syllabus readings off too.
+  // The writer is content-aware, so an unchanged pass does not bump mtimes or
+  // make downstream stages stale.
+  await indexClassReadings(classDir);
+
+  // 4. Mine the exhaustive task list (AI) → assignments_mined.json
   if (fn.mine) await runStageIfStale(classDir, 'mine-assignments.js',
     p('assignments_mined.json'),
     [
       p('assignments.json'), p('assignment_groups.json'), p('quizzes.json'),
       p('syllabus_parsed.json'), p('modules.json'), p('pages.json'),
       p('announcements.json'), p('discussions.json'), p('calendar_events.json'),
-      p('materials', 'last_extracted.txt'),
+      p('materials', 'last_extracted.txt'), p('readings_index.json'),
     ]);
 
-  // 4. Build the context + uploadable pack → AI_CONTEXT/
+  // 5. Build the context + uploadable pack → AI_CONTEXT/
   if (fn.build) await runStageIfStale(classDir, 'build-context.js',
     p('AI_CONTEXT', 'last_built.txt'),
     [
@@ -379,7 +386,7 @@ async function processClassDir(classDir, fn) {
       p('quizzes.json'), p('discussions.json'), p('calendar_events.json'),
       p('grades.json'), p('tabs.json'),
       p('syllabus_parsed.json'), p('assignments_mined.json'),
-      p('materials', 'last_extracted.txt'),
+      p('readings_index.json'), p('materials', 'last_extracted.txt'),
     ]);
 }
 

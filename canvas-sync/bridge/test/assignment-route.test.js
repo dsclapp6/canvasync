@@ -43,6 +43,12 @@ before(async () => {
     { id: LONG_ID, title: 'S2a Concept Check: consider different ways to define your customers',
       category: 'homework', canvas_assignment_id: 71 },
   ] }));
+  await fs.writeFile(path.join(classDir, 'readings_index.json'), JSON.stringify({ items: [
+    { id: 'reading-2026-09-08-customer-strategy', title: 'Read for Customer strategy',
+      category: 'reading', due_date: '2026-09-08', recurring: null,
+      description: 'Read Chapter 3 before class.', origin: 'syllabus', indexed: true,
+      related_materials: [{ file: 'Project Brief.pdf', why: 'contains the assigned chapter' }] },
+  ] }));
   await fs.writeFile(path.join(classDir, 'files_index.json'), JSON.stringify([
     { canvasId: 901, displayName: 'Project Brief.pdf', localPath: 'files/Project Brief.pdf',
       materialsPath: 'materials/Project Brief.pdf.txt', extractionStatus: 'done' },
@@ -113,6 +119,16 @@ test('a mined-only item is origin syllabus, with nothing to open or submit', asy
   assert.equal(body.submit_url, null);
   assert.equal(body.mined.related_materials[0].source.type, 'page');
   assert.equal(body.mined.related_materials[0].source.pageId, '44');
+});
+
+test('a deterministic indexed reading opens like every other calendar item', async () => {
+  const { status, body } = await get(`/api/class/${FOLDER}/assignment/reading-2026-09-08-customer-strategy`);
+  assert.equal(status, 200);
+  assert.equal(body.origin, 'syllabus');
+  assert.equal(body.canvas_id, null);
+  assert.equal(body.due_date, '2026-09-08');
+  assert.match(body.mined.description, /Chapter 3/);
+  assert.equal(body.mined.related_materials[0].source.type, 'file');
 });
 
 test('a linked Canvas page body is fetched only when the viewer opens it', async () => {

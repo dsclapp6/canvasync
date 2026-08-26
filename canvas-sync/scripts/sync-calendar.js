@@ -57,6 +57,7 @@ import { recoverMeetingTimes } from './meeting-times.js';
 import { officeHoursFor, resolveRange, describeOfficeHours } from './cal-office-hours.js';
 import { icsFilesFor } from './cal-ics.js';
 import { tasksForClass } from '../canvas-tasks.js';
+import { readingsWithScheduleFloor } from '../reading-index.js';
 import { readCustomItems, opsForCustomItems } from '../custom-items.js';
 
 const PAST_GRACE_DAYS = 7;     // still emit ops for items due up to a week ago (late updates)
@@ -796,11 +797,10 @@ function kindNoun(kind, n) {
  *
  * CALENDAR-SPEC 4.5 and 4.6 both ask for the same thing in different places: a
  * toggle or a class column that shows nothing has to say WHY, in words, or the
- * user reads it as the feature being broken. `reading` is the extreme case —
- * the entire corpus holds one reading, BUSI 305's "Pre-class Readings", it is
- * `recurring: "before each class"` with no date, and recurring items are routed
- * to notes before ops are built. The switch is on, it is honest, and it can
- * never produce an event; without this it says so nowhere.
+ * user reads it as the feature being broken. The original extreme case was a
+ * model that emitted one undated recurring reading while omitting 38 explicit
+ * dated syllabus rows. The deterministic reading index now schedules those;
+ * this explanation remains necessary for genuinely undated obligations.
  */
 function kindNote(kind, reasons, { where }) {
   const label = KIND_LABELS[kind] ?? kind;
@@ -955,6 +955,7 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
       userState: (await readUserState(classDir)).items ?? {},
       canvasAssignments: await readJsonSafe(join(classDir, 'assignments.json')),
       mined: await readJsonSafe(join(classDir, 'assignments_mined.json')),
+      readings: await readJsonSafe(join(classDir, 'readings_index.json')),
       minedMtime: await minedMtime(classDir),
       syllabusParsed,
       canvasEvents: await readJsonSafe(join(classDir, 'calendar_events.json')),
@@ -985,12 +986,19 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
 
   // Pass 2: ops.
   for (const ctx of contexts) {
-    const { classDir, classSlug, courseCode, instructor, userState, canvasAssignments, mined, syllabusParsed, canvasEvents } = ctx;
+    const { classDir, classSlug, courseCode, instructor, userState, canvasAssignments, mined, readings, syllabusParsed, canvasEvents } = ctx;
     classSlugs.push(classSlug);
 
-    const { items } = tasksForClass({ mined, assignments: canvasAssignments });
+    // The persisted index contains raw-text fallbacks; the structured schedule
+    // is also applied in-memory so a missing/stale index cannot create a gap
+    // between syllabus parsing and the next pipeline pass.
+    const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
+    const { items } = tasksForClass({ mined, readings: readingFloor, assignments: canvasAssignments });
     for (const it of items) {
-      if (!it.recurring) continue;
+      // A recurrence with no date cannot become one honest event. A model can,
+      // however, attach `recurring` to a dated occurrence (ECON 205 did this
+      // to its Aug 25 reading). The explicit date wins and is scheduled below.
+      if (!it.recurring || it.due_date) continue;
       recurringNotes.push(`${shortCourseCode(courseCode)}: ${it.title} — ${it.recurring}${it.description ? ` (${it.description})` : ''}`);
       // Counted as a drop as well as noted. A recurring obligation with no date
       // is correctly unschedulable — BUSI 305's twelve MBC homeworks and ECON
@@ -1013,7 +1021,7 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
     };
 
     for (const it of items) {
-      if (it.recurring) continue;
+      if (it.recurring && !it.due_date) continue;
       ops.push(...opsForItem(it, {
         classSlug, courseCode, todayIso, minIso, maxIso,
         state: userState[it.id] ?? {},
@@ -1112,11 +1120,10 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
     };
     slot[d.reason] = (slot[d.reason] ?? 0) + 1;
   }
-  // Per kind, so a toggle showing zero can say WHY it is zero. `reading` is the
-  // case that forced this: the corpus holds exactly one reading, BUSI 305's
-  // "Pre-class Readings", and it is `recurring: "before each class"` with no
-  // date — correctly unschedulable, but a switch that reads "Readings: on" and
-  // changes nothing is a switch the user stops believing.
+  // Per kind, so a toggle showing zero can say WHY it is zero. An earlier
+  // reading failure forced this diagnostic; it remains useful for genuinely
+  // undated recurring work even though dated readings now have a deterministic
+  // index and no longer rely on the model.
   const unscheduledByKind = Object.fromEntries(KINDS.map(k => [k, drops.filter(d => d.kind === k && d.reason !== 'done').length]));
 
   // …and the same thing again in words, because a number is not a reason.

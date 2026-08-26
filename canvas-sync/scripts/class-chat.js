@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { recoverMeetingTimes, describeMeetingSource } from './meeting-times.js';
 import { collectMeetings } from './cal-meetings.js';
 import { tasksForClass, EXAM_RE } from '../canvas-tasks.js';
+import { readingsWithScheduleFloor } from '../reading-index.js';
 import {
   readGraph, buildGraph, selectForQuery, neighbours, stripHtml, tokenise,
 } from './correlation-graph.js';
@@ -173,14 +174,15 @@ async function readTextOrNull(p) {
 // ==========================================================================
 
 async function loadClassData(classDir) {
-  const [metadata, syllabusParsed, assignments, mined, canvasEvents] = await Promise.all([
+  const [metadata, syllabusParsed, assignments, mined, readings, canvasEvents] = await Promise.all([
     readJsonSafe(path.join(classDir, 'metadata.json')),
     readJsonSafe(path.join(classDir, 'syllabus_parsed.json')),
     readJsonSafe(path.join(classDir, 'assignments.json')),
     readJsonSafe(path.join(classDir, 'assignments_mined.json')),
+    readJsonSafe(path.join(classDir, 'readings_index.json')),
     readJsonSafe(path.join(classDir, 'calendar_events.json')),
   ]);
-  return { metadata, syllabusParsed, assignments, mined, canvasEvents };
+  return { metadata, syllabusParsed, assignments, mined, readings, canvasEvents };
 }
 
 /**
@@ -322,7 +324,7 @@ export async function classFacts(classDir, { now = new Date() } = {}) {
   const stillAhead = m => m.date > today || !m.end || m.end > nowClock;
   const warnings = [];
 
-  const { metadata, syllabusParsed, assignments, mined, canvasEvents } = await loadClassData(dir);
+  const { metadata, syllabusParsed, assignments, mined, readings, canvasEvents } = await loadClassData(dir);
 
   const klass = {
     slug: path.basename(dir),
@@ -380,6 +382,7 @@ export async function classFacts(classDir, { now = new Date() } = {}) {
   }
   const { items: allTasks, source: taskSource } = tasksForClass({
     mined,
+    readings: readingsWithScheduleFloor(readings, syllabusParsed),
     assignments: Array.isArray(assignments) ? assignments : [],
   });
   const datedTasks = sortTasks(allTasks.filter(t => ISO_DATE_RE.test(str(t?.due_date))));

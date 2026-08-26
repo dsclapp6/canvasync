@@ -400,9 +400,9 @@ const STATE_LABEL = {
   'error': 'failed',
 };
 
-const STAGE_ORDER = ['parse', 'extract', 'mine', 'graph', 'build', 'pack2'];
+const STAGE_ORDER = ['parse', 'extract', 'index', 'mine', 'graph', 'build', 'pack2'];
 const STAGE_LABEL = {
-  parse: 'Syllabus', extract: 'Course files', mine: 'Task mining',
+  parse: 'Syllabus', extract: 'Course files', index: 'Dated readings', mine: 'Task mining',
   graph: 'Correlation graph', build: 'AI context', pack2: 'Context pack v2',
 };
 const CAT_LABEL = {
@@ -451,7 +451,7 @@ function setPulse(mode, note) {
 // Stage key -> the verb it is doing. The script filename is an implementation
 // detail; the verb is what the page is read for.
 const VERB = {
-  parse: 'PARSING', extract: 'EXTRACTING', mine: 'MINING',
+  parse: 'PARSING', extract: 'EXTRACTING', index: 'INDEXING READINGS', mine: 'MINING',
   graph: 'GRAPHING', build: 'BUILDING', pack2: 'PACKING',
 };
 
@@ -459,6 +459,7 @@ const VERB = {
 // script. Map it back rather than printing "MINE-ASSIGNMENTS.JS" as a verb.
 const SCRIPT_STAGE = {
   'parse-syllabus.js': 'parse', 'extract-course-files.js': 'extract',
+  'index-readings.js': 'index',
   'mine-assignments.js': 'mine', 'build-graph.js': 'graph',
   'build-context.js': 'build', 'build-pack.js': 'pack2',
 };

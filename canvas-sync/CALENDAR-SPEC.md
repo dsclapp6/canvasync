@@ -198,7 +198,7 @@ scrolled to. The page never scrolled; the measurement lied.
 | 4.3 | The professor is a **surname** from `course.instructor.name`, surviving a title (`Dr. Leila Peyravan` → `Peyravan`) and an internal capital (`VanHorn` stays whole). | Unit test over all six real instructor strings | x | x | x |
 | 4.4 | Meetings show days, times and location where known, and say plainly where not. `busi-305` and `busi-396` have `meeting_schedule: null`. | Those classes' ops are `all_day` with `time_known: false` and a description saying why | x | x | x |
 | 4.5 | BUSI 396 contributes 0 meeting ops. The calendar must **state why**, not show an empty column. | The reason is rendered in the calendar UI, verbatim from the worklist | x | x | x |
-| 4.6 | `reading` is 0 ops and the Readings toggle is structurally dead. Either it produces ops or the calendar says why it cannot. | The reason is rendered in the calendar UI | x | x | x |
+| 4.6 | Explicit dated readings must not depend on a model choosing to emit them. The calendar unions a deterministic syllabus reading index and schedules dated items even if a model also marked them recurring. | Real-data dry-run: 39 reading ops (ECON 205 1, BUSI 305 15, BUSI 380 23), 0 unscheduled readings | x | x | x |
 | 4.7 | Asking what the calendar would say must not change it. | `buildWorklist(dir,{write:false})` writes nothing — 2 tests | x | x | x |
 
 **Measured 2026-08-24**, on a worklist rebuilt from the six real classes:
@@ -225,6 +225,16 @@ from `worklist.kind_notes`:
 Vacuous notes ("no readings to schedule in this class", printed once per class)
 are filtered out with the same rule `renderWorklistMd()` uses, so the page and
 the routine's own markdown agree about what is worth saying.
+
+**Re-measured 2026-08-26 after 4.6 was fixed at the source.** The model output
+still contains only one reading, but the source files do not: BUSI 305's parsed
+schedule has 15 dated Pre-class Reading rows and BUSI 380 has 23 dated session
+blocks with explicit Read/Skim instructions. `readings_index.json` now treats
+those stated facts as a deterministic floor, with the newest extracted
+syllabus providing a raw-text fallback if the structured parse misses a dated
+block. A write-free build against the real six-class root produces **39 reading
+ops** (1 + 15 + 23) and **0 unscheduled readings**. The older zero above is kept
+as the measurement that exposed the failure, not as current behavior.
 
 **4.1/4.2 hardened 2026-08-24, after an adversarial pass found four ways to
 rebuild the shapes 4.2 forbids.** None of them changed a live title — all four

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { aiInvoke, readJsonSafe, atomicWriteJson, atomicWriteText } from './_util.js';
 import { canvasItemUrl, canvasSubmitUrl } from '../canvas-links.js';
 import { tasksForClass } from '../canvas-tasks.js';
+import { readingsWithScheduleFloor } from '../reading-index.js';
 
 // OPEN: CLAUDE_SKIP=1 bypasses the external claude CLI call for the "Open
 // questions / ambiguities" section. In skip mode the script uses a deterministic
@@ -376,6 +377,7 @@ async function main() {
   const discussions = await readJsonSafe(join(absClassDir, 'discussions.json')) || [];
   const calendarEvents = await readJsonSafe(join(absClassDir, 'calendar_events.json')) || [];
   const mined = await readJsonSafe(join(absClassDir, 'assignments_mined.json'));
+  const readings = await readJsonSafe(join(absClassDir, 'readings_index.json'));
   const gradesData = await readJsonSafe(join(absClassDir, 'grades.json')) || [];
   const tabsData = await readJsonSafe(join(absClassDir, 'tabs.json')) || [];
   const coursePacks = await readJsonSafe(join(absClassDir, 'course_packs.json')) || [];
@@ -384,7 +386,8 @@ async function main() {
   // deadlines, mining owns titles/descriptions, and unclaimed dated Canvas
   // rows join the list. Both context.md's task section and context.json's
   // mined_tasks render THIS, never mined.items raw.
-  const { items: mergedTaskItems } = tasksForClass({ mined, assignments });
+  const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
+  const { items: mergedTaskItems } = tasksForClass({ mined, readings: readingFloor, assignments });
 
   // What actually sits on disk: extract writes _combined.txt, or, past 1 MB,
   // _combined-NN.txt parts and deletes the unsplit file — a hardcoded path

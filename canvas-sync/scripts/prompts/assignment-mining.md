@@ -21,6 +21,10 @@ Your job: produce the COMPLETE list of things the student must do or submit — 
 - `related_materials`: for EVERY item, list the course files most relevant to completing it (slides covering that topic, the assigned reading, the rubric doc), each with a one-line reason. Order by relevance. Empty array only if genuinely nothing applies.
 - Do not fabricate. If the course data is sparse, return the few items you can support.
 - Past items still count — include everything from the whole term, past and future.
+- The "Deterministic dated reading index" is a completeness floor produced
+  directly from stated dates and reading instructions. Every row in it must be
+  represented. You may enrich or deduplicate one against the same dated
+  reading elsewhere, but may not omit it.
 
 ## Output schema
 

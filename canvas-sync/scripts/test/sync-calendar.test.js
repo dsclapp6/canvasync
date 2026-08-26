@@ -49,13 +49,14 @@ async function tempBase() {
 }
 
 async function seedClass(base, folder, {
-  items = [], assignments = null, syllabus = null, userState = null, code = 'BUSI 305 001/002',
+  items = [], assignments = null, readings = null, syllabus = null, userState = null, code = 'BUSI 305 001/002',
 } = {}) {
   const dir = join(base, 'classes', folder);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'metadata.json'), JSON.stringify({ course_code: code }));
   await writeFile(join(dir, 'assignments_mined.json'), JSON.stringify({ items }));
   if (assignments) await writeFile(join(dir, 'assignments.json'), JSON.stringify(assignments));
+  if (readings) await writeFile(join(dir, 'readings_index.json'), JSON.stringify(readings));
   if (syllabus) await writeFile(join(dir, 'syllabus_parsed.json'), JSON.stringify(syllabus));
   if (userState) await writeFile(join(dir, 'user_state.json'), JSON.stringify({ version: 1, items: userState }));
   return dir;
@@ -225,6 +226,46 @@ test('a class whose homework is all undated and recurring must report it, not sh
   assert.equal(w.recurring_notes.length, 2, 'the notes stay — the counts are in addition to them');
   const md = await readFile(join(base, 'calendar', 'worklist.md'), 'utf8');
   assert.match(md, /Items with no calendar event/);
+  await rm(base, { recursive: true, force: true });
+});
+
+test('explicit syllabus readings reach the calendar even when the model mined none', async () => {
+  const base = await tempBase();
+  const due = isoDaysAhead(21);
+  await seedClass(base, '93903-busi-380-002', {
+    code: 'BUSI 380 002',
+    items: [],
+    syllabus: { schedule: [{
+      date: due, type: 'lecture', title: 'Assess Your Customers',
+      description: 'Read Textbook Chapter 3 and the channel-strategy article before class.',
+    }] },
+  });
+  const w = await build(base);
+  const reading = w.ops.find(op => op.kind === 'reading');
+  assert.ok(reading, 'the schedule itself is a completeness floor');
+  assert.equal(reading.date, due);
+  assert.match(reading.title, /BUSI 380 · Read/);
+  assert.match(reading.description, /Chapter 3/);
+  assert.equal(w.counts.reading, 1);
+  await rm(base, { recursive: true, force: true });
+});
+
+test('a dated reading is scheduled even if the model also called it recurring', async () => {
+  const base = await tempBase();
+  const due = isoDaysAhead(22);
+  await seedClass(base, '90805-econ-205-002', {
+    code: 'ECON 205 002',
+    items: [{
+      id: 'week-one-reading', title: 'Week 1 Reading: Chapters 1-3',
+      category: 'reading', due_date: due, recurring: 'before each class',
+      description: 'Read the assigned chapters before Tuesday.',
+    }],
+  });
+  const w = await build(base);
+  assert.equal(w.counts.reading, 1);
+  assert.equal(w.ops.find(op => op.kind === 'reading')?.date, due);
+  assert.equal(w.dropped.some(drop => drop.item_id === 'week-one-reading'), false,
+    'an explicit date is not reported as an unschedulable recurrence');
   await rm(base, { recursive: true, force: true });
 });
 

@@ -51,11 +51,13 @@ Chrome (authenticated canvas.rice.edu session)
                       1. parse-syllabus.js        (AI)  → syllabus_parsed.json
                       2. extract-course-files.js        → materials/*.txt
                          (+ ppt/doc/xls → materials/pdf/ when LibreOffice is installed)
-                      3. mine-assignments.js      (AI)  → assignments_mined.json
+                      3. index-readings.js              → readings_index.json
+                         dated syllabus readings; structured + raw-text fallback
+                      4. mine-assignments.js      (AI)  → assignments_mined.json
                          every task incl. implicit ones buried in slides/pages
-                      4. build-graph.js                 → correlation_graph.json
+                      5. build-graph.js                 → correlation_graph.json
                          which materials go with which task (used by class chat)
-                      5. build-context.js         (AI)  → AI_CONTEXT/context.md
+                      6. build-context.js         (AI)  → AI_CONTEXT/context.md
                                                           AI_CONTEXT/pack/   ◄— upload to a Claude project
                     then once per pass:
                       sync-calendar.js (deterministic) → <data root>/calendar/worklist.{json,md}
@@ -82,6 +84,14 @@ description prose, so the event that lands in your calendar links to the assignm
 place you hand it in. Set `CSYNC_CAL_DUE` / `CSYNC_CAL_CHK` to embed target
 calendar ids in the worklist. Optional: `CSYNC_CAL_AGENT=1` additionally spawns a headless
 `claude -p` (tools allowlisted via `CSYNC_MCP_ALLOWED`) to apply the worklist immediately.
+
+Readings do not depend on the assignment-mining model being complete. A separate,
+deterministic `readings_index.json` is built from explicit dated reading instructions in the
+parsed syllabus schedule, with a conservative scan of the newest extracted syllabus as a
+fallback when the structured parser missed a dated block. That index is unioned with Canvas
+assignments and AI-mined tasks everywhere: the class page, class chat, context pack, assignment
+detail and calendar. An explicit date always produces one reading occurrence even if a model
+also mislabeled it as recurring.
 
 **Resource safety.** The pipeline is paced so a sync can never overwhelm the machine:
 job concurrency is derived from CPU cores and free memory (1–3 jobs, override with
@@ -468,6 +478,7 @@ Per-class on-disk layout (v1.1):
   grades.json  tabs.json  groups.json
   syllabus.{pdf,docx,html}   syllabus_parsed.json
   assignments_mined.json     exhaustive AI-mined task list (incl. implicit tasks)
+  readings_index.json        deterministic dated readings (AI-independent floor)
   files/           raw downloads (Files tab + module attachments + embedded links)
   materials/       extracted text per file + last_extracted.txt completion marker
   materials/pdf/   ppt/doc/xls converted to PDF (when LibreOffice is installed)
