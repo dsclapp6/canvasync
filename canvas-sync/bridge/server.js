@@ -38,7 +38,11 @@ import { indexProgressRouter } from './routes/index-progress.js';
 
 // Keep in step with bridge/package.json — this is the number the UI footer
 // and /api/status report, and it had drifted three releases behind.
-const VERSION = '1.5.0';
+// From the manifest, never a copy: a hardcoded VERSION here sat at 1.1.0
+// through three releases while package.json moved on.
+const VERSION = JSON.parse(
+  await fs.readFile(new URL('./package.json', import.meta.url), 'utf8'),
+).version;
 // OPEN: BRIDGE_PORT=0 is used by tests for ephemeral port; production always uses 3847.
 const BIND_ADDR = '127.0.0.1';
 

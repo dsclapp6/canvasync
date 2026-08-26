@@ -603,3 +603,17 @@ deadline-block direction, TEXT escaping, off-stage state, excused-drop,
 exam-vs-deliverable, prune safety, selection scope). Suites at this note:
 `bridge/` **282 pass / 0 fail**, `scripts/` **572 pass / 0 fail**,
 `canvas-calendar/` **8 pass / 0 fail** (its first tests beyond the planner).
+
+**2026-08-25, last round — the audit's front-end tail.** The cross-model
+audit's four remaining dashboard findings, verified and fixed: tick POSTs for
+one item are now SERIALIZED per key with the latest intent winning (two
+overlapping toggles could land out of order, leaving the server at the stale
+state while the pending overlay pinned the newer one — a tick redrawn
+unchecked on every reload, spec 2.2/2.4's failure mode through a new door);
+"Select current term" picks the latest term at or before TODAY parsed from
+the label, never merely the newest-id group (a preregistered next-spring
+shell used to win); Show-in-Finder resolves the viewed file's OWN class
+rather than the sidebar's last selection; and a slow class response can no
+longer overwrite a faster later one (openClass sequence guard). server.js's
+VERSION now derives from package.json instead of being a copy. Unit-suite
+verified (bridge 284/284); not browser-driven this session.

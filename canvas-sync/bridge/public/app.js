@@ -363,11 +363,13 @@ function wireNav() {
     renderPickerCount();
   });
   $('picker-current').addEventListener('click', () => {
-    // "Current term" = the newest term group the picker rendered, which is the
-    // first one: groupEnrolledByTerm sorts newest-first.
-    const first = $('picker-list').querySelector('.picker-term');
-    document.querySelectorAll('#picker-list input[type=checkbox]').forEach(el => { el.checked = false; });
-    first?.querySelectorAll('input[type=checkbox]').forEach(el => { el.checked = true; });
+    // "Current term" = the latest term whose parsed label is NOT after today
+    // — never simply the newest group: an early-registered Spring 2027 shell
+    // has newer course ids than the Fall 2026 the student is sitting in, and
+    // "newest first" saved next spring as the strict allowlist.
+    const cur = currentTermGroup(groupEnrolledByTerm(PICKER.enrolled ?? []));
+    const ids = new Set((cur?.courses ?? []).map(c => String(c.courseId)));
+    document.querySelectorAll('#picker-list input[type=checkbox]').forEach(el => { el.checked = ids.has(el.value); });
     renderPickerCount();
   });
 
@@ -501,20 +503,35 @@ function wireNav() {
     if (done) CAL_DONE.add(key); else CAL_DONE.delete(key);
     CAL_DONE_PENDING.set(key, done);
     row?.classList.toggle('is-done', done);
-    try {
-      await api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cpId ? { checkpointDone: { id: cpId, done } } : { done }),
-      });
-    } catch (err) {
-      // Put it back rather than leaving a tick that did not save.
-      if (done) CAL_DONE.delete(key); else CAL_DONE.add(key);
-      CAL_DONE_PENDING.delete(key);
-      box.checked = !done;
-      row?.classList.toggle('is-done', !done);
-      toast(`Could not save that: ${err.message}`);
-    }
+    // POSTs for one key are SERIALIZED, and each queue turn sends the LATEST
+    // intent. Two overlapping requests could land out of order — tick then
+    // untick, with the tick's POST writing last — leaving the server at the
+    // stale intent while the pending overlay pins the newer one: the row
+    // redrew unchecked on every reload, forever, and the saved state was
+    // simply wrong.
+    const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
+    const run = tail.then(async () => {
+      const intent = CAL_DONE_PENDING.get(key);
+      if (intent === undefined) return; // a seed already reconciled this key
+      try {
+        await api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cpId ? { checkpointDone: { id: cpId, done: intent } } : { done: intent }),
+        });
+      } catch (err) {
+        // Put it back rather than leaving a tick that did not save — unless
+        // the user has re-toggled since; then the newer queue turn owns it.
+        if (CAL_DONE_PENDING.get(key) === intent) {
+          if (intent) CAL_DONE.delete(key); else CAL_DONE.add(key);
+          CAL_DONE_PENDING.delete(key);
+          box.checked = !intent;
+          row?.classList.toggle('is-done', !intent);
+          toast(`Could not save that: ${err.message}`);
+        }
+      }
+    });
+    CAL_POST_QUEUE.set(key, run);
   });
 
   // A month tile that holds more than it can show. CALENDAR-SPEC 3.8.
@@ -824,6 +841,33 @@ function groupEnrolledByTerm(list) {
       rank: Math.max(...courses.map(c => Number(c.courseId) || 0)),
     }))
     .sort((a, b) => b.rank - a.rank);
+}
+
+// A term label's place in time, parsed from the label itself ("Fall 2026",
+// "2027 Spring"): year*10 + season rung. Null when no year is named.
+function termLabelRank(label) {
+  const s = String(label || '').toLowerCase();
+  const year = /\b(20\d\d)\b/.exec(s)?.[1];
+  if (!year) return null;
+  const season = s.includes('winter') ? 0
+    : s.includes('spring') ? 1
+    : s.includes('summer') ? 2
+    : (s.includes('fall') || s.includes('autumn')) ? 3
+    : 1.5; // a year with no season sorts between spring and summer
+  return Number(year) * 10 + season;
+}
+
+// The group the "Current term" button should select: the latest term at or
+// before today. Falls back to the picker's first (newest-id) group when no
+// label parses.
+function currentTermGroup(groups) {
+  const m = new Date().getMonth() + 1;
+  const nowRank = new Date().getFullYear() * 10 + (m <= 5 ? 1 : m <= 7 ? 2 : 3);
+  const ranked = groups
+    .map(g => ({ g, rank: termLabelRank(g.term) }))
+    .filter(x => x.rank != null && x.rank <= nowRank);
+  if (!ranked.length) return groups[0] ?? null;
+  return ranked.reduce((a, b) => (b.rank > a.rank ? b : a)).g;
 }
 
 async function openPicker() {
@@ -1246,18 +1290,33 @@ function wireFileView() {
     } catch (err) { toast(`Could not open that file: ${err.message}`); }
   });
 
-  $('file-reveal').addEventListener('click', () => {
-    const { file } = FILE_VIEW || {};
-    if (IS_APP && file?.localPath && CURRENT?.class_dir) {
-      window.canvasync.revealPath(`${CURRENT.class_dir}/${file.localPath}`);
+  $('file-reveal').addEventListener('click', async () => {
+    // The viewed file's OWN class, never whichever class the sidebar last
+    // selected — the two differ whenever the viewer was reached through the
+    // calendar's assignment panel, and CURRENT may not even exist yet.
+    const { file, folder } = FILE_VIEW || {};
+    if (!(IS_APP && file?.localPath && folder)) return;
+    let dir = CURRENT?.folder === folder ? CURRENT.class_dir : null;
+    if (!dir) {
+      try { dir = (await apiJson(`/api/class/${folder}`)).class_dir; }
+      catch (err) { toast(`Could not locate that class folder: ${err.message}`); return; }
     }
+    if (dir) window.canvasync.revealPath(`${dir}/${file.localPath}`);
   });
 }
+
+let OPEN_CLASS_SEQ = 0;
 
 async function openClass(folder) {
   document.querySelectorAll('#class-list li').forEach(li =>
     li.classList.toggle('active', li.dataset.folder === folder));
-  CURRENT = await apiJson(`/api/class/${folder}`);
+  // Only the LATEST click may render: with no guard, a slow class A response
+  // arriving after a fast class B overwrote CURRENT and the whole detail
+  // pane while B stayed highlighted in the sidebar.
+  const seq = ++OPEN_CLASS_SEQ;
+  const data = await apiJson(`/api/class/${folder}`);
+  if (seq !== OPEN_CLASS_SEQ) return;
+  CURRENT = data;
   showClassesPanel('detail');
 
   const meta = CURRENT.metadata || {};
@@ -1413,6 +1472,9 @@ function fmtDue(it, eff) {
   const when = time ? `${day} ${time}` : day;
   return `due ${esc(when)} · ${dueRelHtml(diff)}`;
 }
+
+// One in-flight POST chain per calDoneKey — see the tick handler.
+const CAL_POST_QUEUE = new Map();
 
 // The user's own marks, keyed by mined item id. Held here so a checkbox can
 // repaint instantly and reconcile with the bridge afterwards, rather than
