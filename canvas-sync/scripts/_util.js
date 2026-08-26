@@ -154,7 +154,16 @@ async function _acquireModelLock(maxWaitMs) {
       try {
         const pid = parseInt(await readFile(pidFile, 'utf8'), 10);
         if (pid > 0) {
-          try { process.kill(pid, 0); } catch { await _reclaimLock(dir); continue; }
+          // EPERM means the holder EXISTS and simply is not ours to signal
+          // (another user's job, a daemon). Only ESRCH — no such process —
+          // licenses a reclaim. modelLockStatus was fixed for this and says
+          // why; the READ-ONLY function got the fix while this one, the only
+          // one that actually tears a lock down, kept collapsing them: a live
+          // holder read as dead, its lock reclaimed, and two ~20 GB models
+          // loaded at once — the exact failure this lock exists to prevent.
+          let holderAlive = true;
+          try { process.kill(pid, 0); } catch (err) { holderAlive = err?.code === 'EPERM'; }
+          if (!holderAlive) { await _reclaimLock(dir); continue; }
         } else {
           // Corrupt/empty pid file — holder identity unknowable. Fall through
           // to the age check so it can't wedge the lock forever.

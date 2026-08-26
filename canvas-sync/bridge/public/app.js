@@ -35,7 +35,21 @@ async function api(pathname, opts = {}) {
     },
   });
   if (res.status === 401) throw new Error('unauthorized');
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // The BODY carries the reason the routes go to trouble to write ("start
+    // and end must both be HH:MM with end after start"); the status line
+    // carries only "400 Bad Request". Callers show err.message, so the reason
+    // belongs there, with the status as the fallback for a non-JSON failure.
+    let reason = '';
+    try {
+      const body = await res.clone().json();
+      reason = body?.error || body?.detail || '';
+      if (body?.error && body?.detail && body.error !== body.detail) reason = `${body.error} — ${body.detail}`;
+    } catch { /* not JSON — the status line is all there is */ }
+    const err = new Error(reason || `${res.status} ${res.statusText}`);
+    err.status = res.status;
+    throw err;
+  }
   return res;
 }
 const apiJson = (p, o) => api(p, o).then(r => r.json());
@@ -256,7 +270,7 @@ function start(status) {
   $('shell').classList.remove('hidden');
   $('bridge-dot').classList.add('ok');
   if (IS_APP) document.querySelectorAll('.app-only').forEach(el => el.classList.remove('hidden'));
-  $('bridge-info').textContent = `Bridge v${status.version} · data root ${status.home} · ${status.paired ? 'extension paired' : 'no extension paired yet'}`;
+  renderBridgeInfo(status);
   loadClasses();
   wireNav();
   wireSettings();
@@ -265,9 +279,36 @@ function start(status) {
     try {
       const st = await apiJson('/api/status');
       $('bridge-dot').classList.add('ok');
+      renderBridgeInfo(st);
       renderPipelineButton(st.pipeline);
     } catch { $('bridge-dot').classList.remove('ok'); }
   }, 10000);
+}
+
+// The status line, including the one fact the payload always carried and the
+// page never showed: the kill switch. With <data root>/DISABLED present the
+// bridge 503s every ingest and every pipeline start, and the dashboard said
+// nothing at all — "Rebuild summaries" simply did nothing, twice, forever.
+function renderBridgeInfo(status) {
+  const bits = [`Bridge v${status.version}`, `data root ${status.home}`,
+    status.paired ? 'extension paired' : 'no extension paired yet'];
+  $('bridge-info').textContent = bits.join(' · ');
+  const dot = $('bridge-dot');
+  dot.classList.toggle('disabled', !!status.disabled);
+  dot.title = status.disabled ? 'Bridge disabled by the DISABLED file' : '';
+  let note = $('bridge-disabled');
+  if (status.disabled) {
+    if (!note) {
+      note = document.createElement('span');
+      note.id = 'bridge-disabled';
+      note.className = 'badge alarm';
+      $('bridge-info').after(note);
+    }
+    // Names the one fix, as an empty/blocked state must.
+    note.textContent = `Switched off — delete ${status.home}/DISABLED to re-enable`;
+  } else if (note) {
+    note.remove();
+  }
 }
 
 // One button: "Rebuild summaries" when idle, "Cancel pipeline" while running.
@@ -317,12 +358,17 @@ function wireNav() {
   $('run-pipeline-btn').addEventListener('click', async () => {
     const btn = $('run-pipeline-btn');
     btn.disabled = true;
+    // Say it when it fails. A bare `catch {}` here meant a 503 from the kill
+    // switch looked exactly like success: "Starting…" for three seconds, then
+    // the label reset and nothing had happened.
     if (_pipelineRunning) {
       btn.textContent = 'Cancelling…';
-      try { await apiJson('/api/pipeline/cancel', { method: 'POST', body: '{}' }); } catch {}
+      try { await apiJson('/api/pipeline/cancel', { method: 'POST', body: '{}' }); }
+      catch (e) { toast(`Could not cancel: ${e.message}`); }
     } else {
       btn.textContent = 'Starting…';
-      try { await apiJson('/api/pipeline/run', { method: 'POST', body: '{}' }); } catch {}
+      try { await apiJson('/api/pipeline/run', { method: 'POST', body: '{}' }); }
+      catch (e) { toast(`Could not start: ${e.message}`); }
     }
     setTimeout(async () => {
       try { renderPipelineButton((await apiJson('/api/status')).pipeline); } catch { btn.disabled = false; }
@@ -2980,8 +3026,9 @@ async function loadCalendar() {
   seedCalDone();
   renderCalendarOps();
   // The class-times list arrives behind the grid — the calendar is useful
-  // without it, so nothing waits on it.
-  loadCalClasses().then(renderMeetingTimes).catch(() => {});
+  // without it, so nothing waits on it. An open editor is the user's, not
+  // ours to redraw (see the poll tick).
+  loadCalClasses().then(() => { if (!MEET_EDIT) renderMeetingTimes(); }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -3013,7 +3060,11 @@ function pollCalRebuild(remaining) {
   calRebuildTimer = setTimeout(async () => {
     try {
       const st = await loadCalClasses();
-      renderMeetingTimes();
+      // NEVER repaint an open editor from a background tick: the repaint
+      // rebuilds the form from CAL_CLASSES, so ticked days, typed times and a
+      // typed room are discarded and focus is dropped mid-keystroke — once a
+      // second for the whole poll window.
+      if (!MEET_EDIT) renderMeetingTimes();
       if (st.rebuild?.running) return pollCalRebuild(remaining - 1);
       const { worklist } = await apiJson('/api/calendar');
       CAL_WORKLIST = worklist;
@@ -3127,13 +3178,19 @@ async function saveMeetEditor(form, folder) {
   if (Boolean(start) !== Boolean(end)) { err.textContent = 'Set both a start and an end, or neither.'; return; }
 
   err.textContent = 'Saving…';
-  const res = await api(`/api/class/${folder}/meetings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ days, start, end, location }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) { err.textContent = body.error || 'Could not save that.'; return; }
+  // api() THROWS on a non-2xx, so a `!res.ok` branch after it can never run —
+  // the old one left the editor reading "Saving…" forever while a toast said
+  // "400 Bad Request" and the server's actual reason went nowhere.
+  try {
+    await api(`/api/class/${folder}/meetings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days, start, end, location }),
+    });
+  } catch (e) {
+    err.textContent = e.message || 'Could not save that.';
+    return;
+  }
   MEET_EDIT = null;
   await loadCalClasses();
   renderMeetingTimes();
@@ -3169,7 +3226,14 @@ function wireMeetHost(host) {
       api(`/api/class/${undo.dataset.meetRevert}/meetings/revert`, { method: 'POST' })
         .then(() => { MEET_EDIT = null; return loadCalClasses(); })
         .then(() => { renderMeetingTimes(); pollCalRebuild(8); })
-        .catch(e => toast(e.message));
+        // Re-enable on failure, or the control sits there labelled and dead
+        // until some unrelated repaint — and a 409 means the two disagree, so
+        // refetch rather than leave a stale row on screen.
+        .catch(e => {
+          undo.disabled = false;
+          toast(e.message);
+          loadCalClasses().then(renderMeetingTimes).catch(() => {});
+        });
     }
   });
 }

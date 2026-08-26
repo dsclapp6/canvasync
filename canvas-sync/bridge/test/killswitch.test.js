@@ -93,3 +93,46 @@ test('killswitch: GET /health still works when DISABLED', async () => {
   assert.equal(res.status, 200);
   assert.equal(res.body.ok, true);
 });
+
+// Every route that spawns or schedules sync-calendar.js must be behind the
+// switch too. These four were not: with DISABLED present the app refused
+// /api/calendar/rebuild while a meeting save quietly spawned the very same
+// child and rewrote worklist.json and all four .ics files.
+function reqDash(method, pathname, body) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(baseUrl + pathname);
+    const data = body === undefined ? null : JSON.stringify(body);
+    const headers = { 'X-Bridge-Secret': 'ks-secret-abc' };
+    if (data) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = Buffer.byteLength(data); }
+    const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method, headers }, res => {
+      let raw = '';
+      res.on('data', d => raw += d);
+      res.on('end', () => { let p = null; try { p = JSON.parse(raw); } catch {} resolve({ status: res.statusCode, body: p }); });
+    });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+test('killswitch: the routes that spawn a worklist rebuild are all 503', async () => {
+  const folder = '92294-busi-305-001';
+  const calls = [
+    ['POST', `/api/class/${folder}/meetings`, { days: ['TU'], start: '10:50', end: '12:05' }],
+    ['POST', `/api/class/${folder}/meetings/revert`, {}],
+    ['DELETE', `/api/class/${folder}/meetings`, undefined],
+    ['POST', `/api/class/${folder}/task/abc`, { done: true }],
+  ];
+  for (const [method, pathname, body] of calls) {
+    const res = await reqDash(method, pathname, body);
+    assert.equal(res.status, 503, `${method} ${pathname} must refuse while disabled`);
+    assert.equal(res.body.error, 'bridge disabled');
+  }
+});
+
+test('killswitch: /api/status still answers, and says it is disabled', async () => {
+  // The one field that lets the dashboard tell the user why nothing works.
+  const res = await reqDash('GET', '/api/status');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.disabled, true);
+});

@@ -399,6 +399,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
    "fine" does not need a colour. */
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--alarm); }
 .dot.ok { background: var(--rule-2); }
+/* Reachable AND switched off: the connection is fine, the bridge is refusing
+   work. Brick beats the ok-green, or the row would read as healthy. */
+.dot.ok.disabled { background: var(--alarm); }
 
 .topnav { display: flex; gap: var(--s-2); flex: 1; }
 .nav-btn {
@@ -709,6 +712,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 }
 .badge.implicit, .badge.moved { color: var(--ink); border-color: var(--rule-2); }
 .badge.ai-added { color: var(--ink); border: 1px dashed var(--rule-2); }
+/* A state the user must act on to clear — the kill switch, and anything else
+   that stops the app doing its job. */
+.badge.alarm { color: var(--alarm); border-color: var(--alarm); font-weight: var(--w-label); }
 
 /* A done task stays visible — struck through, one step down in ink, never
    faded (opacity on cream walks a row into the paper). */

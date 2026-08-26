@@ -230,10 +230,21 @@ async function spawnJob(scriptPath, classDir, token) {
     if (cancelRequested) {
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
     }
-    child.on('close', async (code) => {
+    // A failed spawn emits BOTH 'error' and 'close', and each handler below
+    // released the concurrency slot — so one failure handed out a spare
+    // permit and the pipeline ran above MAX_CONCURRENT (several stages, each
+    // able to take the machine-wide model lock). Release exactly once.
+    let settled = false;
+    const settle = () => {
+      if (settled) return false;
+      settled = true;
       children.delete(child);
       active.delete(token);
       releaseSemaphore();
+      return true;
+    };
+    child.on('close', async (code) => {
+      if (!settle()) return;
       await appendLog(`END ${scriptName} ${classDir} exit=${code ?? 'null'}`).catch(() => {});
       if (code !== 0) {
         const out = tail.join('').slice(-STAGE_OUTPUT_TAIL_CHARS).trim();
@@ -244,9 +255,7 @@ async function spawnJob(scriptPath, classDir, token) {
       resolve(code);
     });
     child.on('error', async (err) => {
-      children.delete(child);
-      active.delete(token);
-      releaseSemaphore();
+      if (!settle()) return;
       await appendLog(`ERROR ${scriptName} ${classDir} ${err.message}`).catch(() => {});
       resolve(null);
     });

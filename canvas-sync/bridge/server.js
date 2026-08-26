@@ -1204,7 +1204,7 @@ export function buildApp(config) {
     res.json({ ...times, summary: describeMeetingSource(times), revert: await meetingRevertInfo(dir) });
   });
 
-  dashRouter.post('/class/:folderName/meetings', async (req, res) => {
+  dashRouter.post('/class/:folderName/meetings', disabledCheck, async (req, res) => {
     const { folderName } = req.params;
     if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
     const dir = path.join(syncHome(), 'classes', folderName);
@@ -1223,7 +1223,7 @@ export function buildApp(config) {
     res.json({ ok: true, ...times, summary: describeMeetingSource(times), revert: await meetingRevertInfo(dir), rebuild_started });
   });
 
-  dashRouter.post('/class/:folderName/meetings/revert', async (req, res) => {
+  dashRouter.post('/class/:folderName/meetings/revert', disabledCheck, async (req, res) => {
     const { folderName } = req.params;
     if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
     const dir = path.join(syncHome(), 'classes', folderName);
@@ -1237,7 +1237,7 @@ export function buildApp(config) {
     res.json({ ok: true, ...times, summary: describeMeetingSource(times), revert: await meetingRevertInfo(dir), rebuild_started });
   });
 
-  dashRouter.delete('/class/:folderName/meetings', async (req, res) => {
+  dashRouter.delete('/class/:folderName/meetings', disabledCheck, async (req, res) => {
     const { folderName } = req.params;
     if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
     const dir = path.join(syncHome(), 'classes', folderName);
@@ -1286,7 +1286,21 @@ export function buildApp(config) {
     if (askInFlight) {
       return res.status(409).json({ error: 'busy', since: askInFlight.since, folder: askInFlight.folder });
     }
+    // CLAIM THE SLOT NOW, not after the awaits below. The check above used to
+    // stand alone while class resolution, a dynamic import and a lock read ran
+    // in between — two asks arriving in that window both passed, and the
+    // second one sat inside localInvoke's 45-minute lock wait, which is the
+    // hang this 409 exists to prevent. Cleared on every exit path.
+    askInFlight = { folder: null, since: new Date().toISOString() };
+    try {
+      return await runAsk(req, res);
+    } finally {
+      askInFlight = null;
+    }
+  });
 
+  async function runAsk(req, res) {
+    const question = String(req.body?.question ?? '').trim();
     let chat;
     try {
       chat = await loadChat();
@@ -1325,7 +1339,9 @@ export function buildApp(config) {
       });
     }
 
-    askInFlight = { folder, since: new Date().toISOString() };
+    // The slot is already held by the caller; name the class now that it is
+    // known, so /ask/status can say what is running.
+    askInFlight = { ...askInFlight, folder };
     try {
       const history = Array.isArray(req.body?.history) ? req.body.history.slice(-6) : [];
       const result = await chat.answerQuestion({ classDir, question, history });
@@ -1334,16 +1350,14 @@ export function buildApp(config) {
     } catch (err) {
       console.error('[bridge] /api/ask error:', err.message);
       res.status(500).json({ error: 'ask failed', detail: err.message, folder });
-    } finally {
-      askInFlight = null;
     }
-  });
+  }
 
   // POST /api/class/:folderName/task/:taskId — the user's own marks on a task:
   // done, a note, a flag, a moved date, checkpoints. Kept out of
   // assignments_mined.json, which the pipeline rewrites wholesale.
   // A partial patch, so the UI can send {done:true} without echoing the note.
-  dashRouter.post('/class/:folderName/task/:taskId', async (req, res) => {
+  dashRouter.post('/class/:folderName/task/:taskId', disabledCheck, async (req, res) => {
     const { folderName, taskId } = req.params;
     if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
     const dir = path.join(syncHome(), 'classes', folderName);
