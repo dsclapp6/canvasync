@@ -1183,3 +1183,22 @@ test('a schedule row saying "no class" cannot donate its day and time to the cla
   assert.deepEqual(res.patterns, []);
   await rm(dir, { recursive: true, force: true });
 });
+
+test('clearing an UNREADABLE override records the clear, never an older stash', async () => {
+  // A corrupt override cannot be restored, but leaving the previous stash in
+  // place made undo offer a state the user never left — and the state they
+  // actually just deleted vanished with no record. "Back to the syllabus" is
+  // the honest target, the same one a clear-with-nothing-before stashes.
+  const dir = await seedClass({});
+  await writeMeetingOverride(dir, { days: ['MO'], start: '09:00', end: '09:50' });  // stash A
+  await writeMeetingOverride(dir, { days: ['TU'], start: '10:00', end: '10:50' });  // stash: A
+  await writeFile(join(dir, OVERRIDE_FILE), '{ this is not json', 'utf8');
+
+  assert.equal(await readMeetingOverride(dir), null, 'unreadable by construction');
+  assert.equal(await clearMeetingOverride(dir), true, 'the file is still removed');
+
+  const revert = await readMeetingRevert(dir);
+  assert.equal(revert?.previous ?? null, null,
+    'undo points at the syllabus, not at the unrelated MO 09:00 that came before');
+  await rm(dir, { recursive: true, force: true });
+});

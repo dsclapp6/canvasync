@@ -413,7 +413,11 @@ pass / 0 fail**.
 
 ## Ledger
 
-**Open rows: 0 of 48.**
+**Open rows: 8 of 57** — every one of them open in the `User` column only.
+2.12 and 2.13 are `~` (they ride on `server.js`, so they wait for the app to be
+relaunched); 7.1–7.6 are blank, because §7 has been driven on a byte copy of
+the real data root but not yet on the app-owned bridge. Nothing is open in
+`Built`, and only 7.6 is open in `Live`.
 
 **5.2 closed 2026-08-24 17:00.** The user said *"kill anything old so I can run
 just the newest version of this"*. The three stray bridges on `:3848` (pid

@@ -36,10 +36,9 @@ import {
 } from '../scripts/meeting-times.js';
 import { indexProgressRouter } from './routes/index-progress.js';
 
-// Keep in step with bridge/package.json — this is the number the UI footer
-// and /api/status report, and it had drifted three releases behind.
-// From the manifest, never a copy: a hardcoded VERSION here sat at 1.1.0
-// through three releases while package.json moved on.
+// From the manifest, never a copy: this is the number the UI footer and
+// /api/status report, and as a hardcoded literal it sat at 1.1.0 while
+// package.json moved three releases past it. Nothing to keep in step.
 const VERSION = JSON.parse(
   await fs.readFile(new URL('./package.json', import.meta.url), 'utf8'),
 ).version;
@@ -1111,6 +1110,16 @@ export function buildApp(config) {
     // row; serve what the miner knows rather than 404ing on the user.
     const minedItem = (mined?.items || []).find(
       x => String(x?.id) === assignmentId || String(x?.canvas_assignment_id ?? '') === wanted) || null;
+    // The merge is the identity everything else writes under. A mined item
+    // the merge DECLINES (an aggregate whose claimed row is dated, a
+    // recurring item that would swallow one) keeps living in the raw file,
+    // and keying user state off it returned {} for work the user had already
+    // ticked — the panel showed it outstanding. Ask the merge who this is.
+    const mergedItems = tasksForClass({ mined, assignments }).items;
+    const mergedSelf = mergedItems.find(x => String(x?.id) === assignmentId)
+      || (minedItem && mergedItems.find(x => String(x?.id) === String(minedItem.id)))
+      || mergedItems.find(x => String(x?.canvas_assignment_id ?? '') === wanted)
+      || null;
     // Asked by mined id, answered with the Canvas row it claims: the calendar
     // opens items by item_id, and a merged item's Canvas links were invisible
     // from there until the claim was followed. The claim is followed through
@@ -1119,18 +1128,17 @@ export function buildApp(config) {
     // rows) — or this panel disagrees with them about whether a live Canvas
     // row stands behind the item.
     let a = (assignments || []).find(x => String(x?.id) === wanted) || null;
-    if (!a && minedItem) {
-      const { items } = tasksForClass({ mined, assignments });
-      const merged = items.find(x => String(x?.id) === String(minedItem.id));
-      if (merged?.canvas_assignment_id != null) {
-        a = (assignments || []).find(x => String(x?.id) === String(merged.canvas_assignment_id)) || null;
-      }
+    if (!a && mergedSelf?.canvas_assignment_id != null) {
+      a = (assignments || []).find(x => String(x?.id) === String(mergedSelf.canvas_assignment_id)) || null;
     }
     if (!a && !minedItem) return res.status(404).json({ error: 'assignment not found' });
 
     const quiz = a?.quiz_id ? (quizzes || []).find(q => String(q?.id) === String(a.quiz_id)) || null : null;
     const userState = await readUserState(dir);
-    const stateKey = minedItem?.id ?? `canvas-${wanted}`;
+    // The merge's id, because that is the key the task list and the calendar
+    // tick under. Falling back to the raw mined id keyed state nothing else
+    // writes, so a ticked item opened as untouched.
+    const stateKey = mergedSelf?.id ?? minedItem?.id ?? `canvas-${wanted}`;
 
     // Files that came from THIS assignment, via the same provenance derivation
     // the Files tab uses. Origins carry CANVAS ids, so match on the resolved

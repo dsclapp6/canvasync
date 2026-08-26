@@ -574,15 +574,26 @@ export async function writeMeetingOverride(classDir, patch = {}) {
 /** Forget the override. True when a file was actually removed. */
 export async function clearMeetingOverride(classDir) {
   // Stash what is being cleared first: "Use the syllabus instead" clicked by
-  // mistake must not eat a time the user typed. A file too corrupt to read
-  // back leaves no stash — reverting to it would restore nothing usable.
+  // mistake must not eat a time the user typed.
+  //
+  // A file too corrupt to read back cannot be restored, but it must still be
+  // RECORDED as cleared: leaving an older stash in place made undo offer a
+  // state the user never left (and had no idea was on the record), which is
+  // worse than offering nothing. `previous: null` is the honest target —
+  // "back to the syllabus" — and it is what writeMeetingOverride already
+  // stashes when nothing readable stood before.
   const current = await readMeetingOverride(classDir);
+  let existed = false;
+  try {
+    await fs.stat(path.join(classDir, OVERRIDE_FILE));
+    existed = true;
+  } catch { /* nothing there — the unlink below decides the return value */ }
   try {
     await fs.unlink(path.join(classDir, OVERRIDE_FILE));
   } catch {
     return false;
   }
-  if (current) await stashPrevious(classDir, current, 'clear');
+  if (current || existed) await stashPrevious(classDir, current, 'clear');
   return true;
 }
 

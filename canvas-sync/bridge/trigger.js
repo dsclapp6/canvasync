@@ -21,25 +21,14 @@ const CLASS_DIR_RE = /^[0-9]+-[a-z0-9-]+$/;
 // disk.
 const STAGE_OUTPUT_TAIL_CHARS = 4000;
 
-// Walk up from __dirname until we find a sibling scripts/ directory.
-function findRepoRoot() {
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 10; i++) {
-    const candidate = path.join(dir, 'scripts');
-    // We check synchronously once at startup; this path is resolved at call time.
-    try {
-      // Use existsSync equivalent — we call this rarely, not in hot path.
-      const _ = new URL('file://' + candidate); // just validate it's a real path string
-    } catch { /**/ }
-    // We'll do the async check at call time; just return dir for now.
-    dir = path.dirname(dir);
-    if (dir === path.dirname(dir)) break; // filesystem root
-  }
-  // Fall back: resolve relative to this file's location, go up once (bridge/ -> repo root)
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-}
-
-const REPO_ROOT = findRepoRoot();
+// canvas-sync/, the directory holding scripts/ — this file lives in
+// bridge/, one level under it. Fixed, not searched: a walk-up loop used to
+// sit here computing a candidate it threw away and returning this same
+// expression regardless, so its comments described a search that never ran.
+// If this file ever moves, change the '..' — nothing will discover it.
+// fileURLToPath, never import.meta.url's raw pathname: a percent-encoded
+// path (a space in a parent directory) silently resolves wrong otherwise.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Resource-adaptive job cap. Stage scripts are separate node processes, and
 // the AI stages can each fall back to loading the ~20 GB local model — the

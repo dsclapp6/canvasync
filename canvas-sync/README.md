@@ -53,11 +53,13 @@ Chrome (authenticated canvas.rice.edu session)
                          (+ ppt/doc/xls → materials/pdf/ when LibreOffice is installed)
                       3. mine-assignments.js      (AI)  → assignments_mined.json
                          every task incl. implicit ones buried in slides/pages
-                      4. build-context.js               → AI_CONTEXT/context.md
+                      4. build-graph.js                 → correlation_graph.json
+                         which materials go with which task (used by class chat)
+                      5. build-context.js         (AI)  → AI_CONTEXT/context.md
                                                           AI_CONTEXT/pack/   ◄— upload to a Claude project
                     then once per pass:
                       sync-calendar.js (deterministic) → <data root>/calendar/worklist.{json,md}
-                                                          + ROUTINE.md — consumed by your Claude calendar routine
+                                                          + deadlines/checkpoints/classes/canvasync .ics
                       ▲
               Desktop app (Electron shell, app/)
                  launches the bridge, provisions the data root + secret on
@@ -214,8 +216,8 @@ cd app && npm install && npm start
 
 The same UI is reachable from any browser at `http://127.0.0.1:3847/app` (it asks for the
 bridge secret once; the app injects it automatically). Views: **Classes** (tasks grouped by
-urgency, files, AI pack, course overview + current grade), **Calendar** (the worklist your
-routine applies, plus the Populate panel), **Activity** (pipeline log), **Settings** (AI
+urgency, files, AI pack, course overview + current grade), **Calendar** (List/Week/Month views
+of the worklist, class times, and the subscription URLs), **Activity** (pipeline log), **Settings** (AI
 backend, calendar ids, pairing, local-model check/download — the app can detect the MLX model
 in your HF cache and offers a one-click download when absent).
 
@@ -264,32 +266,33 @@ controls when data is pulled: weekly day + hour, an optional repeating interval 
 `CSYNC_*` env overrides into `<data root>/settings.json`, which the bridge merges into every
 pipeline job — backend selection, model ids, calendar ids, concurrency — no restarts needed.
 
-## Calendar routine (paste this into your Claude routine)
+## Calendar subscriptions
 
-```
-Read the file <data root>/calendar/ROUTINE.md and follow it exactly. It contains
-the current instructions and points at the worklist to apply. If the file is missing,
-report that and stop — do not improvise calendar changes.
-```
+The calendar is published as iCalendar files your calendar app subscribes to — no
+Anthropic account, no scheduled prompt, no agent. Settings → **Calendar subscriptions**
+lists four URLs, each carrying a token derived from your bridge secret:
 
-Replace `<data root>` with your actual data root (this machine uses `~/canvas-sync-data`;
-a default install uses `~/canvas-sync-data`). The dashboard's Calendar view shows a
-copy-ready version of this prompt with the real path already filled in.
+| File | Holds |
+| --- | --- |
+| `deadlines.ics` | due dates |
+| `checkpoints.ics` | prep blocks (automatic and your own) |
+| `classes.ics` | lectures, labs, office hours |
+| `canvasync.ics` | all of the above in one calendar |
 
-`ROUTINE.md` is copied on every pipeline pass from `scripts/prompts/calendar-routine.md`, so
-the routine's behavior can be modernized any time by editing that one repo file — your routine
-prompt never needs to change.
+Subscribe by URL in Apple Calendar, Google Calendar or Outlook. The bridge serves them
+from `<data root>/calendar/`, rebuilt within a second or two of any change — ticking a task
+done, moving a deadline, setting a class time. Every event's UID is its `[csync:…]` marker,
+which survives corrections, so a moved lecture MOVES rather than appearing twice. The
+subscription only answers on `127.0.0.1`, so it works while your machine is awake and the
+app is running.
 
-### What gets populated (the plan)
+### What the calendar carries
 
-The Calendar view's **Populate** panel controls which kinds of events the worklist carries,
-globally and per class: **Meetings** (lecture/lab sessions with time + room), **Homework**,
-**Readings**, **Exams**, **Checkpoints** (automatic exam prep, or your own). Choices persist
-in `<data root>/calendar/plan.json`; every change rebuilds the worklist within a few seconds —
-no sync needed. Meetings are **off by default** (a calendar that fills itself with a
-semester of lectures unasked is a calendar you stop trusting); the per-class matrix greys
-out Meetings for a class that would produce no sessions. A corrupt or deleted plan file reads
-as the defaults — never as "populate nothing".
+Everything the worklist holds: **meetings** (lecture/lab sessions with time + room),
+**homework**, **readings**, **exams**, and **checkpoints** (automatic exam prep, or your
+own). The Calendar view's chips filter what is DRAWN on screen — nothing selected means
+everything, and the .ics files always carry the full set, because a subscriber cannot see
+a filter you set in a browser.
 
 Event titles are deliberately terse: `BUSI 380 · HW 3`, `Read · BUSI 305 Ch 4`,
 `Prep · BUSI 396 Midterm`, `BUSI 395 · Lab: Circuits II @ MCN 317`. Three target calendars
@@ -318,8 +321,9 @@ it instead of a plausible wrong one, and the panel says which source the answer 
 Office hours, study groups and homework deadlines are filtered out before they can be read as
 a class time.
 
-When that comes back empty, or comes back wrong, set it yourself: each class in the Populate
-panel has a **set times** link that opens an editor for days, start, end and room. Your answer
+When that comes back empty, or comes back wrong, set it yourself: the class's Overview tab
+and the calendar's **Class times** list both carry a **set times** link that opens an editor
+for days, start, end and room — with a one-step **undo** beside it. Your answer
 outranks every other source, needs no AI backend, is stored in that class's
 `meeting_override.json`, and rebuilds the worklist as soon as you save. **Use the syllabus
 instead** clears it again. A class whose syllabus has no dated schedule at all still gets one
@@ -374,7 +378,7 @@ After install, confirm:
 
 **Class sessions have no time on them, or the Meetings toggle is greyed out.** The syllabus
 never stated one, and nothing else did either — this is the app declining to guess, not a
-failed sync. Open Calendar → Populate, find the class, and click **set times**. That needs no
+failed sync. Open the class's Overview tab, or Calendar → **Class times**, and click **set times**. That needs no
 AI backend and rebuilds the worklist on save.
 
 **Parser errors.** Check `~/canvas-sync-data/logs/trigger.log`. The parser writes broken output to `<classDir>/syllabus_parsed.json.ERROR` when Claude returns malformed JSON. Delete that file and re-run `node scripts/sync-all-contexts.js`.

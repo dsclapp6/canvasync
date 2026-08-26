@@ -599,10 +599,14 @@ async function main() {
     process.stderr.write(`  combined: no sections to combine (wrote empty _combined.txt)\n`);
   }
 
-  // Finalize: atomic-write the updated index, then the completion marker.
-  // The marker MUST be written last: trigger/sync-all use its mtime as this
-  // stage's output anchor (files_index.json is rewritten here too, and in
-  // split mode _combined.txt doesn't exist, so neither can serve as anchor).
+  // Finalize: write the index and the completion marker, ORDER DECIDING
+  // whether this stage looks finished. trigger/sync-all use the marker's
+  // mtime as this stage's output anchor (files_index.json is rewritten here
+  // too, and in split mode _combined.txt doesn't exist, so neither can serve
+  // as anchor). So: marker LAST on a clean pass — the stage is done — and
+  // marker FIRST when the merge kept entries this pass never processed, so
+  // the index stays newer and the next pass picks them up. See the branch
+  // below; swapping it back strands every mid-run ingest as 'pending'.
   //
   // Merge, don't clobber: the bridge's /ingest/course-file appends to the
   // SAME file while this minutes-long pass holds its own copy in memory, and

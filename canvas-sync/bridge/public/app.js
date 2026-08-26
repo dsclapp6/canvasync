@@ -1023,9 +1023,13 @@ function renderCleanupActions() {
     : `Delete ${picked.length} class${picked.length === 1 ? '' : 'es'} (${fmtBytes(bytes)})`;
 }
 
-async function openCleanup() {
+async function openCleanup({ keepResult = false } = {}) {
   showClassesPanel('cleanup-panel');
-  $('cleanup-result').textContent = '';
+  // The receipt survives the refresh that follows a delete: this is the one
+  // destructive action in the app, and blanking "Removed 2 classes, freed
+  // 41 MB" milliseconds after writing it left the user with no statement of
+  // what had just happened — or of which folder survived on a partial failure.
+  if (!keepResult) $('cleanup-result').textContent = '';
   $('cleanup-list').innerHTML = '<p class="muted">Measuring…</p>';
 
   let data;
@@ -1100,7 +1104,7 @@ async function runCleanup() {
     $('cleanup-result').textContent = `Cleanup failed: ${err.message}`;
   }
   await loadClasses().catch(() => {});
-  await openCleanup();
+  await openCleanup({ keepResult: true });
 }
 
 // --- One assignment, read locally ------------------------------------------
