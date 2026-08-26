@@ -74,8 +74,9 @@ function rankOf(kind) {
 
 /**
  * Build canvasId -> origins[] from already-synced course JSON.
- * Every origin is { kind, label, group, sort } where `group` is the grouping key
- * the UI buckets by and `sort` orders the buckets.
+ * Every origin is { kind, label, group, sort } where `group` identifies the
+ * exact Canvas item for provenance deduplication. The UI deliberately bunches
+ * most kinds more broadly; `sort` orders those displayed sections.
  */
 export function deriveOrigins(sources = {}) {
   const {

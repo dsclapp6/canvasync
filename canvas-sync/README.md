@@ -248,9 +248,10 @@ worklist immediately), and an Edit panel for notes, a color flag, moving the due
 sub-deadlines that replace the automatic exam-prep events with your own plan. All of it
 lives in `user_state.json` per class; syncs never overwrite it.
 
-**Files by provenance.** The Files tab groups every file by where it was pulled from —
-module, assignment, quiz, page, announcement, syllabus, or the bare Files tab — with the
-exact item it came from under each name ("+2 more places" when a file is reused). Sort
+**Files by provenance.** The Files tab bunches files by where they were pulled from — one
+section each for assignments, quizzes, pages, announcements, syllabus, or the bare Files tab,
+and one section per course module — with the exact item under each file name ("+2 more places"
+when a file is reused). Sort
 modes: **Source** (grouped), **Name**, **Newest**. Provenance is derived from the synced
 course data at read time, so it works retroactively on classes synced before this feature
 existed.

@@ -80,8 +80,8 @@ disagree, F is the current behaviour.
 - [x] `node --check` on every JS file outside node_modules — **49 files, all pass**
 - [x] App restarted; live dashboard verified: auth via seeded secret, class list
       scoped (5 of 20), tasks CRUD (done-toggle round-trips to `user_state.json`,
-      done items re-sort), files grouped by source (BUSI 380: Assignments 33 +
-      Syllabus 1) with Source/Name/Newest sort persisted, pack tab lists the new
+      done items re-sort), files bunched by source category (current BUSI 380:
+      Quizzes 33 + Syllabus 2) with Source/Name/Newest sort persisted, pack tab lists the new
       deterministic packs
 - [x] Calendar Populate panel end-to-end: Readings + Homework toggles →
       `plan.json` written → spawned rebuild → worklist 98→18 ops → UI polled and

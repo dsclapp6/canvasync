@@ -15,6 +15,9 @@ import {
   timeWindow, hourMarks, layoutDay,
 } from './cal-grid.js';
 import { nextSelection, isSelected, pruneSelection } from './cal-plan.js';
+import {
+  fileName, groupFilesBySource, originDetail, originHeading, primaryOrigin,
+} from './file-plan.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_APP = !!window.canvasync;
@@ -1984,48 +1987,10 @@ function wireTasks() {
   });
 }
 
-// Files are grouped by where on Canvas they were found — the module, the
-// assignment, the page. The bridge derives that from the course JSON and hands
-// each entry an `origins` array; the first entry is the best one to file under.
+// Files are bunched by where on Canvas they were found — one category section
+// for assignments, quizzes, pages, etc., while the course's individual modules
+// remain separate sections. The exact item stays beneath each file name.
 let FILE_SORT = localStorage.getItem('fileSort') || 'source';
-
-function fileName(f) { return f.displayName || f.filename || 'Untitled'; }
-
-function primaryOrigin(f) {
-  return (f.origins && f.origins[0]) || { kind: 'files-tab', label: 'Files tab', group: 'files-tab' };
-}
-
-function originHeading(o) {
-  return o.kind === 'module' ? `Module · ${o.label}` : o.label;
-}
-
-// The row's own sub-label: which module item / assignment / page it sat in.
-function originDetail(f) {
-  const o = primaryOrigin(f);
-  const extra = (f.origins || []).length - 1;
-  const bits = [];
-  if (o.itemLabel && o.itemLabel !== o.label) bits.push(o.itemLabel);
-  if (extra > 0) bits.push(`+${extra} more place${extra > 1 ? 's' : ''}`);
-  return bits.join(' · ');
-}
-
-function groupFilesBySource(files) {
-  const groups = new Map();
-  for (const f of files) {
-    const o = primaryOrigin(f);
-    const key = o.group || o.kind;
-    if (!groups.has(key)) groups.set(key, { heading: originHeading(o), sort: o.sort ?? 999, files: [] });
-    groups.get(key).files.push(f);
-  }
-  const out = [...groups.values()];
-  out.sort((a, b) => a.sort - b.sort || a.heading.localeCompare(b.heading));
-  for (const g of out) {
-    g.files.sort((a, b) =>
-      (primaryOrigin(a).itemSort ?? 1e9) - (primaryOrigin(b).itemSort ?? 1e9)
-      || fileName(a).localeCompare(fileName(b)));
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Grades tab
