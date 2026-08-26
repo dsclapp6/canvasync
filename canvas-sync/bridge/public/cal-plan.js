@@ -56,3 +56,25 @@ export function isSelected(sel, kind) {
   const cur = Array.isArray(sel) ? sel : [];
   return !cur.length || cur.includes(kind);
 }
+
+/**
+ * The selection with anything the vocabulary no longer offers dropped.
+ *
+ * The class chips (added 2026-08-26) have a vocabulary that CHANGES — classes
+ * arrive and leave between terms, and the Personal chip exists only while
+ * something classless does. A selection made entirely of departed slugs would
+ * fail isSelected() for every chip on screen: an empty calendar with every chip
+ * lit, which is the §6.4 failure wearing a different hat.
+ *
+ * So the selection is pruned wherever it is USED — both to decide what is drawn
+ * and to compute the next selection when a chip is clicked. Those two must
+ * agree: the chips a user can see ARE the pruned selection, so a click has to
+ * be resolved against that and not against a stored superset they cannot see.
+ * Pruning at use rather than in storage lets a class that vanishes for one
+ * render (a mid-rebuild wobble) come back still selected.
+ */
+export function pruneSelection(sel, vocabulary) {
+  const list = Array.isArray(vocabulary) ? vocabulary : [];
+  const cur = Array.isArray(sel) ? sel : [];
+  return cur.filter(s => list.includes(s));
+}

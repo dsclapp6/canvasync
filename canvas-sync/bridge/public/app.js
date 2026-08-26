@@ -14,7 +14,7 @@ import {
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   timeWindow, hourMarks, layoutDay,
 } from './cal-grid.js';
-import { nextSelection, isSelected } from './cal-plan.js';
+import { nextSelection, isSelected, pruneSelection } from './cal-plan.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_APP = !!window.canvasync;
@@ -462,7 +462,7 @@ function wireNav() {
   });
 
   // The three interfaces. CALENDAR-SPEC 1.1-1.2. Switching never touches the
-  // kind filter or the class chips: a user who has hidden four classes and
+  // kind filter or the class chips: a user who has narrowed to one class and
   // filtered to meetings is looking at one specific question, and answering it
   // in a different shape must not reset it.
   document.querySelectorAll('[data-calview]').forEach(btn => {
@@ -500,9 +500,6 @@ function wireNav() {
   // class. Two buttons rather than one, because a colour control nested inside
   // a toggle button is invalid markup and unreachable by keyboard.
   $('cal-classes').addEventListener('click', (ev) => {
-    const showAll = ev.target.closest('[data-cal-show-all]');
-    if (showAll) { setHiddenClasses(new Set()); renderCalendarOps(); return; }
-
     const swatch = ev.target.closest('[data-color-open]');
     if (swatch) {
       const slug = swatch.dataset.colorOpen;
@@ -517,10 +514,17 @@ function wireNav() {
 
     const chip = ev.target.closest('[data-cal-class-toggle]');
     if (!chip) return;
-    const slug = chip.dataset.calClassToggle;
-    const hidden = hiddenClasses();
-    if (hidden.has(slug)) hidden.delete(slug); else hidden.add(slug);
-    setHiddenClasses(hidden);
+    // Resolved against the PRUNED selection — the chips on screen — not the
+    // raw stored one. Otherwise a stale slug the user cannot see makes their
+    // click land somewhere else: with ['busi-305', 'a-departed-class'] stored,
+    // only BUSI 305 draws as selected, but clicking it is not "the last one"
+    // to nextSelection(), so instead of returning to everything it leaves the
+    // departed slug selected — invisible now, and re-narrowing the calendar on
+    // its own the day that class comes back.
+    const vocabulary = chipRowsSource().map(r => r.slug);
+    CAL_CLASS_SEL = nextSelection(
+      pruneSelection(CAL_CLASS_SEL, vocabulary), vocabulary, chip.dataset.calClassToggle);
+    localStorage.setItem('calClassSel', JSON.stringify(CAL_CLASS_SEL));
     renderCalendarOps();
   });
 
@@ -2250,6 +2254,19 @@ let CAL_KIND_SEL = (() => {
     return Array.isArray(v) ? v.filter(k => typeof k === 'string') : [];
   } catch { return []; }
 })();
+// Which classes are DRAWN — the same selection shape as CAL_KIND_SEL, run
+// through the same nextSelection()/isSelected() pair: [] means every class,
+// and no sequence of clicks reaches "none". This replaced an inverted hidden
+// set ("all selected by default, if one or more is selected it should only
+// show selected ones", 2026-08-26); the old calHidden key is retired rather
+// than migrated, because "everything showing" IS the new default.
+let CAL_CLASS_SEL = (() => {
+  try { localStorage.removeItem('calHidden'); } catch { /* private mode */ }
+  try {
+    const v = JSON.parse(localStorage.getItem('calClassSel') ?? '[]');
+    return Array.isArray(v) ? v.filter(s => typeof s === 'string') : [];
+  } catch { return []; }
+})();
 
 // Which of the three interfaces is showing: the stacked list, the seven-column
 // week, or the tiled month. CALENDAR-SPEC 1.1-1.2.
@@ -2395,16 +2412,6 @@ function readableOn(hex) {
   const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
   // Contrast against near-white vs near-black, and take the better one.
   return (1.05 / (L + 0.05)) >= ((L + 0.05) / 0.09) ? 'var(--on-accent)' : 'var(--ink)';
-}
-
-// Classes the user has hidden. Stored by slug, so hiding survives a reload but
-// a class that disappears from the worklist does not linger as a stale filter.
-function hiddenClasses() {
-  try { return new Set(JSON.parse(localStorage.getItem('calHidden') || '[]')); }
-  catch { return new Set(); }
-}
-function setHiddenClasses(set) {
-  localStorage.setItem('calHidden', JSON.stringify([...set]));
 }
 
 function calDisplayName(slug) {
@@ -3839,7 +3846,7 @@ function renderCalNotes() {
   if (!kn) { box.classList.add('hidden'); box.innerHTML = ''; return; }
 
   const narrowed = CAL_KIND_SEL.length > 0 && CAL_KIND_SEL.length <= 2;
-  const hidden = hiddenClasses();
+  const classSel = calClassSel();
   const lines = [];
   for (const k of kinds) {
     const entry = kn[k];
@@ -3852,7 +3859,7 @@ function renderCalNotes() {
     }
     if (!narrowed) continue;
     for (const [slug, text] of Object.entries(entry.classes || {})) {
-      if (hidden.has(slug) || !text) continue;
+      if (!isSelected(classSel, slug) || !text) continue;
       // Only where something was actively refused. "No readings to schedule in
       // this class", printed once per class, is six lines that say nothing;
       // "4 module boundaries, not class sessions" is the answer to the question
@@ -3906,9 +3913,16 @@ function chipRowsSource() {
   const fromClasses = (CLASSES || [])
     .map(c => ({ slug: c.slug, name: c.code || c.folder, resolvable: true }));
   // Personal items get a chip of their own as soon as one exists, so they can
-  // be hidden and recoloured like any class. It is listed only when there is
+  // be filtered and recoloured like any class. It is listed only when there is
   // something in it — a filter for an empty category is a dead control.
-  if (CAL_CUSTOM.some(it => !it.class)) {
+  //
+  // A worklist op with no class counts too, via opClassSlug(). Under the old
+  // hidden-set model a classless op was always drawn, because nothing was
+  // hiding it; under a selection it is drawn only if its slug is selected, so
+  // one with no chip would vanish the moment any class was picked and no
+  // control could bring it back. Every drawn item belongs to exactly one chip.
+  if (CAL_CUSTOM.some(it => !it.class)
+      || (CAL_WORKLIST?.ops ?? []).some(o => !o.class)) {
     fromClasses.push({ slug: PERSONAL_SLUG, name: 'Personal', resolvable: true });
   }
   const known = new Set(fromClasses.map(r => r.slug));
@@ -3921,14 +3935,29 @@ function chipRowsSource() {
   return [...fromClasses, ...fromOps].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// The chip an op answers to. Falsy means "no class", which is what the
+// Personal chip is — the same mapping customRenderOp() already applies to a
+// classless custom item, so the two paths cannot disagree about which chip
+// governs an item.
+function opClassSlug(op) {
+  return op?.class || PERSONAL_SLUG;
+}
+
+// The stored class selection, less any slug the chips no longer offer. The
+// reasoning lives with pruneSelection() in cal-plan.js, where it is testable;
+// this is only the wiring that hands it the current vocabulary.
+function calClassSel(rows = chipRowsSource()) {
+  return pruneSelection(CAL_CLASS_SEL, rows.map(r => r.slug));
+}
+
 function renderClassChips() {
   const box = $('cal-classes');
   const rows = chipRowsSource();
   if (!rows.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
-  const hidden = hiddenClasses();
+  const sel = calClassSel(rows);
   box.innerHTML = rows.map(({ slug, name, resolvable }) => {
-    const off = hidden.has(slug);
+    const off = !isSelected(sel, slug);
     const open = COLOR_OPEN === slug;
     return `
     <span class="class-chip${off ? ' off' : ''}${open ? ' picking' : ''}" style="--class-color:${classColor(slug)}">
@@ -3939,8 +3968,7 @@ function renderClassChips() {
               aria-pressed="${off ? 'false' : 'true'}">${esc(name)}</button>
       ${open ? colorPopHtml(slug, name) : ''}
     </span>`;
-  }).join('')
-    + (hidden.size ? '<button type="button" class="linky" data-cal-show-all="1">show all</button>' : '');
+  }).join('');
 }
 
 // ---------------------------------------------------------------------------
@@ -4184,12 +4212,12 @@ function renderCalendarOps() {
   }
   toolbar.classList.remove('hidden');
 
-  const hidden = hiddenClasses();
+  const classSel = calClassSel();
   // Filter on the op's own kind, not on the calendar it is written to: 'due'
   // covers homework, readings and exams, and a filter that cannot tell them
   // apart is three chips pretending to be one.
   const byKind = all.filter(o => isSelected(CAL_KIND_SEL, o.kind));
-  const ops = byKind.filter(o => !hidden.has(o.class));
+  const ops = byKind.filter(o => isSelected(classSel, opClassSlug(o)));
 
   renderCalKinds(all);
   renderClassChips();
@@ -4221,9 +4249,12 @@ function renderCalendarOps() {
     const shown = CAL_KIND_SEL.length
       ? CAL_KIND_SEL.map(calKindLabel).join(' or ').toLowerCase()
       : '';
+    // "Every class is hidden" is unreachable now that the chips are a
+    // selection — deselecting the last one shows everything. What remains
+    // reachable is a selection of classes that have nothing in this window.
     const why = !byKind.length
       ? `No ${shown ? `${shown} ` : ''}items in this window.`
-      : 'Every class is hidden. Turn one back on above.';
+      : 'Nothing from the selected classes in this window — deselect one above to widen the view.';
     el.innerHTML = `<p class="muted">${esc(why)}</p>`;
     return;
   }

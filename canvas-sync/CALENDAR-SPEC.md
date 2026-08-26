@@ -57,7 +57,7 @@ the choice persists across reloads.
 | 1.6 | **Month view** is a tiled grid: 7 columns wide, one tile per calendar day, whole weeks only (leading/trailing days of adjacent months shown but dimmed). | Tile count is a multiple of 7 and ≥ 28; `.cal-tile.adjacent` exists for a month that does not start on Monday | x | x | x |
 | 1.7 | Week and Month each have `‹ prev`, `Today`, `next ›` controls, and a heading naming the period. | Clicking `next ›` in Week advances the heading by exactly 7 days; `Today` returns to the period containing today | x | x | x |
 | 1.8 | Opening the calendar lands on the period containing **today**, not on the first item in the worklist. | With `calView=week` on a cold load, the heading contains today's date | x | x | x |
-| 1.9 | Switching views never loses the kind filter or the class visibility selection. | Hide one class + filter to Meetings, switch List→Week→Month→List, both still applied | x | x | x |
+| 1.9 | Switching views never loses the kind filter or the class selection. | Select one class + filter to Meetings, switch List→Week→Month→List, both still applied | x | x | x |
 
 **Measured 2026-08-24.** 3 `[data-calview]` buttons. `calView` persisted and
 restored across a reload (`week`). List: 240 `.cal-row` for 240 ops, group
@@ -144,7 +144,7 @@ from a month-view chip: same result. Covered by tests in
 | # | Requirement | Check | Built | Live | User |
 | ---: | --- | --- | :---: | :---: | :---: |
 | 3.1 | Each class has one colour, visible on every one of its items in every view. | Every row/chip has a non-empty `--class-color`; no two of the 6 classes share one | x | x | x |
-| 3.2 | Class visibility chips hide and show a class across all three views. | Hide BUSI 380: its op count drops to 0 in List, Week and Month | x | x | x |
+| 3.2 | Class chips select which classes are drawn, across all three views. Same selection semantics as the kind chips — see §6.10. | Select BUSI 380: every other class's op count drops to 0 in List, Week and Month | x | x | x |
 | 3.3 | The kind filter (`All / Due / Checkpoints / Meetings`) applies in all three views. | Filter to Meetings in Month view: every chip rendered has `calendar === 'meeting'` | x | x | x |
 | 3.4 | **Today** is visually marked in Week and Month. | `.cal-daycol.today` / `.cal-tile.today` exists exactly once when the period contains today | x | x | x |
 | 3.5 | Overdue deadlines are marked; **past meetings are not**. | A past meeting row has no `.overdue` class | x | x | x |
@@ -152,18 +152,28 @@ from a month-view chip: same result. Covered by tests in
 | 3.7 | **No horizontal overflow** at 375px, 768px and 1280px, in all three views. | `documentElement.scrollWidth <= clientWidth`, 9 combinations | x | x | x |
 | 3.8 | A Month tile holding more items than fit shows `+N more`, and clicking expands that day. | A tile with 4+ items shows the marker; clicking expands | x | x | x |
 | 3.9 | Keyboard reachable: every checkbox, title button and view control is tabbable. | No `tabindex="-1"` or `disabled` on an interactive calendar control | x | ~ | x |
-| 3.10 | Empty states say which filter emptied the view. | Hide every class: the message names that cause | x | x | x |
+| 3.10 | Empty states say which filter emptied the view. | Select a class + a kind it has none of: the message names that cause and the way out | x | x | x |
 | 3.11 | **Every dated item states its distance and grades it by urgency** ("include the number of days/weeks until its due… g/y/r system or something… pick whatever is the cleanest", 2026-08-25). One vocabulary (`relPhrase`: days inside two weeks, weeks beyond) and one ladder (`dueTier` → `.due-rel`: muted → amber `soon` ≤7d → brick `now` ≤1d → bold brick `overdue`) across the task list, checkpoints, home Coming up, the assignment page, and List-view day headings. Done items are never loud; day headings only grade when the day holds unfinished non-meeting work; past days are history, not alarms. | `relPhrase`/`dueTier` unit-tested in `cal-grid.test.js`; every `.cal-day-head` carries a `.cal-day-rel`; 0 tiered rels under `.cal-day.past`, `.task.is-done`, `.cp-row.done`; a meetings-only day inside the week has no tier; `--warn` ≥4.5:1 on ground/panel/sunk | x | x | x |
 
 **Measured 2026-08-24.** 6 classes, **6 distinct colours** (`#3E6B8A #7A5C3E
-#4E7A5B #8A4F5C #5C5A8A #8A7136`). Hiding a class removed all its items in all
-three views. Filtering to Meetings left 0 non-meeting items in all three. Today
+#4E7A5B #8A4F5C #5C5A8A #8A7136`). Filtering to Meetings left 0 non-meeting items in all three. Today
 marked exactly once when in the period, **0 times** when the grid was moved off
 it. 106 meeting rows, **0** with `.overdue`. Overflow: 9 of 9 combinations gave
 `scrollWidth === clientWidth`; at 1280 both grids fit without scrolling at all.
 `+3 more` on 2026-10-01 expanded 3 chips → 6 and became `show less`. 13
-interactive controls, **0** untabbable. Hiding all six classes printed "Every
-class is hidden. Turn one back on above."
+interactive controls, **0** untabbable.
+
+**3.2 and 3.10 re-measured 2026-08-26**, after the class chips became a
+selection (§6.10–6.14). The class-hiding sentences of the 2026-08-24 note above
+described the superseded model and were removed rather than left to read as
+current; the numbers that did not depend on it stand. Selecting BUSI 305 and
+filtering to Meetings gave 16 rows / 1 / 2 / 16 across List→Week→Month→List with
+**0** items from any other class. The "Every class is hidden" message is gone
+because that state is now unreachable; the reachable empty state (ENTR 222 +
+Exams) prints "Nothing from the selected classes in this window — deselect one
+above to widen the view." It does not say "lit chip": a selected class chip is
+drawn plainly and the *unselected* ones carry the dashed, struck `.off`
+treatment, so "lit" would have named a mark the class row does not make.
 
 **3.9 `Live` is a `~` on purpose.** Tabbability was measured; actual Enter/Space
 activation of each control was not driven from a synthetic key event. The
@@ -356,6 +366,99 @@ states a fact about the data that nothing on the screen can otherwise give.
 now say nothing instead of restating a control the user can see; the per-class
 matrix (6 classes × 5 kinds = 30 buttons) is gone; the `All` button is gone. The
 Populate panel is five chips and a collapsed `Meeting times` list.
+
+### §6.10–6.14 — the class chips run on this same selection
+
+Added 2026-08-26. The user's words: *"make it so the class selectors in the
+calendar page behave the same as the categories; all selected by default, if one
+(or more) is selected it should only show selected ones."*
+
+The class chips were the last inverted control on the page: a **hidden set**
+(`localStorage.calHidden`) where clicking a chip turned a class *off*, with a
+`show all` link to undo it. Two controls one row apart with opposite polarity —
+the kind chips select what you want, the class chips deselected what you did
+not — and only one of them could empty the calendar. Both are now the same pure
+`nextSelection()` / `isSelected()` pair from `bridge/public/cal-plan.js`.
+
+| # | Requirement | Check | Built | Live | User |
+| ---: | --- | --- | :---: | :---: | :---: |
+| 6.10 | The class chips are a **selection**, not visibility switches. Nothing selected means every class, and every chip is lit. | Cold load with no `calClassSel`: 6 chips lit, all classes drawn | x | x | x |
+| 6.11 | Selecting one or more draws **only those** classes. Clicking the only selected chip goes back to everything. | The §6-style sequence below | x | x | x |
+| 6.12 | **No sequence of clicks can select no classes.** | Exhaustive sweep over all 2⁷ selections × 7 chips in `cal-plan.test.js`, asserting at least one class always shows | x | x | x |
+| 6.13 | There is **no `show all` link** — 6.11 is what it was for. | `[data-cal-show-all]` count === 0 | x | x | x |
+| 6.14 | **Every drawn item answers to exactly one chip.** An op with no class is the `Personal` chip's, so no item can be filtered out by a control that does not list it. | Inject a classless op: it draws by default, hides when another class is selected, and returns when `Personal` is | x | x | |
+| 6.15 | **A click resolves against the chips on screen, not a stored superset.** A slug the chips no longer offer is pruned out of both the drawn selection and the click transition, so it cannot survive a "deselect the last one" as an invisible residue. | Store `['busi-305','a-class-that-graduated']`: one chip draws selected, and clicking it returns to all six with `calClassSel` === `[]` | x | x | |
+
+**Measured live 2026-08-26**, on a fixture bridge (`:3849`) over the six real
+classes, worklist of 354 ops:
+
+```
+default (nothing selected)   6 chips lit   354 items across 6 classes
+click BUSI 305               1 chip lit     56 items across 1 class · 298 hidden
+click ECON 205  (adds)       2 chips lit    76 items across 2 classes
+click ECON 205  (removes)    1 chip lit     back to BUSI 305 only
+click BUSI 305  (the last)   6 chips lit   354 items across 6 classes
+```
+
+`calClassSel` ends `[]`, which is the default rather than a stored state. The
+selection survived a reload and the List→Week→Month→List cycle — 16 / 1 / 2 / 16
+items with BUSI 305 selected and Meetings filtered, **0** from any other class in
+any view (§1.9, §3.2).
+
+**`User` ticks rest on the served bytes**, the same evidence §5 uses: the user's
+Electron app runs `canvas-sync/bridge/server.js` out of this checkout and
+`express.static` reads per request, so `sha256(bridge/public/app.js)` on disk and
+`GET :3847/app/app.js` are the same
+`246f5b1b1c484f057dd06baa0a3bb0953f32ecf2fcfcee3fb60f609a5646be76` — their app
+shows this after ⌘R with nothing else to install.
+
+**The old key is retired, not migrated.** A `calHidden` holding two hidden
+classes is *deleted* on first load and the user lands on everything-showing.
+Migrating it (hidden → "select the other four") would have been faithful to the
+old state and wrong for the request: the user asked for all-selected-by-default,
+and inheriting a filter they set under opposite polarity would open the calendar
+already narrowed with no memory of why. Verified live: `calHidden` seeded with
+`["busi-305","econ-205"]` was gone after one load and all 6 chips were lit.
+
+**6.14 is the one this change created.** Under a hidden set a classless op was
+always drawn — nothing was hiding it. Under a selection it is drawn only if its
+slug is selected, so an op whose slug had no chip would have vanished on the
+first class click with no control able to recover it: a filtered-out item with
+no filter to un-set. `opClassSlug()` maps a falsy class to `PERSONAL_SLUG` (the
+same mapping `customRenderOp()` already applied to classless custom items) and
+`chipRowsSource()` lists the `Personal` chip when any classless *op* exists, not
+only a classless custom item. No such op exists in the current worklist — all
+354 carry one of the six slugs — so this is a hole closed before it was fallen
+into, verified by injecting one.
+
+**6.14 and 6.15 `User` are blank on purpose.** Both were driven on the fixture
+bridge from a state constructed by hand — an injected classless op, and a stored
+selection holding a departed slug. Neither exists on the user's bridge, so there
+is nothing there to observe. Both are `Built` and `Live`; a `User` tick would be
+a tick for something unobservable.
+
+**6.15 is the defect an adversarial pass found in my own first cut.** The read
+path pruned and the write path did not, so with `['busi-305', 'a-departed-class']`
+stored, only BUSI 305 drew as selected — but `nextSelection()` saw a two-member
+selection, so clicking that one chip did not read as "the last one". It returned
+`['a-departed-class']`: the calendar correctly showed everything (an all-stale
+selection prunes to "everything"), while the stored state quietly held a filter
+the user had just cleared and could not see, ready to re-narrow the calendar by
+itself the day that class came back. Handler and display now resolve against the
+same pruned list. `pruneSelection()` lives in `cal-plan.js` — pure, no DOM — for
+the reason the rest of that file exists: `app.js` exports nothing and cannot be
+imported by `node --test`, so logic that is only reachable through the page is
+logic no test can hold. The first version of this test asserted on a value its
+own inline filter had computed two lines earlier, which proved nothing about the
+code under test; that is what moving the function fixed.
+
+**What the class chips do NOT filter.** The `Meeting times` list
+(`renderCalMeetTimes`) still renders every in-scope class and its summary still
+counts all of them — measured at "Class times · 3 not set" with a single class
+selected. It is the control that *repairs* a class whose time is missing, and
+three of the six real classes state no time anywhere on disk; hiding the repair
+behind the filter would make a wrong class time unfixable. Deliberate
+asymmetry, recorded so it is not "fixed" later.
 
 ## §7 — Class times: set, change, and undo
 
