@@ -2365,3 +2365,123 @@ body { overflow-x: hidden; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ===========================================================================
+   Week against a clock — the Times toggle. CALENDAR-SPEC §9.
+
+   The stacked week says what is on Tuesday; this says WHEN, and what collides.
+   One scale for all seven columns, hour lines behind the blocks, and a banner
+   band above the grid for everything that is genuinely not on a clock.
+   =========================================================================== */
+
+/* An hour is 44px. app.js's HOUR_PX is the same number and does the maths;
+   nothing here may assume a different one. */
+.cal-week.timed {
+  grid-template-columns: 44px repeat(7, minmax(120px, 1fr));
+  align-items: start;
+}
+
+/* The hour labels, in their own column so they never collide with a chip. */
+.cal-gutter { position: sticky; left: 0; z-index: 3; background: var(--panel); }
+.cal-gutter-head {
+  height: var(--daycol-head-h, 30px);
+  border-bottom: 1px solid var(--rule-2);
+  background: var(--sunk);
+}
+.cal-gutter-body { position: relative; }
+.cal-hourlabel {
+  position: absolute;
+  right: var(--s-2);
+  transform: translateY(-50%);
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Things with no hour: an all-day marker, a lecture whose time the syllabus
+   never stated, a multi-day run. A band, not an invented 9am. */
+.cal-allday {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 2px;                 /* ALLDAY_PAD_PX in app.js */
+  border-bottom: 1px solid var(--rule-2);
+  overflow: hidden;
+}
+/* Every band is the same height (app.js sets it), and every chip in one is
+   exactly one line — the arithmetic that keeps the height right depends on
+   this, so the clamp is not cosmetic. */
+.cal-allday .cal-chip {
+  /* flex: 0 0 — a flex item shrinks by default, and with the band's height
+     fixed the chips collapsed into each other and their text overlapped. */
+  flex: 0 0 20px;                   /* ALLDAY_ROW_PX in app.js */
+  height: 20px;
+  min-height: 0;
+  padding: 0 var(--s-2);
+  align-items: center;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.cal-allday .cal-chip .chip-title {
+  -webkit-line-clamp: 1;
+  line-height: 18px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cal-allday .cal-chip .cal-check { margin-top: 0; }
+.cal-allday .cal-chip .cal-check-gap { width: 0; }
+
+/* The clock itself. Chips are positioned inside it by app.js. */
+.cal-slots { position: relative; overflow: hidden; }
+.cal-hourline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--rule);
+  pointer-events: none;
+}
+/* Now, as a line. Brick, because it is the one mark here that moves. */
+.cal-nowline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid var(--alarm);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* A placed chip owns its box, so it drops the flex-column rules the stacked
+   week gives it and clips rather than pushing the grid taller. */
+.cal-chip.placed {
+  position: absolute;
+  overflow: hidden;
+  margin: 0;
+  padding: var(--s-1) var(--s-2);
+  /* A hairline of the day underneath still shows between neighbours. */
+  outline: 1px solid var(--panel);
+}
+.cal-chip.placed .chip-title { -webkit-line-clamp: 2; }
+/* Under ~34px there is only room for one line, and a clamped second line
+   renders as a sliver of cut-off text. */
+.cal-chip.placed[style*="height:18px"] .chip-title,
+.cal-chip.placed[style*="height:2"] .chip-title { -webkit-line-clamp: 1; }
+
+.cal-daycol.past .cal-slots { background: var(--ground); }
+
+/* The item page's one meta line and its topic — the whole of what used to be
+   four paragraphs of generated prose. */
+.item-meta {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+}
+.item-topic { margin: 0; font-size: var(--t-small); }
+.item-row.three { grid-template-columns: 1fr 1fr 1.4fr; }
+/* The day pills, inside the dialog rather than the class page. */
+#cal-item-form .meet-days { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+#cal-item-form .item-hint .linky { font-size: inherit; }
+@media (max-width: 480px) {
+  .item-row.three { grid-template-columns: 1fr; }
+}

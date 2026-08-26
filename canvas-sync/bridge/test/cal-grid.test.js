@@ -12,6 +12,7 @@ import {
   initialAnchor, relPhrase, dueTier, WEEKDAY_HEADS,
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   MAX_SPAN_DAYS,
+  minutesOf, opSlot, timeWindow, hourMarks, layoutDay, DEFAULT_SLOT_MIN,
 } from '../public/cal-grid.js';
 
 // --- ISO in, ISO out, always local --------------------------------------
@@ -394,4 +395,107 @@ test('dueTier is monotonic — a deadline never gets quieter as it closes', () =
     assert.ok(r >= prev, `tier fell from ${prev} to ${r} at diff ${d}`);
     prev = r;
   }
+});
+
+// --- the Week time grid -----------------------------------------------------
+// Turning Times on lays the week against a clock. Every case here is a way a
+// grid like this lands an item on the wrong row or the wrong width.
+
+test('minutesOf reads a real clock and refuses everything else', () => {
+  assert.equal(minutesOf('00:00'), 0);
+  assert.equal(minutesOf('09:30'), 570);
+  assert.equal(minutesOf('23:59'), 1439);
+  for (const v of ['24:00', '09:60', '9:30', '', null, undefined, '0930']) {
+    assert.equal(minutesOf(v), null, String(v));
+  }
+});
+
+test('only single-day timed items go on the clock', () => {
+  assert.deepEqual(opSlot({ time: '09:00', end_time: '10:15', all_day: false }),
+    { startMin: 540, endMin: 615 });
+  // No time, all-day, and multi-day runs are banners, not blocks.
+  assert.equal(opSlot({ all_day: true, time: '09:00' }), null);
+  assert.equal(opSlot({ time: null }), null);
+  assert.equal(opSlot({ time: '09:00', end_date: '2026-09-16', date: '2026-09-14' }), null);
+});
+
+test('an item with no end, or a backwards one, gets the default block', () => {
+  assert.deepEqual(opSlot({ time: '14:00' }), { startMin: 840, endMin: 840 + DEFAULT_SLOT_MIN });
+  // 22:00->02:00 is an overnight one column cannot draw; 14:00->13:00 is a typo.
+  assert.deepEqual(opSlot({ time: '22:00', end_time: '02:00' }),
+    { startMin: 1320, endMin: 1320 + DEFAULT_SLOT_MIN });
+  assert.deepEqual(opSlot({ time: '14:00', end_time: '14:00' }),
+    { startMin: 840, endMin: 840 + DEFAULT_SLOT_MIN });
+  // Never past the end of the day.
+  assert.equal(opSlot({ time: '23:50' }).endMin, 1440);
+});
+
+test('the window covers the data but never shrinks below the working day', () => {
+  // Nothing timed at all still draws a usable grid.
+  assert.deepEqual(timeWindow([]), { from: 480, to: 1200 });
+  // A single 2pm lecture must not produce a one-hour strip.
+  assert.deepEqual(timeWindow([{ time: '14:00', end_time: '15:15' }]), { from: 480, to: 1200 });
+  // An early class and a late one widen it, to whole hours.
+  assert.deepEqual(timeWindow([{ time: '07:20' }, { time: '20:30', end_time: '21:45' }]),
+    { from: 420, to: 1320 });
+  // Banners contribute nothing.
+  assert.deepEqual(timeWindow([{ all_day: true, time: '03:00' }]), { from: 480, to: 1200 });
+});
+
+test('hour marks start on the hour and are labelled in 12-hour clock', () => {
+  const marks = hourMarks({ from: 480, to: 780 });
+  assert.deepEqual(marks.map(m => m.min), [480, 540, 600, 660, 720, 780]);
+  assert.deepEqual(marks.map(m => m.label), ['8a', '9a', '10a', '11a', '12p', '1p']);
+  // Midnight at the far end labels nothing rather than "12a" on the wrong day.
+  assert.equal(hourMarks({ from: 1380, to: 1440 }).pop().label, '');
+});
+
+test('a day splits into banners and blocks', () => {
+  const { allDay, timed } = layoutDay([
+    { id: 'lecture', time: '09:00', end_time: '10:15' },
+    { id: 'trip', date: '2026-09-14', end_date: '2026-09-16' },
+    { id: 'unknown', all_day: true },
+  ]);
+  assert.deepEqual(allDay.map(o => o.id), ['trip', 'unknown']);
+  assert.deepEqual(timed.map(t => t.op.id), ['lecture']);
+});
+
+test('overlapping blocks get side-by-side lanes, and the rest keep the full width', () => {
+  const { timed } = layoutDay([
+    { id: 'a', time: '09:00', end_time: '10:00' },
+    { id: 'b', time: '09:30', end_time: '10:30' },
+    { id: 'far', time: '16:00', end_time: '17:00' },
+  ]);
+  const by = Object.fromEntries(timed.map(t => [t.op.id, t]));
+  assert.equal(by.a.lane, 0);
+  assert.equal(by.b.lane, 1);
+  assert.equal(by.a.lanes, 2);
+  assert.equal(by.b.lanes, 2);
+  // The 4pm item is in its own cluster, so a 9am collision does not squeeze it.
+  assert.equal(by.far.lane, 0);
+  assert.equal(by.far.lanes, 1);
+});
+
+test('items that merely touch do not overlap', () => {
+  // 9-10 and 10-11 are back to back, not a collision; splitting the column
+  // for them wastes half the width of a day that has no conflict at all.
+  const { timed } = layoutDay([
+    { id: 'a', time: '09:00', end_time: '10:00' },
+    { id: 'b', time: '10:00', end_time: '11:00' },
+  ]);
+  assert.deepEqual(timed.map(t => t.lanes), [1, 1]);
+});
+
+test('a lane is reused once its earlier item has finished', () => {
+  // a 9-12 forces b into its own lane, but c starts after b ends, so three
+  // overlapping-ish items need two lanes, not three.
+  const { timed } = layoutDay([
+    { id: 'a', time: '09:00', end_time: '12:00' },
+    { id: 'b', time: '09:30', end_time: '10:00' },
+    { id: 'c', time: '10:30', end_time: '11:00' },
+  ]);
+  const by = Object.fromEntries(timed.map(t => [t.op.id, t]));
+  assert.equal(by.b.lane, 1);
+  assert.equal(by.c.lane, 1);
+  assert.equal(by.a.lanes, 2);
 });

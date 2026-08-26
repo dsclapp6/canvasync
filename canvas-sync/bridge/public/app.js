@@ -12,6 +12,7 @@ import {
   monthGrid, monthLabel, relPhrase, sortDayOps, startOfMonth, startOfWeek,
   todayIso, weekDays, weekLabel, WEEKDAY_HEADS,
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
+  timeWindow, hourMarks, layoutDay,
 } from './cal-grid.js';
 import { nextSelection, isSelected } from './cal-plan.js';
 
@@ -475,6 +476,13 @@ function wireNav() {
     const btn = ev.target.closest('[data-cal-step]');
     if (!btn) return;
     stepCalPeriod(Number(btn.dataset.calStep));
+  });
+
+  // Lay the week against a clock. CALENDAR-SPEC 9.1.
+  $('cal-times').addEventListener('click', () => {
+    CAL_TIMES = !CAL_TIMES;
+    localStorage.setItem('calTimes', CAL_TIMES ? '1' : '0');
+    renderCalendarOps();
   });
 
   // Bring finished work back so it can be un-finished. CALENDAR-SPEC 2.5.
@@ -2255,6 +2263,11 @@ let CAL_ANCHOR = null;
 // let you un-finish it disappears with it. This brings those rows back, struck
 // through and still tickable. CALENDAR-SPEC 2.5.
 let CAL_SHOW_DONE = localStorage.getItem('calShowDone') === '1';
+// Whether Week view is drawn against a clock: hour lines across the seven
+// columns, every timed item placed and sized by its own hours. Week only —
+// a month tile is too small to hold a scale, and the list is not a grid.
+// CALENDAR-SPEC 9.1.
+let CAL_TIMES = localStorage.getItem('calTimes') === '1';
 
 // Local midnight — never `new Date('2026-09-01')`, which parses as UTC and lands
 // on the previous day for anyone west of Greenwich.
@@ -2678,7 +2691,7 @@ function calWhenLabel(op) {
  * three interfaces — just short of the tags, which do not survive a 170px
  * column and are one click away in the list.
  */
-function calChip(op, iso = null) {
+function calChip(op, iso = null, { style = '', timed = false } = {}) {
   const m = calItemModel(op);
   const overdue = calOverdue(op, m);
   const title = stripClassPrefix(op.title, op.class || '');
@@ -2690,9 +2703,9 @@ function calChip(op, iso = null) {
   const spanCls = pos === 'only' ? '' : ` span span-${pos}`;
   const lead = pos === 'only' || pos === 'start';
   return `
-    <div class="cal-chip${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}${spanCls}"
+    <div class="cal-chip${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}${spanCls}${timed ? ' placed' : ''}"
          data-class-slug="${esc(op.class || '')}"
-         style="--class-color:${classColor(op.class)}"
+         style="--class-color:${classColor(op.class)}${style ? `;${style}` : ''}"
          title="${esc(calDisplayName(op.class))} — ${esc(op.title)}"${calDragAttrs(op, m, iso)}>
       ${lead ? calCheckHtml(op, m, title) : ''}
       ${lead && when ? `<span class="chip-when">${esc(when)}</span>` : ''}
@@ -2794,6 +2807,7 @@ const MONTH_TILE_MAX = 3;
 let CAL_EXPANDED = new Set();
 
 function renderCalendarWeek(ops) {
+  if (CAL_TIMES) return renderCalendarWeekTimed(ops);
   const days = weekDays(CAL_ANCHOR);
   const buckets = bucketByDate(ops);
   const today = todayIso();
@@ -2817,6 +2831,100 @@ function renderCalendarWeek(ops) {
   // week is seven columns by definition — collapsing it to one on a phone
   // would just be the list again — so on a narrow screen you swipe it.
   return `<div class="cal-gridwrap"><div class="cal-week" id="cal-week">${cols}</div></div>`;
+}
+
+// How tall one hour is drawn. The whole grid's geometry comes off this single
+// number, in both the CSS and the maths below, so they cannot drift.
+const HOUR_PX = 44;
+// One banner chip is one fixed line, so a band of N of them is arithmetic.
+// The CSS pins the chip to exactly this height; if one changes the other must.
+const ALLDAY_ROW_PX = 20;
+const ALLDAY_PAD_PX = 3;
+
+/**
+ * Week view against a clock.
+ *
+ * The stacked week answers "what is on Tuesday"; this answers "when on
+ * Tuesday, and what collides with what". Hour lines run across all seven
+ * columns and every timed item is positioned and sized by its own hours.
+ *
+ * The window is computed once for the WEEK, never per column — seven columns
+ * on seven different scales would put 10am on seven different rows.
+ *
+ * Items that are not on the clock — all-day markers, a lecture whose hour the
+ * syllabus never stated, a multi-day run — keep a banner band above the grid
+ * rather than being given an invented time. That band is the honest place for
+ * "this happens today, at an hour nobody knows".
+ */
+function renderCalendarWeekTimed(ops) {
+  const days = weekDays(CAL_ANCHOR);
+  const buckets = bucketByDate(ops);
+  const today = todayIso();
+  const win = timeWindow(ops);
+  const height = ((win.to - win.from) / 60) * HOUR_PX;
+  const y = (min) => ((Math.max(win.from, Math.min(win.to, min)) - win.from) / 60) * HOUR_PX;
+
+  // Every column's banner band is the SAME height — the tallest one's. Left to
+  // size themselves, a Monday with three all-day markers and a Thursday with
+  // one start their clocks at different heights, and 10am lands on a different
+  // row in every column: precisely the failure a shared window exists to
+  // prevent, reintroduced one level down. Chips in the band are one fixed line
+  // each, so the height is arithmetic rather than a measurement.
+  const laid = days.map(iso => layoutDay(sortDayOps(buckets.get(iso) || [])));
+  const bandRows = Math.max(0, ...laid.map(l => l.allDay.length));
+  const bandPx = bandRows ? bandRows * ALLDAY_ROW_PX + 2 * ALLDAY_PAD_PX : 0;
+
+  const marks = hourMarks(win);
+  const gutter = `
+    <div class="cal-gutter" aria-hidden="true">
+      <div class="cal-gutter-head"></div>
+      <div class="cal-allday" style="height:${bandPx}px"></div>
+      <div class="cal-gutter-body" style="height:${height}px">
+        ${marks.map(m => `<span class="cal-hourlabel" style="top:${y(m.min)}px">${esc(m.label)}</span>`).join('')}
+      </div>
+    </div>`;
+
+  // One set of rules per column. Drawn behind the blocks, never over them.
+  const rules = marks
+    .map(m => `<div class="cal-hourline" style="top:${y(m.min)}px"></div>`).join('');
+
+  const nowMark = (iso) => {
+    if (iso !== today) return '';
+    const now = new Date();
+    const min = now.getHours() * 60 + now.getMinutes();
+    if (min < win.from || min > win.to) return '';
+    return `<div class="cal-nowline" style="top:${y(min)}px" aria-hidden="true"></div>`;
+  };
+
+  const cols = days.map((iso, i) => {
+    const { allDay, timed } = laid[i];
+    const past = iso < today;
+    const blocks = timed.map(({ op, startMin, endMin, lane, lanes }) => {
+      const top = y(startMin);
+      // Never shorter than something a finger and an eye can find, even for a
+      // deadline, which is a moment rather than a span.
+      const h = Math.max(y(endMin) - top, 18);
+      const w = 100 / lanes;
+      return calChip(op, iso, {
+        style: `top:${top}px;height:${h}px;left:${(lane * w).toFixed(3)}%;width:${w.toFixed(3)}%`,
+        timed: true,
+      });
+    }).join('');
+    return `
+      <section class="cal-daycol${iso === today ? ' today' : ''}${past ? ' past' : ''}" data-cal-day="${esc(iso)}">
+        <header class="cal-daycol-head">
+          <span class="daycol-name">${esc(dayHeadLabel(iso))}</span>
+          ${allDay.length + timed.length ? `<span class="daycol-count">${allDay.length + timed.length}</span>` : ''}
+        </header>
+        <div class="cal-allday" style="height:${bandPx}px">${allDay.map(o => calChip(o, iso)).join('')}</div>
+        <div class="cal-slots" style="height:${height}px" data-cal-newday="${esc(iso)}"
+             title="Drag to add an item">
+          ${rules}${nowMark(iso)}${blocks}
+        </div>
+      </section>`;
+  }).join('');
+
+  return `<div class="cal-gridwrap"><div class="cal-week timed" id="cal-week">${gutter}${cols}</div></div>`;
 }
 
 function renderCalendarMonth(ops) {
@@ -3238,6 +3346,14 @@ function openItemDialog(spec) {
   if (!dlg) return;
   ITEM_DIALOG = spec;
   renderItemDialog();
+  // A lecture's page offers that class's own times, which ride on a request
+  // made behind the calendar. Opening one in the gap would show the page with
+  // no fields at all, so fetch them and repaint in place.
+  if (spec.mode === 'op' && !CAL_CLASSES) {
+    loadCalClasses()
+      .then(() => { if (ITEM_DIALOG === spec) renderItemDialog(); })
+      .catch(() => {});
+  }
   if (!dlg.open) dlg.showModal();
   // The title is what a new item needs; a note is what an existing one is
   // usually opened for.
@@ -3275,7 +3391,7 @@ function customDialogHtml(d) {
     <label class="item-field">
       <span>Title</span>
       <input type="text" data-item-title maxlength="300" required
-             value="${esc(it.title ?? '')}" placeholder="Study group, advising, dinner…" />
+             value="${esc(it.title ?? '')}" />
     </label>
     <label class="item-field">
       <span>Calendar</span>
@@ -3287,7 +3403,7 @@ function customDialogHtml(d) {
         <input type="date" data-item-date value="${esc(date)}" required />
       </label>
       <label class="item-field">
-        <span>Ends (optional)</span>
+        <span>Ends</span>
         <input type="date" data-item-enddate value="${esc(endDate)}" />
       </label>
     </div>
@@ -3301,11 +3417,9 @@ function customDialogHtml(d) {
         <input type="time" data-item-endtime value="${esc(endTime)}" />
       </label>
     </div>
-    <p class="item-hint">Leave the times empty for an all-day item.</p>
     <label class="item-field">
       <span>Notes</span>
-      <textarea data-item-note rows="3" maxlength="4000"
-                placeholder="Anything you want on the event itself">${esc(it.description ?? '')}</textarea>
+      <textarea data-item-note rows="3" maxlength="4000">${esc(it.description ?? '')}</textarea>
     </label>
     <div class="item-actions">
       ${editing ? '<button type="button" class="danger" data-item-delete>Delete</button>' : ''}
@@ -3319,43 +3433,108 @@ function customDialogHtml(d) {
 /** The read-and-annotate page for a lecture or an office-hours block. */
 function opDialogHtml(d) {
   const op = d.op ?? {};
-  const facts = [];
-  if (op.date) {
-    facts.push(`<div class="item-fact"><span>When</span><b>${esc(fmtDayLabel(op.date))} · ${esc(calWhenLabel(op))}</b></div>`);
-  }
-  if (op.location) facts.push(`<div class="item-fact"><span>Where</span><b>${esc(op.location)}</b></div>`);
-  if (op.recurrence?.byday?.length) {
-    facts.push(`<div class="item-fact"><span>Repeats</span><b>weekly ${esc(op.recurrence.byday.join(''))}</b></div>`);
-  }
-  facts.push(`<div class="item-fact"><span>Class</span><b>${esc(calDisplayName(op.class))}</b></div>`);
-  // The op's description minus the note we appended to it — printing the note
-  // twice on the page where it is being edited reads as a bug.
-  const body = String(op.description ?? '')
+  const folder = d.folder;
+  const c = (CAL_CLASSES?.classes ?? []).find(x => x.folder === folder);
+  const p = (c?.meeting_times?.patterns || [])[0] || {};
+  // Office hours are stated in the syllabus prose and have no override store,
+  // so their times are shown and not offered as fields — a control that
+  // silently wrote nowhere would be worse than none.
+  const editable = op.kind !== 'office_hours' && !!c;
+  const days = p.byday || [];
+
+  // The topic, and nothing else. Everything the description otherwise carries
+  // here — why the hour is unknown, which source it came from, what to do
+  // about it — is either restated by the fields below or answered by them.
+  const topic = String(op.description ?? '')
     .split('\n')
-    .filter(l => l.trim() && !/^Note:\s/.test(l))
-    .map(l => `<p>${esc(l)}</p>`).join('');
+    .map(l => l.trim())
+    .find(l => l && !/^(Note|Source|Location|Time unknown|Pattern|Office hours|Syllabus|Contact|Stated for|Tentative|Appointments|Other synced|Added by you)\b/i.test(l))
+    // "Class: …" / "Lecture: …" — the label the schedule row carried. The
+    // heading already says what this is, so only the subject survives.
+    ?.replace(/^(class|lecture|lab|session|seminar|discussion)\s*[:\u2014-]\s*/i, '')
+    ?? '';
+
+  const when = op.date ? `${fmtDayLabel(op.date)} · ${calWhenLabel(op)}` : '';
+  const meta = [when, calDisplayName(op.class), op.location].filter(Boolean);
+
   return `
     <header class="item-head">
       <h3>${esc(op.title ?? 'Calendar item')}</h3>
       <button type="button" class="linky" data-item-cancel>close</button>
     </header>
-    <div class="item-facts">${facts.join('')}</div>
-    ${body ? `<div class="item-body">${body}</div>` : ''}
-    <p class="item-hint">${op.kind === 'office_hours'
-      ? 'These hours come from the syllabus, so they are not editable here.'
-      : 'This comes from the syllabus, so its day and time are not editable here — correct them under <b>Class times</b> on the calendar.'}
-      Your note is yours.</p>
+    <p class="item-meta">${esc(meta.join(' · '))}</p>
+    ${topic ? `<p class="item-topic">${esc(clipText(topic, 95))}</p>` : ''}
+    ${editable ? `
+      <div class="item-field">
+        <span>Class times</span>
+        <div class="meet-days">
+          ${MEET_DAYS.map(([code, label]) => `
+            <label class="meet-day${days.includes(code) ? ' on' : ''}">
+              <input type="checkbox" name="day" value="${code}"${days.includes(code) ? ' checked' : ''} />
+              <span>${label}</span>
+            </label>`).join('')}
+        </div>
+      </div>
+      <div class="item-row three">
+        <label class="item-field"><span>Starts</span>
+          <input type="time" name="start" value="${esc(p.start || '')}" /></label>
+        <label class="item-field"><span>Ends</span>
+          <input type="time" name="end" value="${esc(p.end || '')}" /></label>
+        <label class="item-field"><span>Room</span>
+          <input type="text" name="location" value="${esc(p.location || '')}" /></label>
+      </div>
+      <p class="item-hint">Applies to every ${esc(calDisplayName(op.class))} session.${
+        c?.meeting_times?.source === 'override'
+          ? ' <button type="button" class="linky" data-item-meet-clear>use the syllabus</button>' : ''}</p>
+    ` : ''}
     <label class="item-field">
-      <span>Your notes</span>
-      <textarea data-item-note rows="3" maxlength="4000"
-                placeholder="Bring the case pack, ask about Q3…">${esc(d.note ?? '')}</textarea>
+      <span>Notes</span>
+      <textarea data-item-note rows="3" maxlength="4000">${esc(d.note ?? '')}</textarea>
     </label>
     <div class="item-actions">
       <span class="spacer"></span>
       <span class="item-error" data-item-error></span>
       <button type="button" data-item-cancel>Close</button>
-      <button type="submit" class="primary" data-item-save>Save note</button>
+      <button type="submit" class="primary" data-item-save>Save</button>
     </div>`;
+}
+
+/** One line, cut on a word rather than mid-syllable. */
+function clipText(text, max) {
+  const t = String(text ?? '').trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const sp = cut.lastIndexOf(' ');
+  return `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s—–-]+$/, '')}…`;
+}
+
+/** The class-times fields, or null when this dialog did not offer them. */
+function readMeetFields(form) {
+  const days = [...form.querySelectorAll('input[name=day]')];
+  if (!days.length) return null;
+  const val = (n) => form.querySelector(`[name=${n}]`)?.value?.trim() || null;
+  return {
+    days: days.filter(el => el.checked).map(el => el.value),
+    start: val('start'),
+    end: val('end'),
+    location: val('location'),
+  };
+}
+
+/** Did the user actually touch the times, or only the note? */
+function meetTimesChanged(d, next) {
+  const c = (CAL_CLASSES?.classes ?? []).find(x => x.folder === d.folder);
+  const p = (c?.meeting_times?.patterns || [])[0] || {};
+  const was = {
+    days: (p.byday || []).join(','),
+    start: p.start || null,
+    end: p.end || null,
+    location: p.location || null,
+  };
+  return was.days !== next.days.join(',')
+    || was.start !== next.start
+    || was.end !== next.end
+    || was.location !== next.location;
 }
 
 /** Read the editor back out. Empty strings become nulls, never "". */
@@ -3382,12 +3561,29 @@ async function submitItemDialog() {
 
   if (d.mode === 'op') {
     const note = form.querySelector('[data-item-note]')?.value ?? '';
+    // The class's own times, when this page offered them. Sent only when they
+    // actually changed: a POST here rewrites the override for every session of
+    // the class, so opening a lecture and pressing Save on a note it did not
+    // touch must not stamp one.
+    const times = readMeetFields(form);
     say('Saving…');
     try {
+      if (times && meetTimesChanged(d, times)) {
+        if (!times.days.length) { say('Pick at least one day.'); return; }
+        if (Boolean(times.start) !== Boolean(times.end)) {
+          say('Set both a start and an end, or neither.'); return;
+        }
+        await api(`/api/class/${d.folder}/meetings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(times),
+        });
+        await loadCalClasses().catch(() => {});
+      }
       await postTask(d.folder, d.noteKey, { note });
       closeItemDialog();
       refreshCalendarSoon();
-    } catch (e) { say(`Could not save that: ${e.message}`); }
+    } catch (e) { say(e.message); }
     return;
   }
 
@@ -3482,8 +3678,30 @@ function wireItemDialog() {
     submitItemDialog();
   });
 
+  // The day pills carry their own checkbox; the class only reflects it.
+  form.addEventListener('change', (ev) => {
+    const box = ev.target.closest('.meet-day input[name=day]');
+    if (box) box.closest('.meet-day').classList.toggle('on', box.checked);
+  });
+
   form.addEventListener('click', async (ev) => {
     if (ev.target.closest('[data-item-cancel]')) { closeItemDialog(); return; }
+
+    // Drop this class's override and go back to whatever the syllabus said.
+    if (ev.target.closest('[data-item-meet-clear]')) {
+      const d = ITEM_DIALOG;
+      if (!d?.folder) return;
+      try {
+        await api(`/api/class/${d.folder}/meetings`, { method: 'DELETE' });
+        await loadCalClasses().catch(() => {});
+        renderItemDialog();
+        refreshCalendarSoon();
+      } catch (e) {
+        form.querySelector('[data-item-error]').textContent = e.message;
+      }
+      return;
+    }
+
     const del = ev.target.closest('[data-item-delete]');
     if (!del) return;
     // Two presses, like the class cleanup: deleting is the one action here
@@ -4029,6 +4247,14 @@ function syncCalControls(doneCount) {
   });
   const grp = $('cal-group-seg');
   if (grp) grp.classList.toggle('hidden', CAL_VIEW !== 'list');
+  // The clock belongs to Week alone: a month tile has no room for a scale and
+  // the list is not a grid, so the control is hidden rather than dead there.
+  const times = $('cal-times');
+  if (times) {
+    times.classList.toggle('hidden', CAL_VIEW !== 'week');
+    times.classList.toggle('active', CAL_TIMES);
+    times.setAttribute('aria-pressed', CAL_TIMES ? 'true' : 'false');
+  }
   const showDone = $('cal-showdone');
   if (showDone) {
     showDone.classList.toggle('hidden', doneCount === 0);

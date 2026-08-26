@@ -620,16 +620,106 @@ Suites after the fixes: `bridge/` **311 pass / 0 fail**, `scripts/` **605 pass
 session's 1bc383d, which fixed the same lost-update race this review's data
 lens raised).
 
+## §9 — The week against a clock, and a page with no filler on it
+
+Added 2026-08-26. The user's words: *"have a toggleable item for showing
+calendar time, which toggles horizontal time lines for each day & moves items
+to when on that day they are due. this is only for week view."* And, of the
+item page §8 built: *"remove all filler text in attached screenshot page, way
+too much. CONCISE. concise everywhere. info should also all be editable in this
+page."*
+
+The two are one change. The page they were looking at spent four paragraphs
+explaining that a class's hour was unknown and that the fix lived on another
+screen — while the grid behind it had nowhere to put an hour even if you knew
+one. Now the hour is a field on that page, and the week has a clock to show it
+on.
+
+| # | Requirement | Check | Built | Live | User |
+| ---: | --- | --- | :---: | :---: | :---: |
+| 9.1 | A `Times` toggle in the calendar toolbar, **Week only**, persisted across reloads. | `#cal-times` is hidden in List and Month and visible in Week; toggling writes `localStorage.calTimes` and survives a reload | x | x | |
+| 9.2 | On, the week is drawn against a clock: hour lines across all seven columns, hour labels in a gutter, every timed item positioned and sized by its own hours. | `.cal-week.timed` exists; every `.cal-chip.placed` carries a `top`/`height` from its own time; the gutter labels run the window's hours | x | x | |
+| 9.3 | **One scale for the whole week.** Every column's clock starts at the same y and the same hour line runs straight across, whatever each day holds. | The 7 `.cal-slots` have one distinct `top`; the first `.cal-hourline` of every column has one distinct `top` | x | x | |
+| 9.4 | The window is computed from the data but never narrower than 8am–8pm, so one 2pm lecture does not produce a one-hour strip. | `timeWindow` unit-tested: `[]` and a single 2pm item both give 8:00–20:00; a 07:20 and a 21:45 widen it to whole hours | x | x | |
+| 9.5 | Things that are genuinely **not on a clock** — an all-day marker, a lecture whose hour the syllabus never stated, a multi-day run — go in a banner band above the grid, never at an invented 9am. | `opSlot` returns null for all-day, timeless and multi-day ops; they render in `.cal-allday` | x | x | |
+| 9.6 | Overlapping items sit **side by side**, and only the ones that actually collide. | `layoutDay` unit-tested: two overlapping get lanes 0/1 at 50%; an unrelated 4pm item keeps the full width; items that merely touch do not split | x | x | |
+| 9.7 | Turning Times on changes nothing else: clicking still opens, dragging still moves, and List and Month are untouched. | In the timed grid, a click on a chip's title opens its page and moves nothing; a drag moves the item to the new day and keeps its time; the toggle is absent in the other two views | x | x | |
+| 9.8 | The item page carries **no explanatory prose**: a heading, one meta line, the topic, the fields, the notes. | The BUSI 380 lecture page holds 3 `<p>` and ~250 characters total, against ~700 of generated paragraphs before | x | x | |
+| 9.9 | **Its information is editable there.** A lecture's days, start, end and room are fields on the page, and saving them writes the class's own override. | Set 13:00/14:15/Virani 182 on a BUSI 380 lecture and Save: `/api/class/…/meetings` reports `source: override`, and the rebuilt worklist carries the time on that class's sessions | x | x | |
+| 9.10 | Saving a note must not silently stamp a times override the user never touched. | `meetTimesChanged` compares against the stored pattern; a Save that only edited the note sends no meetings POST | x | x | |
+| 9.11 | Office hours say nothing they cannot do. They have no override store, so their page shows their facts and a note, and offers no time fields at all rather than dead ones. | An office-hours op's page renders no `[name=start]` | x | x | |
+
+**Driven 2026-08-26**, real browser, fixture bridge on the six real classes
+(354 ops), real pointer input for the gestures:
+
+```
+Times on            .cal-week.timed · 17 hour lines/col · gutter 8a…11p
+                    11 placed chips · 8 banner chips · 1 now-line
+alignment           7 slot columns, 1 distinct top; 8 bands, 1 distinct height
+toggle off/on       stacked week returns (0 placed) and comes back (11)
+in Month / in List   #cal-times hidden; 42 tiles / 354 rows unchanged
+drag Tue→Thu        moved to 2026-08-27, kept 13:00–14:00, dialog did NOT open
+click the same chip  opens its editor with every field prefilled
+overflow            12/12 at 375 / 768 / 1280 across all three views + dialog
+```
+
+**9.9 end to end, on the exact page in the report.** BUSI 380's syllabus names
+the days and never states an hour, which is why its sessions were all-day
+markers and why the old page had a paragraph about it. Typing 13:00–14:15 and
+`Virani 182` into the page and pressing Save gave:
+
+```
+/api/class/93903-busi-380-002/meetings
+  → "From your override — TuTh 1:00-2:15 PM, Virani 182"   source: override
+worklist, after the rebuild
+  → 18 of 21 BUSI 380 sessions now 13:00–14:15 at Virani 182
+  → titled "Virani 182 - BUSI380 - Porter"      ← §4.1's shape, earned
+  → the 3 without a time are the No-class days, correctly
+week view → those lectures leave the banner band and land at 1p
+```
+
+The three remaining rows in the band are the right ones, and the title gaining
+its room is §4.1 being satisfied by data the user supplied rather than by data
+the syllabus failed to.
+
+**What the page lost.** Four paragraphs: the one explaining that the hour was
+unknown and why, the one naming the source, the one saying the day and time
+were not editable here and pointing at another screen, and the sentence "Your
+note is yours." All four were either restated by a field or answered by making
+the field exist. What is left is a heading, `Tue 8/25 · All day · BUSI 380
+002`, the session's topic clipped to one line with its redundant `Class:`
+label stripped, the fields, and the notes box — 253 characters where there
+were roughly 700.
+
+One line survives on purpose: *"Applies to every BUSI 380 002 session."* It is
+the only thing on the page a user cannot see for themselves, and it is the
+difference between correcting a class's schedule and thinking you moved one
+lecture.
+
+**A note on where the hour lines live.** `HOUR_PX` in `app.js` and the
+`44px` track in `style.css` are the same number twice, and the banner band's
+`ALLDAY_ROW_PX` / `ALLDAY_PAD_PX` are pinned to a fixed chip height in the CSS.
+Both pairs are commented in both files, because the band's height is computed
+arithmetically rather than measured — the first version let each column size
+its own band, and Monday's three markers against Thursday's one put 10am on a
+different row in every column, which is 9.3's failure exactly one level below
+where it was being enforced.
+
+Suites at this note: `bridge/` **320 pass / 0 fail** (cal-grid +9), `scripts/`
+**614 pass / 0 fail**.
+
 ---
 
 ## Ledger
 
-**Open rows: 18 of 67** — every one of them open in the `User` column only.
+**Open rows: 29 of 78** — every one of them open in the `User` column only.
 2.12 and 2.13 are `~` (they ride on `server.js`, so they wait for the app to be
 relaunched); 7.1–7.6 and 8.1–8.10 are blank for the same reason — both sections
 have been driven against the six real classes on a fixture bridge, and both add
 routes to `server.js`, so the app has to be relaunched before the user can
-reach them. Nothing is open in `Built`, and only 7.6 is open in `Live`.
+reach them. §9 (9.1–9.11) is `public/`-only and so is User-visible on ⌘R, but
+it is left blank until it has been seen on the app's own bridge rather than a
+fixture. Nothing is open in `Built`, and only 7.6 is open in `Live`.
 
 **5.2 closed 2026-08-24 17:00.** The user said *"kill anything old so I can run
 just the newest version of this"*. The three stray bridges on `:3848` (pid

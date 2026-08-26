@@ -357,3 +357,123 @@ export function initialAnchor(ops, today = todayIso()) {
   if (today >= dates[0] && today <= dates[dates.length - 1]) return today;
   return dates[0];
 }
+
+// ---------------------------------------------------------------------------
+// The Week view's time grid.
+//
+// Week view stacks each day's items in the order they happen, which answers
+// "what is on Tuesday" but not "when on Tuesday, and what collides". Turning
+// Times on lays the day out against a clock: hour lines across all seven
+// columns, and every timed item positioned and sized by its own hours.
+//
+// The window is computed ONCE for the whole week, never per column — seven
+// columns with seven different scales would put 10am on seven different rows,
+// which is worse than no grid at all.
+// ---------------------------------------------------------------------------
+
+/** '09:30' -> 570. Null for anything that is not a real clock time. */
+export function minutesOf(hhmm) {
+  const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm ?? ''));
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  return h > 23 || min > 59 ? null : h * 60 + min;
+}
+
+/** How long an item with a start but no stated end is drawn for. */
+export const DEFAULT_SLOT_MIN = 30;
+
+// The hours the grid always shows, whatever the data says. A week whose only
+// timed item is a 2pm lecture should not render as a one-hour strip.
+const BASE_FROM = 8 * 60;
+const BASE_TO = 20 * 60;
+const DAY_END = 24 * 60;
+
+/**
+ * The minutes an op occupies, or null when it does not belong on the clock.
+ *
+ * All-day items, items with no time, and multi-day runs are NOT on the clock:
+ * a three-day trip is a banner over each day, and drawing it as a block from
+ * Thursday 00:00 would be a claim about hours nobody made.
+ */
+export function opSlot(op) {
+  if (!op || op.all_day === true) return null;
+  if (spanDates(op).length > 1) return null;
+  const startMin = minutesOf(op.time);
+  if (startMin == null) return null;
+  const stated = minutesOf(op.end_time);
+  // An end at or before the start is a same-day typo or an overnight the grid
+  // cannot draw in one column; either way the honest block is the default one.
+  const endMin = stated != null && stated > startMin ? stated : startMin + DEFAULT_SLOT_MIN;
+  return { startMin, endMin: Math.min(endMin, DAY_END) };
+}
+
+/**
+ * The window the whole week is drawn against: whole hours, wide enough for
+ * every timed op, and never narrower than the working day.
+ */
+export function timeWindow(ops) {
+  let lo = BASE_FROM;
+  let hi = BASE_TO;
+  for (const op of ops || []) {
+    const s = opSlot(op);
+    if (!s) continue;
+    lo = Math.min(lo, Math.floor(s.startMin / 60) * 60);
+    hi = Math.max(hi, Math.ceil(s.endMin / 60) * 60);
+  }
+  return { from: Math.max(0, lo), to: Math.min(DAY_END, Math.max(hi, lo + 60)) };
+}
+
+/** The hour lines to draw, as {min, label} from the window's first hour. */
+export function hourMarks({ from, to }) {
+  const out = [];
+  for (let m = Math.ceil(from / 60) * 60; m <= to; m += 60) {
+    const h = Math.floor(m / 60) % 24;
+    const ampm = h < 12 ? 'a' : 'p';
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    out.push({ min: m, label: m >= DAY_END ? '' : `${h12}${ampm}` });
+  }
+  return out;
+}
+
+/**
+ * One day's items, split into the banner band and the clock, with overlapping
+ * blocks packed into side-by-side lanes.
+ *
+ * Lanes are computed per CLUSTER of mutually overlapping items, not per day:
+ * a 9am collision must not squeeze the unrelated 4pm lecture into half a
+ * column. Two items that merely touch (one ends exactly when the next starts)
+ * do not overlap.
+ */
+export function layoutDay(ops) {
+  const allDay = [];
+  const timed = [];
+  for (const op of ops || []) {
+    const slot = opSlot(op);
+    if (slot) timed.push({ op, ...slot });
+    else allDay.push(op);
+  }
+  timed.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+
+  let cluster = [];
+  let clusterEnd = -1;
+  const flush = () => {
+    if (!cluster.length) return;
+    const laneEnds = [];
+    for (const it of cluster) {
+      let lane = laneEnds.findIndex(end => end <= it.startMin);
+      if (lane < 0) { lane = laneEnds.length; laneEnds.push(0); }
+      laneEnds[lane] = it.endMin;
+      it.lane = lane;
+    }
+    for (const it of cluster) it.lanes = laneEnds.length;
+    cluster = [];
+  };
+  for (const it of timed) {
+    if (cluster.length && it.startMin >= clusterEnd) flush();
+    cluster.push(it);
+    clusterEnd = cluster.length === 1 ? it.endMin : Math.max(clusterEnd, it.endMin);
+  }
+  flush();
+  return { allDay, timed };
+}
