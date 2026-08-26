@@ -367,22 +367,47 @@ actually existed until now, and nothing anywhere could undo a bad save.
 
 | # | Requirement | Check | Built | Live | User |
 | ---: | --- | --- | :---: | :---: | :---: |
-| 7.1 | The calendar carries a collapsed `Class times` list: every in-scope class, its current time and where it came from, and a `set times` (nothing known) or `change` (any time on record) control opening the same editor used on the Overview tab. | `#cal-meettimes` holds one `.meet-row` per class; a class with `has_time` shows `change`, one without shows `set times`; submitting the row's form POSTs `/api/class/:folder/meetings` | x | ~ | |
-| 7.2 | The list's summary states how many classes still need a time, so a collapsed disclosure never hides the actionable fact. | With one timeless class, `#cal-meettimes-summary` reads `Class times · 1 not set` | x | ~ | |
-| 7.3 | Every save or clear stashes what it replaced (`meeting_override.prev.json`), and an `undo` control appears wherever the editor does, saying what it lands on — `undo — back to TuTh 1:00-2:15 PM`, or `undo — back to the syllabus` when no override stood before. | `writeMeetingOverride`/`clearMeetingOverride` write `PREVIOUS_FILE`; `describeRevertTarget` unit-tested; `[data-meet-revert]` renders only when the server says `revert.available` | x | ~ | |
-| 7.4 | Undo is itself undoable: revert swaps states, so a second click is redo, and no click can strand the user. | `revertMeetingOverride` twice restores the newer override again (unit-tested); driven live: set → undo → undo returns the typed time and its calendar events | x | ~ | |
-| 7.5 | A revert lands on the calendar, not just in the file: the worklist rebuilds behind it exactly as it does behind a save. | POST `/api/class/:folder/meetings/revert` responds `rebuild_started: true`; driven live: undo removed the override's meetings from the grid within the poll window | x | ~ | |
+| 7.1 | The calendar carries a collapsed `Class times` list: every in-scope class, its current time and where it came from, and a `set times` (nothing known) or `change` (any time on record) control opening the same editor used on the Overview tab. | `#cal-meettimes` holds one `.meet-row` per class; a class with `has_time` shows `change`, one without shows `set times`; submitting the row's form POSTs `/api/class/:folder/meetings` | x | x | |
+| 7.2 | The list's summary states how many classes still need a time, so a collapsed disclosure never hides the actionable fact. | `#cal-meettimes-summary` counts the classes whose `meeting_times.has_time` is false — on the six real classes it reads `Class times · 3 not set`, and drops to `2 not set` the moment one is given a time | x | x | |
+| 7.3 | Every save or clear stashes what it replaced (`meeting_override.prev.json`), and an `undo` control appears wherever the editor does, saying what it lands on — `undo — back to TuTh 1:00-2:15 PM`, or `undo — back to the syllabus` when no override stood before. | `writeMeetingOverride`/`clearMeetingOverride` write `PREVIOUS_FILE`; `describeRevertTarget` unit-tested; `[data-meet-revert]` renders only when the server says `revert.available` | x | x | |
+| 7.4 | Undo is itself undoable: revert swaps states, so a second click is redo, and no click can strand the user. | `revertMeetingOverride` twice restores the newer override again (unit-tested); driven live: set → undo → undo returns the typed time and its calendar events | x | x | |
+| 7.5 | A revert lands on the calendar, not just in the file: the worklist rebuilds behind it exactly as it does behind a save. | POST `/api/class/:folder/meetings/revert` responds `rebuild_started: true`; driven live: undo removed the override's meetings from the grid within the poll window | x | x | |
 | 7.6 | A save that changes nothing does not eat the undo target, and a stash that no longer validates offers no undo at all. | Unit tests: identical re-save keeps the older stash; corrupt/day-less stash → `readMeetingRevert` null and the override left alone | x | | |
 
-**Driven 2026-08-25** in a real browser against a fixture data root (two
-classes: one syllabus-stated `MW 10:00-11:15`, one days-only `TuTh`): set times
-on the timeless class → `From your override — TuTh 10:50 AM-12:05 PM, McNair
-214`, two meetings on the grid; undo → back to `Days only (TuTh)… Set it
-yourself.`, meetings gone, link now offers redo; undo again → override and
-meetings back. `Live` is `~` not `x` because the drive used fixture classes,
-not the six real ones; `User` waits until this runs on the app-owned bridge.
-Suites at this note: `scripts/` **579 pass / 0 fail** (7 new revert tests),
-`bridge/` **285 pass / 0 fail**.
+**Measured live 2026-08-26**, in a real browser against **all six real Fall
+2026 classes** — a byte copy of the user's data root, so the real syllabi are
+read and the user's own files are never written. Re-driven on `3bbea94`, whose
+`app.js`/`server.js` edits un-ticked the first (fixture) drive under rule 3.
+
+The list, cold: **6 `.meet-row`, 6 edit controls, 0 undo controls** (nothing
+changed yet), summary `Class times · 3 not set`. The three are the three the
+corpus actually lacks — BUSI 305 and BUSI 396 (`meeting_schedule: null`, 4.4)
+and BUSI 380 (days-only `TuTh`, the case this module exists for). The other
+three read their real times: BUSI 374 `MW 2:30-3:45 PM`, ECON 205 `Tu 6:30-7:45
+PM`, ENTR 222 `TuTh 10:50 AM-12:05 PM, Cambridge Office Building 130 (room from
+the Canvas course pages)`.
+
+```
+BUSI 380  set times → From your override — TuTh 10:50 AM-12:05 PM, McNair 214
+          summary 3 not set → 2 not set;  20 of 24 meeting rows take the time,
+          titled "McNair 214 - BUSI380 - Porter" (4.1's shape, prof from the syllabus)
+          undo  → Days only (TuTh)… Set it yourself.  ·  0 timed rows  ·  3 not set
+          undo  → override and all 20 timed rows back  ·  2 not set
+ECON 205  change  → editor prefilled Tu 18:30-19:45 from the SYLLABUS, not blank
+                  → TuTh 6:00-7:15 PM
+          "Use the syllabus instead" → From the syllabus — Tu 6:30-7:45 PM
+          undo  → TuTh 6:00-7:15 PM restored   (the mis-clicked-clear case)
+reload    → both changed classes still offer undo; the four untouched offer none
+```
+
+That last line is the one worth keeping: the stash is on disk, so an undo is
+still there after the app is closed and reopened — not just within a session.
+
+7.6 stays `Built`-only by design: a corrupt stash and a no-op re-save are
+states the UI cannot be made to produce on demand, so unit tests are the
+evidence. `User` waits until this runs on the app-owned bridge. Suites at this
+note: `scripts/` **580 pass / 0 fail** (7 new revert tests), `bridge/` **285
+pass / 0 fail**.
 
 ---
 
