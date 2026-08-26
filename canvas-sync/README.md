@@ -334,9 +334,10 @@ weekly recurring event from an override, as long as the override carries a start
 Each class holds one color — a hue at fixed saturation and lightness, assigned across the whole
 set so no two classes collide, and stable from one visit to the next. Color identifies the
 class and nothing else; it never means urgent. The chips above the list toggle a class in and
-out of the view (hidden classes are remembered in the browser, per device), and every due-date
-row has a checkbox that marks it done and drops it from the worklist. Past lectures are not
-styled as missed deadlines.
+out of the selection: all classes show by default, selecting one or more narrows the calendar
+to those classes, and deselecting the last returns to all. The selection is remembered in the
+browser, per device. Every due-date row has a checkbox that marks it done and drops it from the
+worklist. Past lectures are not styled as missed deadlines.
 
 ## Downstream: the AI context pack
 
@@ -494,7 +495,7 @@ inside the dashboard, with sanitized Canvas HTML and the files that came from th
 Canvas item and submit URLs corrected once, centrally (`canvas-links.js`), so quiz-backed work
 no longer links to a page Canvas denies students; a task list that is the union of Canvas
 assignments and mined items rather than one replacing the other (`canvas-tasks.js`); per-class
-calendar colors, class visibility chips, and done-checkboxes on calendar rows; `url` and
+calendar colors, class selection chips, and done-checkboxes on calendar rows; `url` and
 `submit_url` carried as worklist fields; and JSON salvage for syllabus parses the model
 truncates.
 

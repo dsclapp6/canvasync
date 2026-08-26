@@ -34,13 +34,24 @@ before(async () => {
       submission_types: ['online_upload'] },
   ]));
   await fs.writeFile(path.join(classDir, 'assignments_mined.json'), JSON.stringify({ items: [
-    { id: 'proj-1', title: 'Course Project', category: 'project', canvas_assignment_id: 71 },
-    { id: 'exam-1', title: 'Midterm Exam', kind: 'implicit', category: 'exam', due_date: '2026-10-07' },
+    { id: 'proj-1', title: 'Course Project', category: 'project', canvas_assignment_id: 71,
+      related_materials: [{ file: 'Project Brief.pdf', why: 'requirements' }] },
+    { id: 'exam-1', title: 'Midterm Exam', kind: 'implicit', category: 'exam', due_date: '2026-10-07',
+      related_materials: [{ file: 'Session 4 - Exam Review slides', why: 'review' }] },
     // A real 66-character id from BUSI 380's mined file. The model writes the
     // id, so its length is whatever the title was.
     { id: LONG_ID, title: 'S2a Concept Check: consider different ways to define your customers',
       category: 'homework', canvas_assignment_id: 71 },
   ] }));
+  await fs.writeFile(path.join(classDir, 'files_index.json'), JSON.stringify([
+    { canvasId: 901, displayName: 'Project Brief.pdf', localPath: 'files/Project Brief.pdf',
+      materialsPath: 'materials/Project Brief.pdf.txt', extractionStatus: 'done' },
+  ]));
+  await fs.writeFile(path.join(classDir, 'pages.json'), JSON.stringify([
+    { page_id: 44, title: 'Session 4 - Exam Review - 9/15',
+      html_url: 'https://canvas.rice.edu/courses/92294/pages/session-4',
+      body: '<p>Review chapters 1–4.</p>', updated_at: '2026-09-14T12:00:00Z' },
+  ]));
   server = await createServer();
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
@@ -82,6 +93,8 @@ test('asked by mined id, the route follows the claim to the Canvas row', async (
   assert.equal(body.origin, 'canvas');
   assert.equal(body.url, 'https://canvas.rice.edu/courses/92294/assignments/71');
   assert.ok(body.submit_url, 'submittable work shows its submit link');
+  assert.equal(body.mined.related_materials[0].source.type, 'file');
+  assert.equal(body.mined.related_materials[0].source.localPath, 'files/Project Brief.pdf');
 });
 
 test('asked by Canvas id, same answer', async () => {
@@ -98,6 +111,23 @@ test('a mined-only item is origin syllabus, with nothing to open or submit', asy
   assert.equal(body.canvas_id, null);
   assert.equal(body.url, null);
   assert.equal(body.submit_url, null);
+  assert.equal(body.mined.related_materials[0].source.type, 'page');
+  assert.equal(body.mined.related_materials[0].source.pageId, '44');
+});
+
+test('a linked Canvas page body is fetched only when the viewer opens it', async () => {
+  const { status, body } = await get(`/api/class/${FOLDER}/page/44`);
+  assert.equal(status, 200);
+  assert.equal(body.title, 'Session 4 - Exam Review - 9/15');
+  assert.match(body.body_html, /Review chapters/);
+  assert.equal(body.canvas_url, 'https://canvas.rice.edu/courses/92294/pages/session-4');
+});
+
+test('the class task bundle carries the same material links', async () => {
+  const { status, body } = await get(`/api/class/${FOLDER}`);
+  assert.equal(status, 200);
+  const project = body.mined.items.find(item => item.id === 'proj-1');
+  assert.equal(project.related_materials[0].source.type, 'file');
 });
 
 test('a long mined id opens — the calendar addresses rows by exactly this id', async () => {

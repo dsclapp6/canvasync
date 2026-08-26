@@ -86,7 +86,7 @@ validated as actually useful when uploaded to a Claude project.
 
 - **Visual customization** generally — the calendar view needs to be configurable, not fixed.
 - **Colors per class.**
-- **Toggleable class visibility** — show/hide individual classes in the view.
+- **Selectable class filtering** — all classes by default; selecting one or more narrows the view.
 - **Improved populate** (beyond the current five on/off kinds).
 - **Task completion indicators, and the ability to mark done from the calendar view** — today
   completion only exists on the class Tasks tab.
@@ -192,11 +192,11 @@ Also landed in the same pass, closing `LINK-AUDIT.md`:
   finished value when the model runs out of tokens mid-JSON. All five syllabi parse now; ENTR 222
   did not before.
 
-That clears three items in §4: colors per class, toggleable class visibility, and marking a task
+That clears three items in §4: colors per class, selectable class filtering, and marking a task
 done from the calendar view. Each class gets one hue at a fixed saturation and lightness,
-assigned across the whole set so no two collide; chips above the list toggle a class in and out;
-every due-date row has a checkbox that writes to `user_state.json` and drops the item from the
-worklist.
+assigned across the whole set so no two collide; all class chips start selected, selecting one
+or more narrows the calendar to those classes, and deselecting the last returns to all. Every
+due-date row has a checkbox that writes to `user_state.json` and drops the item from the worklist.
 
 ### Correction, 2026-08-24
 

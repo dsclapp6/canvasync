@@ -21,6 +21,7 @@ import { dataRoot } from '../data-root.js';
 import { readSyncScope, readEnrolledCourses, isInScope, SCOPE_FILE, CLASS_DIR_RE } from '../scope.js';
 import { readUserState, patchTask, UserStateError } from './user-state.js';
 import { filesWithOrigins } from './file-origins.js';
+import { linkRelatedMaterials, materialSources } from './public/material-links.js';
 import {
   KINDS as CAL_KINDS, KIND_LABELS as CAL_KIND_LABELS,
 } from '../calendar-kinds.js';
@@ -1046,7 +1047,7 @@ export function buildApp(config) {
     const dir = path.join(syncHome(), 'classes', folderName);
     try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
 
-    const [metadata, context, minedRaw, filesIndex, grades, tabs, syllabusParsed, assignments, assignmentGroups, coursePacks] = await Promise.all([
+    const [metadata, context, minedRaw, filesIndex, grades, tabs, syllabusParsed, assignments, assignmentGroups, coursePacks, pages] = await Promise.all([
       readJsonOrNull(path.join(dir, 'metadata.json')),
       readJsonOrNull(path.join(dir, 'AI_CONTEXT', 'context.json')),
       readJsonOrNull(path.join(dir, 'assignments_mined.json')),
@@ -1057,16 +1058,22 @@ export function buildApp(config) {
       readJsonOrNull(path.join(dir, 'assignments.json')),
       readJsonOrNull(path.join(dir, 'assignment_groups.json')),
       readJsonOrNull(path.join(dir, 'course_packs.json')),
+      readJsonOrNull(path.join(dir, 'pages.json')),
     ]);
     // Until mining runs, Canvas is the task list. Serving nothing here was
     // showing "no tasks yet" for classes with dozens of Canvas assignments —
     // the same fallback the calendar has always had.
     const { items: taskItems, source: taskSource } = tasksForClass({ mined: minedRaw, assignments });
-    const mined = { ...(minedRaw ?? {}), items: taskItems, source: taskSource };
     const userState = await readUserState(dir);
     // Provenance is derived from the sibling JSON rather than stored, so it
     // backfills classes synced before file-origins.js existed.
     const filesWithSource = await filesWithOrigins(dir, filesIndex ?? []);
+    const sources = materialSources(filesWithSource, pages ?? []);
+    const mined = {
+      ...(minedRaw ?? {}),
+      items: taskItems.map(item => linkRelatedMaterials(item, sources)),
+      source: taskSource,
+    };
     let contextMd = null;
     try { contextMd = await fs.readFile(path.join(dir, 'AI_CONTEXT', 'context.md'), 'utf8'); } catch {}
     let packFiles = [];
@@ -1112,12 +1119,13 @@ export function buildApp(config) {
     const dir = path.join(syncHome(), 'classes', folderName);
     try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
 
-    const [assignments, quizzes, filesIndex, metadata, mined] = await Promise.all([
+    const [assignments, quizzes, filesIndex, metadata, mined, pages] = await Promise.all([
       readJsonOrNull(path.join(dir, 'assignments.json')),
       readJsonOrNull(path.join(dir, 'quizzes.json')),
       readJsonOrNull(path.join(dir, 'files_index.json')),
       readJsonOrNull(path.join(dir, 'metadata.json')),
       readJsonOrNull(path.join(dir, 'assignments_mined.json')),
+      readJsonOrNull(path.join(dir, 'pages.json')),
     ]);
 
     const wanted = String(assignmentId).replace(/^canvas-/, '');
@@ -1160,8 +1168,10 @@ export function buildApp(config) {
     // row's id — the calendar asks by MINED id, and comparing origins against
     // that slug returned [] for exactly the panel's standard path.
     let related = [];
+    let filesForMaterials = filesIndex ?? [];
     try {
       const withOrigins = await filesWithOrigins(dir, filesIndex ?? []);
+      filesForMaterials = withOrigins;
       const canvasId = a?.id != null ? String(a.id) : wanted;
       const quizId = a?.quiz_id != null ? String(a.quiz_id) : null;
       related = withOrigins
@@ -1170,6 +1180,10 @@ export function buildApp(config) {
           || (o.kind === 'quiz' && quizId && o.itemId === quizId)))
         .map(f => ({ name: f.displayName, localPath: f.localPath, size: f.size }));
     } catch { /* provenance is a nicety here, not a requirement */ }
+    const linkedMinedItem = linkRelatedMaterials(
+      minedItem,
+      materialSources(filesForMaterials, pages ?? []),
+    );
 
     res.json({
       folder: folderName,
@@ -1185,7 +1199,7 @@ export function buildApp(config) {
       locked_for_user: a?.locked_for_user ?? false,
       lock_explanation: a?.lock_explanation ?? null,
       description_html: a?.description ?? null,
-      mined: minedItem,
+      mined: linkedMinedItem,
       // 'canvas' when a live Canvas row stands behind this; 'syllabus' when
       // the AI mined it and there is nothing on Canvas to open or submit.
       origin: a ? 'canvas' : 'syllabus',
@@ -1194,6 +1208,27 @@ export function buildApp(config) {
       raw_url: a?.html_url ?? null,
       related_files: related,
       user_state: userState.items?.[stateKey] ?? {},
+    });
+  });
+
+  // GET /api/class/:folderName/page/:pageId — one synced Canvas page for the
+  // in-app material viewer. The class/assignment payloads carry body-free page
+  // references; the potentially large HTML body is read only when clicked.
+  dashRouter.get('/class/:folderName/page/:pageId', async (req, res) => {
+    const { folderName, pageId } = req.params;
+    if (!CLASS_RE.test(folderName) || !pageId || pageId.length > 300) {
+      return res.status(400).json({ error: 'bad request' });
+    }
+    const dir = path.join(syncHome(), 'classes', folderName);
+    const pages = await readJsonOrNull(path.join(dir, 'pages.json'));
+    const page = (Array.isArray(pages) ? pages : []).find(p =>
+      p?.title && String(p.page_id ?? p.url ?? '') === pageId);
+    if (!page) return res.status(404).json({ error: 'page not found' });
+    res.json({
+      title: page.title,
+      body_html: page.body ?? '',
+      canvas_url: page.html_url ?? null,
+      updated_at: page.updated_at ?? null,
     });
   });
 

@@ -1296,10 +1296,12 @@ function renderAssignment() {
   if (a.mined?.description) {
     parts.push(`<h3>What this is</h3><p>${esc(a.mined.description)}</p>`);
   }
-  const mats = a.mined?.related_materials || [];
+  const mats = (a.mined?.related_materials || [])
+    .map((material, index) => ({ ...material, index }))
+    .filter(material => material.source);
   if (mats.length) {
     parts.push(`<h3>Most relevant materials</h3><ul>${mats.slice(0, 6)
-      .map(m => `<li>${esc(m.file)}${m.why ? ` — ${esc(m.why)}` : ''}</li>`).join('')}</ul>`);
+      .map(m => `<li><button type="button" class="linky material-link" data-amat="${m.index}">${esc(m.file)}</button>${m.why ? ` — ${esc(m.why)}` : ''}</li>`).join('')}</ul>`);
   }
   if (a.related_files?.length) {
     parts.push(`<h3>Files from this assignment</h3><ul class="assignment-files">${a.related_files
@@ -1316,6 +1318,10 @@ function renderAssignment() {
   // to this assignment rather than to the class.
   $('assignment-body').querySelectorAll('[data-afile]').forEach(btn => btn.addEventListener('click', () => {
     openFile(a.folder, a.related_files[Number(btn.dataset.afile)], 'assignment');
+  }));
+  $('assignment-body').querySelectorAll('[data-amat]').forEach(btn => btn.addEventListener('click', () => {
+    const material = a.mined.related_materials[Number(btn.dataset.amat)];
+    if (material?.source) openFile(a.folder, material.source, 'assignment');
   }));
 }
 
@@ -1377,15 +1383,15 @@ function wireAssignment() {
 }
 
 // ---------------------------------------------------------------------------
-// In-app file viewer
+// In-app material viewer
 //
 // A class file was previously a blob URL in a new tab, which for the two file
 // types this app actually holds — PDF slides and PPTX decks — meant leaving
 // the app to look at something the app had already read. So: read it here.
 //
-// Same back-button panel pattern as the assignment page above. Text, markdown
-// and images render as themselves; anything the browser cannot show is served
-// as the extracted text under materials/, labelled honestly as extracted text
+// Same back-button panel pattern as the assignment page above. Text, markdown,
+// images and synced Canvas pages render as themselves; anything the browser
+// cannot show is served as extracted text under materials/, labelled honestly
 // rather than passed off as the document.
 // ---------------------------------------------------------------------------
 
@@ -1408,37 +1414,60 @@ function materialsPathFor(f) {
 
 let FILE_VIEW = null;          // { folder, file }
 let FILE_RETURN = 'detail';    // 'detail' | 'assignment'
+let FILE_RETURN_SCROLL = 0;    // exact spot in the task/assignment pane
+
+function classDetailScroller() {
+  return document.querySelector('#view-classes > .detail');
+}
 
 function fileUrl(folder, rel) {
   return `/api/class/${folder}/file?p=${encodeURIComponent(rel)}`;
 }
 
 async function openFile(folder, file, from = 'detail') {
+  const scroller = classDetailScroller();
+  FILE_RETURN_SCROLL = scroller?.scrollTop ?? 0;
   FILE_VIEW = { folder, file };
   FILE_RETURN = from;
   navTo('classes');
   showClassesPanel('file-panel');
+  if (scroller) scroller.scrollTop = 0;
   await renderFileView();
 }
 
 async function renderFileView() {
   const { folder, file } = FILE_VIEW;
-  const name = file.displayName || file.filename || file.name || 'Untitled';
+  const isPage = file.type === 'page';
+  const name = file.displayName || file.filename || file.name || file.title || 'Untitled';
   const ext = extOf(file.localPath || name);
   $('file-title').textContent = name;
 
   const bits = [];
+  if (isPage) bits.push('Canvas page');
   if (file.size) bits.push(fmtBytes(file.size));
   if (file.pageCount) bits.push(`${file.pageCount} page${file.pageCount === 1 ? '' : 's'}`);
   if (file.slideCount) bits.push(`${file.slideCount} slide${file.slideCount === 1 ? '' : 's'}`);
   if (file.canvasUpdatedAt) bits.push(`updated ${file.canvasUpdatedAt.slice(0, 10)}`);
   $('file-sub').textContent = bits.join('  ·  ');
 
-  $('file-reveal').classList.toggle('hidden', !(IS_APP && file.localPath));
+  $('file-open').textContent = isPage ? 'Open in Canvas' : 'Open original';
+  $('file-open').classList.toggle('hidden', isPage ? !file.canvasUrl : !file.localPath);
+  $('file-reveal').classList.toggle('hidden', isPage || !(IS_APP && file.localPath));
   const body = $('file-body');
   body.innerHTML = '<p class="muted">Reading…</p>';
 
   try {
+    if (isPage) {
+      const page = await apiJson(`/api/class/${folder}/page/${encodeURIComponent(file.pageId)}`);
+      file.canvasUrl = page.canvas_url || file.canvasUrl;
+      $('file-open').classList.toggle('hidden', !file.canvasUrl);
+      if (page.updated_at) $('file-sub').textContent = `Canvas page  ·  updated ${page.updated_at.slice(0, 10)}`;
+      body.innerHTML = page.body_html
+        ? `<div class="md-body assignment-desc">${sanitizeCanvasHtml(page.body_html)}</div>`
+        : '<p class="muted">This Canvas page has no body.</p>';
+      return;
+    }
+
     if (IMAGE_EXT.has(ext)) {
       const blob = await (await api(fileUrl(folder, file.localPath))).blob();
       body.innerHTML = '';
@@ -1467,6 +1496,11 @@ async function renderFileView() {
       `<div class="notice">Text extracted from the ${esc(label)} — no layout, images or formatting.</div>
        <div class="file-text">${esc(text)}</div>`;
   } catch (err) {
+    if (isPage) {
+      body.innerHTML = `<div class="notice alarm">Could not load this Canvas page.</div>
+        <p class="muted mono">${esc(err.message)}</p>`;
+      return;
+    }
     const status = file.extractionStatus;
     body.innerHTML = `<div class="notice alarm">No extracted text for this file${
       status && status !== 'done' ? ` — extraction is <span class="mono">${esc(status)}</span>` : ''
@@ -1478,12 +1512,18 @@ async function renderFileView() {
 
 function wireFileView() {
   $('file-back').addEventListener('click', () => {
-    if (FILE_RETURN === 'assignment' && ASSIGNMENT) { showClassesPanel('assignment-panel'); return; }
-    showClassesPanel(CURRENT ? 'detail' : 'class-home');
+    if (FILE_RETURN === 'assignment' && ASSIGNMENT) showClassesPanel('assignment-panel');
+    else showClassesPanel(CURRENT ? 'detail' : 'class-home');
+    const scroller = classDetailScroller();
+    if (scroller) scroller.scrollTop = FILE_RETURN_SCROLL;
   });
 
   $('file-open').addEventListener('click', async () => {
     const { folder, file } = FILE_VIEW || {};
+    if (file?.type === 'page') {
+      if (file.canvasUrl) window.open(file.canvasUrl, '_blank', 'noopener');
+      return;
+    }
     if (!file?.localPath) return;
     try {
       const blob = await (await api(fileUrl(folder, file.localPath))).blob();
@@ -1789,8 +1829,11 @@ function renderTasks() {
       const st = taskState(it.id);
       const eff = effectiveDue(it);
       const due = fmtDue(it, eff);
-      const mats = (it.related_materials || []).slice(0, 4)
-        .map(m => `<li>${esc(m.file)}${m.why ? ` \u2014 ${esc(m.why)}` : ''}</li>`).join('');
+      const mats = (it.related_materials || [])
+        .map((material, index) => ({ ...material, index }))
+        .filter(material => material.source)
+        .slice(0, 4)
+        .map(m => `<li><button type="button" class="linky material-link" data-task-material="${m.index}">${esc(m.file)}</button>${m.why ? ` \u2014 ${esc(m.why)}` : ''}</li>`).join('');
       const cps = st.checkpoints ?? [];
       const cpsDone = cps.filter(c => c.done).length;
       // AI-added: mined from the syllabus, no Canvas row behind it. `origin`
@@ -1845,6 +1888,13 @@ function wireTasks() {
     const id = idOf(el);
     if (!id) return;
     const task = taskEl(el);
+
+    if (el.matches('[data-task-material]')) {
+      const item = (CURRENT.mined?.items || []).find(i => i.id === id);
+      const material = item?.related_materials?.[Number(el.dataset.taskMaterial)];
+      if (material?.source) await openFile(CURRENT.folder, material.source, 'detail');
+      return;
+    }
 
     if (el.matches('[data-toggle]')) {
       const slot = task.querySelector('.task-editor-slot');

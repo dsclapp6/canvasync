@@ -33,7 +33,7 @@ disagree, F is the current behaviour.
 | A2 | Token editable after bridging (extension popup) | DONE (prior session) | popup edit flow |
 | A3 | Sync scope: only selected classes sync / process / appear; stale-class cull with size reporting; unknown scope never hides or deletes | DONE | `scope.js`, 17 scope tests, cleanup UI, trigger + calendar + contexts filters |
 | A4 | Sidebar shows only current classes, with All toggle + class picker | DONE | `#class-scope` seg, picker panel |
-| A5 | Calendar grouped by day AND by class, decent looking | DONE (prior session) | seg controls, persisted prefs — per-class color, visibility chips and row checkboxes added in F5 |
+| A5 | Calendar grouped by day AND by class, decent looking | DONE (prior session) | seg controls, persisted prefs — per-class color, selection chips and row checkboxes added in F5 |
 | A6 | Assignment management: complete, notes, flags (color coding), move date/time, checkpoints | DONE | `user-state.js` (17 tests), task editor UI, live-verified BUSI 305 — task list superseded by F3, in-app assignment page added in F4 |
 | A7 | Files sorted by where they were pulled from | DONE | `file-origins.js` (17 tests); live-verified on BUSI 380 (34 files, Assignments+Syllabus groups, 3 sort modes) |
 | A8 | Context packs for AI building made | DONE (deterministic tier) | packs built for all 5 in-scope classes via `CLAUDE_SKIP=1`; AI enrichment blocked on `claude login` (user action) |
@@ -142,7 +142,7 @@ behaviour, not the audit trail.
 | F2 | Canvas item/submit URLs corrected in one place | DONE (code+tests) | `canvas-links.js`, 35 tests; 39 of the 86 assignments on disk rewritten, every one matching that quiz's own `html_url` in `quizzes.json` (0 mismatches) |
 | F3 | Task list = mined ∪ dated Canvas assignments | DONE (code+tests+live) | `canvas-tasks.js` `tasksForClass()`, 10 tests; read through by `GET /api/class/:folderName` in `bridge/server.js` and `buildWorklist()` in `scripts/sync-calendar.js`, so the class page and the calendar cannot disagree. Live: BUSI 380 = 9 mined + 32 unclaimed Canvas rows = 41 items, `mixed`; ENTR 222 = 18, `canvas`; BUSI 305 = 9, `mined` |
 | F4 | Assignment pages inside the dashboard | DONE (code) | `GET /api/class/:folderName/assignment/:assignmentId`; sanitized description, `related_files`, Open/Submit anchors. The route has no test; the panel that renders it has none either |
-| F5 | Calendar: one color per class, visibility chips, row checkboxes | DONE (code) | `bridge/public/app.js` `classColor()` / `classHueMap()`, `cal-classes` chips, `data-cal-done` checkbox. Dashboard JS has no automated coverage in either suite |
+| F5 | Calendar: one color per class, selection chips, row checkboxes | DONE (code) | `bridge/public/app.js` `classColor()` / `classHueMap()`, `cal-classes` chips, `data-cal-done` checkbox. The pure selection transitions are covered in `bridge/test/cal-plan.test.js`; the DOM wiring itself has no automated harness |
 | F6 | `url` / `submit_url` as worklist fields, `Submit:` in event descriptions | DONE (code) | `scripts/sync-calendar.js`: op fields in `opsForItem`, `- url:` / `- submit_url:` in `renderWorklistMd`, `Submit: <url>` in the description builder. `submit_url` is emitted only when it differs from `url` |
 | F7 | Truncated-JSON salvage for syllabus parses | DONE (code+tests+live) | `salvageTruncatedJson()` in `scripts/parse-syllabus.js`; all 5 classes have a `syllabus_parsed.json` |
 

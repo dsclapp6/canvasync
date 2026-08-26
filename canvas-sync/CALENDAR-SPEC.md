@@ -67,9 +67,10 @@ control visible. Week: `grid-template-columns` = 7 tracks, heads `Mon 24 … Sun
 2027 — the month that starts Monday and ends Sunday — yields exactly 28 tiles
 and 0 adjacent (`bridge/test/cal-grid.test.js`). `next ›` moved `Aug 24 – 30,
 2026` → `Aug 31 – Sep 6, 2026`. Cold load with `calView=week` opened on `Aug 24
-– 30, 2026` with today's column marked once. Hiding BUSI 305 and filtering to
-Meetings survived List→Week→Month→List with 90 / 6 / 31 / 90 items and 0 items
-from the hidden class in any of them.
+– 30, 2026` with today's column marked once. The class-filter portion was
+re-measured after the 2026-08-26 selection change: BUSI 305 + Meetings survived
+List→Week→Month→List with 16 / 1 / 2 / 16 items and 0 items from any other
+class in any of them (see §6.10–6.15).
 
 ## §2 — Task control inside the calendar
 
@@ -848,9 +849,10 @@ class data, dummy secret, symlinked read-only):
   the grids now FILL the viewport (grid bottom within 16px of the window edge
   at 900×600, 1240×840 and 1280×800) — the user's "calendar isn't filling full
   screen" report.
-- §1.9/§3.2/§3.3: hid busi-305 + filtered Meetings, cycled
-  List→Week→Month→List: 67/5/10/67 items, 0 from the hidden class; restored to
-  223 with all kind chips lit.
+- §1.9/§3.2/§3.3: the original hidden-set measurement was superseded on
+  2026-08-26 and re-driven with the selection control: BUSI 305 + Meetings,
+  List→Week→Month→List, gave 16/1/2/16 items and 0 from any other class;
+  clicking the last selected class returned to all classes (see §6.10–6.15).
 - §2 counts: 135 checkboxes, 105 open buttons, 74 Submit links, 12 `no link`
   markers — consistent with the current 223-op worklist. The POST/tick round
   trips were NOT re-driven live (they would write the user's real
