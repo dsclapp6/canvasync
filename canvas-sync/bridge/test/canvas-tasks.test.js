@@ -246,3 +246,35 @@ test('a deleted-and-recreated assignment resolves by title to the live row', () 
   assert.equal(items[0].due_date, '2026-03-19', 'the recreated row keeps the real deadline');
   assert.ok(items[0].submit_url, 'and the real Submit URL');
 });
+
+test('two distinct same-named Canvas rows both survive a mined claim', () => {
+  // The union used to hold a title-wide claim set: one mined item touching
+  // "Weekly Reflection" suppressed EVERY dated row with that name, and a
+  // second, genuinely separate deadline vanished. Claims are per-row now.
+  const twins = [
+    { id: 801, name: 'Weekly Reflection', due_at: '2026-09-01T04:59:00Z', submission_types: ['online_upload'], html_url: 'https://canvas.rice.edu/courses/93903/assignments/801' },
+    { id: 802, name: 'Weekly Reflection', due_at: '2026-09-15T04:59:00Z', submission_types: ['online_upload'], html_url: 'https://canvas.rice.edu/courses/93903/assignments/802' },
+  ];
+  const mined = { items: [{ id: 'wr', title: 'Weekly Reflection', canvas_assignment_id: 999999, due_date: '2026-09-03' }] };
+  const { items } = tasksForClass({ mined, assignments: twins });
+  assert.equal(items.length, 2, 'one merged item + the sibling as an extra');
+  const dates = items.map(i => i.due_date).sort();
+  assert.deepEqual(dates, ['2026-08-31', '2026-09-14'], 'BOTH Canvas deadlines present, both Canvas-owned');
+});
+
+test('a recurring item resolved by title must not swallow the dated row it reached', () => {
+  // Stale id + re-created dated row sharing the title: the recurrence keeps
+  // its note, the Canvas row keeps its date — same rule as the id-claimed
+  // recurring case, through the title door.
+  const mined = { items: [{
+    id: 'cc', title: 'Concept Check', canvas_assignment_id: 999999,
+    recurring: 'before each class',
+  }] };
+  const row = { id: 101, name: 'Concept Check', due_at: '2026-10-01T04:59:00Z', points_possible: 100, submission_types: ['online_quiz'], html_url: 'https://canvas.rice.edu/courses/93903/assignments/101' };
+  const { items } = tasksForClass({ mined, assignments: [row] });
+  assert.equal(items.length, 2, 'the recurring note AND the dated Canvas row');
+  const dated = items.find(i => i.due_date);
+  assert.equal(String(dated.canvas_assignment_id), '101');
+  assert.equal(dated.origin, 'canvas');
+  assert.ok(dated.submit_url, 'the graded deadline keeps its Submit URL');
+});

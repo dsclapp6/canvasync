@@ -107,3 +107,14 @@ test('prune skips entries with no lastPushedAt instead of treating them as 1970'
     assert.equal(result.deleted, 1);
   });
 });
+
+test('an empty scope returns before any Google auth or calendar creation', async () => {
+  // If this test ever hangs or throws an auth error, syncAll is calling
+  // ensureCalendar before the empty check again.
+  const home = await makeHome();
+  await withHome(home, async () => {
+    await writeFile(join(home, 'sync-scope.json'), JSON.stringify({ courseIds: [] }));
+    const summary = await (await import('../lib/sync.js')).syncAll({ dryRun: false, logger: { log() {} } });
+    assert.deepEqual(summary, { created: 0, updated: 0, deleted: 0, skipped: 0, unchanged: 0 });
+  });
+});

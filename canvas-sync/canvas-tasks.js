@@ -158,8 +158,14 @@ export function tasksForClass({ mined, assignments }) {
   const byId = new Map(rows.map(a => [String(a.id), a]));
   const datedIds = new Set(rows.filter(a => a.due_at).map(a => String(a.id)));
 
+  // Ids only — a claim names the SPECIFIC Canvas rows a mined item stands
+  // for. There used to be a claimedTitles set beside this one, suppressing
+  // every Canvas row whose flattened title matched a mined item's; with two
+  // distinct same-named dated rows ("Weekly Reflection" due Sep 1 and Sep
+  // 15), it erased the second one outright. Title MATCHING still happens —
+  // as resolution, below — and the resolved row's own id is what gets
+  // claimed, so its same-named siblings survive as extras.
   const claimedIds = new Set();
-  const claimedTitles = new Set();
 
   // Mined items describe the work; only Canvas knows its URL — and whether that
   // URL has to be the quiz form rather than the assignment page.
@@ -218,11 +224,14 @@ export function tasksForClass({ mined, assignments }) {
     // which is a real, dated, 100-point assignment. Because recurring items are
     // routed to notes rather than ops, claiming that id made a graded deadline
     // vanish from the calendar entirely. The recurrence keeps its note; the
-    // Canvas row keeps its date.
-    const swallowsDated = Boolean(it.recurring) && ids.some(id => datedIds.has(id));
+    // Canvas row keeps its date. The RESOLVED row counts too: a recurring
+    // item that reached a dated row by title (stale id, re-created row) is
+    // the same swallow through a different door.
+    const swallowsDated = Boolean(it.recurring)
+      && (ids.some(id => datedIds.has(id)) || Boolean(a.due_at));
     if (!swallowsDated) {
       for (const id of ids) claimedIds.add(id);
-      if (tk) claimedTitles.add(tk);
+      claimedIds.add(String(a.id));
     }
 
     const merged = {
@@ -261,8 +270,7 @@ export function tasksForClass({ mined, assignments }) {
   }
 
   const extras = itemsFromCanvasAssignments(rows)
-    .filter(it => !claimedIds.has(String(it.canvas_assignment_id))
-      && !claimedTitles.has(titleKey(it.title)));
+    .filter(it => !claimedIds.has(String(it.canvas_assignment_id)));
 
   const source = items.length
     ? (extras.length ? 'mixed' : 'mined')

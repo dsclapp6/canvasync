@@ -96,11 +96,19 @@ function addMinutes(hhmm, mins) {
   return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
 }
 
-/** Subtract minutes from a wall-clock time, clamping at midnight. */
-function subMinutes(hhmm, mins) {
+/**
+ * The { date, time } 15 minutes before a deadline, crossing midnight when it
+ * must. Clamping at 00:00 instead made a midnight deadline a zero-length
+ * event (DTSTART === DTEND), which some clients omit entirely.
+ */
+function before15(dateIso, hhmm) {
+  const [y, mo, d] = dateIso.split('-').map(Number);
   const [h, m] = hhmm.split(':').map(Number);
-  const total = Math.max(h * 60 + m - mins, 0);
-  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
+  const t = new Date(y, mo - 1, d, h, m - 15);
+  return {
+    date: `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`,
+    time: `${pad(t.getHours())}:${pad(t.getMinutes())}`,
+  };
 }
 
 /**
@@ -136,7 +144,8 @@ export function opToVevent(op, { dtstamp }) {
       // you have left, not an hour after it has passed.
       end = icsDateTime(date, op.time);
       if (!end) return null;
-      start = icsDateTime(date, subMinutes(op.time, 15)) || end;
+      const s = before15(date, op.time);
+      start = icsDateTime(s.date, s.time) || end;
     }
     lines.push(`DTSTART:${start}`);
     lines.push(`DTEND:${end}`);

@@ -631,9 +631,26 @@ async function main() {
     }
     return out;
   })();
-  await atomicWriteJson(indexPath, mergedIndex);
-  await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
-  process.stderr.write(`Updated ${indexPath}\n`);
+  // Write ORDER decides whether a mid-run ingest ever gets extracted. Every
+  // re-run gate (trigger.js isStale, sync-all needsExtract) is a pure mtime
+  // comparison of files_index.json against the marker — so when the merge
+  // kept entries this pass never processed, the marker must land FIRST and
+  // the index after, leaving the stage stale and the next trigger pass to
+  // pick the pending work up. Marker-last would stamp completion over
+  // unprocessed work, and since neither the extension's diff nor the
+  // bridge's skip-if-unchanged path ever rewrites an unchanged file, nothing
+  // would re-fire the stage: the file would sit pending — invisible to
+  // _combined, mining and the context pack — forever.
+  const leftoverPending = mergedIndex.some(e => e && e.extractionStatus === 'pending');
+  if (leftoverPending) {
+    await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
+    await atomicWriteJson(indexPath, mergedIndex);
+    process.stderr.write(`Updated ${indexPath} (mid-run ingest detected — stage left stale so the next pass extracts it)\n`);
+  } else {
+    await atomicWriteJson(indexPath, mergedIndex);
+    await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
+    process.stderr.write(`Updated ${indexPath}\n`);
+  }
   process.exit(0);
 }
 

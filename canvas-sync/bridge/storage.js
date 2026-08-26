@@ -71,19 +71,30 @@ export async function writeCourse(payload) {
   // classes where the Canvas Files tab is locked and returns []. The two
   // endpoints run in this order: POST /ingest/course-file (many) → POST
   // /ingest/course (once). Only the first owns the index.
+  // Each resource file is written only when its key is PRESENT in the
+  // payload (the pattern external_tools/course_packs below always used). The
+  // extension omits a resource it could not read this sync — a transient
+  // Canvas 403 used to arrive here as [] and overwrite a cached
+  // assignments.json holding real deadlines. An old extension sends every
+  // key, so nothing changes for it.
+  const RESOURCE_FILES = [
+    ['assignments', 'assignments.json'],
+    ['modules', 'modules.json'],
+    ['announcements', 'announcements.json'],
+    ['pages', 'pages.json'],
+    ['quizzes', 'quizzes.json'],
+    ['assignment_groups', 'assignment_groups.json'],
+    ['discussions', 'discussions.json'],
+    ['calendar_events', 'calendar_events.json'],
+    ['enrollments', 'grades.json'],
+    ['tabs', 'tabs.json'],
+    ['groups', 'groups.json'],
+  ];
   const writes = [
-    atomicWrite(path.join(classDir, 'metadata.json'),     JSON.stringify(metadata,                    null, 2)),
-    atomicWrite(path.join(classDir, 'assignments.json'),  JSON.stringify(payload.assignments  ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'modules.json'),      JSON.stringify(payload.modules      ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'announcements.json'),JSON.stringify(payload.announcements ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'pages.json'),        JSON.stringify(payload.pages        ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'quizzes.json'),      JSON.stringify(payload.quizzes      ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'assignment_groups.json'), JSON.stringify(payload.assignment_groups ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'discussions.json'),       JSON.stringify(payload.discussions       ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'calendar_events.json'),   JSON.stringify(payload.calendar_events   ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'grades.json'),            JSON.stringify(payload.enrollments       ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'tabs.json'),              JSON.stringify(payload.tabs              ?? [], null, 2)),
-    atomicWrite(path.join(classDir, 'groups.json'),            JSON.stringify(payload.groups            ?? [], null, 2)),
+    atomicWrite(path.join(classDir, 'metadata.json'), JSON.stringify(metadata, null, 2)),
+    ...RESOURCE_FILES
+      .filter(([key]) => payload[key] !== undefined)
+      .map(([key, file]) => atomicWrite(path.join(classDir, file), JSON.stringify(payload[key] ?? [], null, 2))),
   ];
 
   // Extension ≥ 1.3.0. Written only when present, so a payload from an older

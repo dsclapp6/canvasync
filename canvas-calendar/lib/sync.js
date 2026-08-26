@@ -36,20 +36,24 @@ export async function listClassDirs() {
 export async function syncAll({ dryRun = false, onlyClass = null, model = null, logger = console } = {}) {
   const cfg = await loadConfig();
   const timeZone = cfg.timeZone || 'America/Chicago';
-  const calendarId = dryRun ? (cfg.calendarId || null) : await ensureCalendar(timeZone);
 
-  const mapping = await loadMapping();
   const allDirs = await listClassDirs();
   const dirs = onlyClass
     ? allDirs.filter(d => d.toLowerCase().includes(onlyClass.toLowerCase()))
     : allDirs;
 
+  // Nothing in scope must mean NOTHING happens — the empty check has to come
+  // before ensureCalendar, or an empty allowlist still opened OAuth and
+  // created the external Google calendar on a fresh setup.
   if (dirs.length === 0) {
     logger.log(onlyClass
       ? `No class matched "${onlyClass}".`
       : 'No synced classes found under ' + classesDir());
     return { created: 0, updated: 0, deleted: 0, skipped: 0, unchanged: 0 };
   }
+
+  const calendarId = dryRun ? (cfg.calendarId || null) : await ensureCalendar(timeZone);
+  const mapping = await loadMapping();
 
   let created = 0, updated = 0, deleted = 0, skipped = 0, unchanged = 0;
   let mappingDirty = false;

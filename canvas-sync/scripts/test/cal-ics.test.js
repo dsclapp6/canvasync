@@ -231,3 +231,14 @@ test('nextDay crosses months, years and leap days', () => {
 test('icsStamp is UTC and RFC-shaped', () => {
   assert.equal(icsStamp(new Date(Date.UTC(2026, 7, 24, 9, 5, 3))), '20260824T090503Z');
 });
+
+test('a midnight deadline crosses into the previous day, never zero-length', () => {
+  // Clamping at 00:00 produced DTSTART === DTEND, which some clients omit —
+  // the deadline disappearing from the calendar outright.
+  const s = ev({ ...OP, time: '00:00' });
+  assert.match(s, /DTSTART:20260913T234500/);
+  assert.match(s, /DTEND:20260914T000000/);
+  const early = ev({ ...OP, time: '00:10' });
+  assert.match(early, /DTSTART:20260913T235500/);
+  assert.match(early, /DTEND:20260914T001000/);
+});

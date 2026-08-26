@@ -663,9 +663,19 @@ async function fullSync(reason) {
     } catch { /* best-effort */ }
 
     // Tell the bridge what this sync's scope is, so the dashboard sidebar, the
-    // pipeline and the calendar all narrow to the same classes. Cosmetic for
-    // the sync itself — a bridge that rejects this must not abort the run.
-    publishScope(coursesToSync.map(c => c.id), allCourses).catch(() => {});
+    // pipeline and the calendar all narrow to the same classes. AWAITED and
+    // retried: /ingest/complete at the end of this run starts the
+    // scope-dependent pipeline, and a fire-and-forget publish could lose the
+    // race — after saving an EMPTY selection, a stale sync-scope.json (higher
+    // precedence than last_sync) would run the pipeline over the previous
+    // classes, the exact thing a strict empty allowlist forbids. Still
+    // cosmetic on failure — a bridge that rejects it must not abort the run —
+    // but it must have SETTLED before the pipeline can start.
+    try {
+      await _withRetry(() => publishScope(coursesToSync.map(c => c.id), allCourses));
+    } catch (err) {
+      await _log('warn', `Scope publish failed (${err.message}) — bridge scope may lag this sync`, reason);
+    }
 
     _status.coursesTracked = coursesToSync.length;
     await _log('info', `Fetched ${allCourses.length} courses; syncing ${coursesToSync.length}`, reason);
@@ -709,6 +719,10 @@ async function fullSync(reason) {
 
       // Fetch helper that tolerates per-resource permission denials — one 403
       // shouldn't nuke the whole course. Emits 'forbidden' to the UI instead.
+      // Forbidden resources are REMEMBERED so their keys can be left out of
+      // the /ingest/course payload: a transient 403 used to come back as []
+      // and overwrite a cached assignments.json holding 20 real deadlines.
+      const forbidden = new Set();
       const fetchResource = async (url, item) => {
         try {
           const data = await _collectPages(url);
@@ -717,6 +731,7 @@ async function fullSync(reason) {
         } catch (err) {
           if (err instanceof PermissionError) {
             _broadcastProgress({ phase: 'course-item', courseId: id, item, status: 'forbidden', count: 0 });
+            forbidden.add(item);
             return [];
           }
           // A user-initiated cancel is not an error — don't paint red states
@@ -821,16 +836,25 @@ async function fullSync(reason) {
         // binary. writeCourse does NOT write files_index.json (writeCourseFile
         // owns it), so running it first is safe. The course payload is already
         // fully enriched here (discussion replies_text was folded in above).
+        // A forbidden resource's key is OMITTED, not sent as [] — the bridge
+        // writes a resource file only when its key is present, so last-known
+        // -good data survives a transient 403.
+        const unlessForbidden = (item, key, value) => (forbidden.has(item) ? {} : { [key]: value });
         await _withRetry(() => bridgePost('/ingest/course', {
-          course, assignments, modules, announcements, pages, quizzes, filesIndex,
-          assignment_groups: assignmentGroups,
-          discussions,
-          calendar_events:   calendarEvents,
-          enrollments,
-          tabs,
-          groups: courseGroups,
-          external_tools: externalTools,
-          course_packs:   coursePacks,
+          course, filesIndex,
+          ...unlessForbidden('assignments', 'assignments', assignments),
+          ...unlessForbidden('modules', 'modules', modules),
+          ...unlessForbidden('announcements', 'announcements', announcements),
+          ...unlessForbidden('pages', 'pages', pages),
+          ...unlessForbidden('quizzes', 'quizzes', quizzes),
+          ...unlessForbidden('groups', 'assignment_groups', assignmentGroups),
+          ...unlessForbidden('discussions', 'discussions', discussions),
+          ...unlessForbidden('events', 'calendar_events', calendarEvents),
+          ...unlessForbidden('grades', 'enrollments', enrollments),
+          ...unlessForbidden('tabs', 'tabs', tabs),
+          ...unlessForbidden('groups_list', 'groups', courseGroups),
+          ...unlessForbidden('external_tools', 'external_tools', externalTools),
+          course_packs: coursePacks,
         }));
 
         // v1.1: Course-files download loop. For each file the bridge hasn't
@@ -862,7 +886,10 @@ async function fullSync(reason) {
               fileId:      file.id,
               displayName: file.display_name,
               filename:    file.display_name,      // bridge canonical field
-              isSyllabus:  i === 0,                // top-ranked wins
+              // The first candidate that actually LANDS is canonical — rank 0
+              // alone meant a 403'd top candidate spent the flag on nothing
+              // and the real syllabus arrived unmarked.
+              isSyllabus:  syllabusOk === 0,
               contentType: binary.contentType,
               dataBase64:  binary.base64,          // bridge canonical field
               base64:      binary.base64,          // belt + suspenders
