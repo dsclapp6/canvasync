@@ -197,11 +197,15 @@ test('one file per target calendar, plus one holding everything', () => {
       { ...OP, calendar: 'due' },
       { ...OP, marker: '[csync:s|x|y|2]', calendar: 'checkpoint', kind: 'checkpoint' },
       { ...OP, marker: '[csync:m|x|t:z|3]', calendar: 'meeting', kind: 'meeting' },
+      { ...OP, marker: '[csync:u|abc|4]', calendar: 'custom', kind: 'personal' },
     ],
   };
   const files = icsFilesFor(worklist, { dtstamp: STAMP });
   const by = Object.fromEntries(files.map(f => [f.file, f.count]));
-  assert.deepEqual(by, { 'deadlines.ics': 1, 'checkpoints.ics': 1, 'classes.ics': 1, 'canvasync.ics': 3 });
+  assert.deepEqual(by, {
+    'deadlines.ics': 1, 'checkpoints.ics': 1, 'classes.ics': 1,
+    'personal.ics': 1, 'canvasync.ics': 4,
+  });
 });
 
 test('every file in one write shares a DTSTAMP', () => {

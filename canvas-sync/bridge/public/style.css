@@ -2175,6 +2175,180 @@ table.files tr:hover td { background: var(--sunk); }
    root left visible the viewport takes body's value and the measurement lies). */
 body { overflow-x: hidden; }
 
+/* ===========================================================================
+   Direct manipulation — drag to move, drag an edge to stretch, drag empty
+   space to make something new. CALENDAR-SPEC §8.
+
+   The whole visual job here is to make three things obvious without adding a
+   single word to the page: that a chip can be picked up, where it would land,
+   and which of its two edges you have hold of.
+   =========================================================================== */
+
+/* A chip you can move says so on hover, and only on a device with a pointer
+   that can hover — on a touch screen the cursor rule is meaningless and the
+   grab affordance would just be a permanent visual. */
+@media (hover: hover) {
+  .cal-chip[data-cal-drag] { cursor: grab; }
+  .cal-chip[data-cal-drag]:active { cursor: grabbing; }
+}
+/* The gesture must own the pointer once it starts: without this the browser's
+   own scroll/pan takes the touch and the item never moves. */
+.cal-chip[data-cal-drag] { touch-action: none; }
+
+/* Lifted. Kept deliberately quiet — this is a page of paper, and a chip that
+   balloons on pickup would be the loudest thing on it. */
+.cal-chip.dragging,
+.cal-chip.resizing {
+  box-shadow: var(--raise);
+  border-color: var(--rule-2);
+  opacity: 0.9;
+}
+/* While a drag is live nothing else on the grid invites a click. */
+#cal-ops.dragging-any { cursor: grabbing; user-select: none; }
+#cal-ops.dragging-any .cal-chip { pointer-events: none; }
+
+/* Where it would land. A wash and a petrol edge on the day cells under the
+   pointer — the same petrol that means "today, as a place", because this is
+   the same kind of statement about the grid. */
+#cal-ops [data-cal-day].drop-target {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.cal-tile.drop-target { position: relative; z-index: 1; }
+
+/* The two grab edges of an item the user added. Invisible until the chip is
+   hovered, so a calendar at rest has no handles scattered over it. */
+.cal-chip { position: relative; }
+.cal-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: ew-resize;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+.cal-grip.start { left: -1px; }
+.cal-grip.end { right: -1px; }
+.cal-grip::after {
+  content: "";
+  position: absolute;
+  top: 25%;
+  bottom: 25%;
+  left: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--class-color, var(--rule-2));
+}
+.cal-chip:hover .cal-grip,
+.cal-chip:focus-within .cal-grip { opacity: 1; }
+@media (hover: none) {
+  /* No hover to reveal them, so they stay visible where a finger can find. */
+  .cal-grip { opacity: 1; }
+}
+
+/* A run of days reads as ONE bar: the middle and end chips lose their side
+   borders and their rounding, so three tiles show one item rather than three. */
+.cal-chip.span.span-start { border-right: none; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.cal-chip.span.span-mid {
+  border-left: none; border-right: none; border-radius: 0;
+  /* The class colour still runs down the left edge of every chip in the app;
+     a middle-of-span chip is the one place that would read as a new item. */
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--class-color, var(--rule-2)) 45%, transparent);
+}
+.cal-chip.span.span-end { border-left: none; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.chip-cont { display: block; min-height: 1em; }
+
+/* Empty space in a day: the target for drawing a new item. It fills whatever
+   the chips leave, so "the rest of Tuesday" is clickable rather than a 2px
+   strip, and it says what it is with the cursor only. */
+.cal-daycol-space { flex: 1; min-height: 28px; }
+.tile-space { flex: 1; min-height: 14px; }
+@media (hover: hover) {
+  .cal-daycol-space, .tile-space { cursor: cell; }
+}
+.cal-daycol-space, .tile-space { touch-action: none; }
+
+/* Items the user added. A tick of the pen rather than a badge: the class
+   colour already says which calendar it is on, so all this adds is that it is
+   not something Canvas or a syllabus knows about. */
+.cal-kind.personal,
+.cal-kind.note {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  padding: 0 var(--s-2);
+}
+.cal-row.custom .cal-title { font-weight: var(--w-label); }
+
+/* The + Add button sits at the head of the calendar's controls. */
+.cal-add { flex: none; }
+
+/* ---------------------------------------------------------------------------
+   The item dialog — new item, your own item, or a lecture's notes.
+   --------------------------------------------------------------------------- */
+
+.item-dialog {
+  width: min(460px, calc(100vw - var(--s-7)));
+  /* The line-124 reset zeroes every margin, including the one the UA uses to
+     centre a modal dialog — without this it opens against the top-left corner. */
+  margin: auto;
+  max-height: calc(100vh - var(--s-8));
+  overflow-y: auto;
+  padding: var(--s-6);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-1);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--float, var(--raise));
+}
+.item-dialog::backdrop { background: rgba(43, 36, 24, 0.28); }
+#cal-item-form { display: flex; flex-direction: column; gap: var(--s-5); }
+.item-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-4); }
+.item-head h3 { margin: 0; }
+.item-field { display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
+.item-field > span {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.item-field input, .item-field select, .item-field textarea { width: 100%; }
+.item-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-5); }
+.item-hint { margin: 0; font-size: var(--t-legend); color: var(--muted); }
+.item-actions { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }
+.item-actions .spacer { flex: 1; }
+.item-error { font-size: var(--t-legend); color: var(--alarm); }
+/* A lecture's facts: stated, not editable, because they belong to the
+   syllabus — the note underneath is the part that belongs to the student. */
+.item-facts { display: flex; flex-direction: column; gap: var(--s-2); }
+.item-fact { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: var(--s-4); font-size: var(--t-small); }
+.item-fact > span {
+  font-family: var(--mono);
+  font-size: var(--t-legend);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.item-fact > b { font-weight: var(--w-label); min-width: 0; }
+.item-body { font-size: var(--t-small); color: var(--muted); display: flex; flex-direction: column; gap: var(--s-2); }
+.item-body p { margin: 0; }
+@media (max-width: 480px) {
+  .item-row { grid-template-columns: 1fr; }
+}
+
+/* Your own notes on an assignment — above the Canvas description, because on
+   a page opened twice it is what you came back for. */
+.note-block { display: flex; flex-direction: column; gap: var(--s-3); margin-bottom: var(--s-6); }
+.note-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-4); }
+.note-head h3 { margin: 0; }
+.note-state { font-family: var(--mono); font-size: var(--t-legend); color: var(--muted); }
+#assignment-note { width: 100%; }
+
 /* Motion is a courtesy, not a requirement. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

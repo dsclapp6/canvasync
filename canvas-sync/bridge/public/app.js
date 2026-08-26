@@ -11,6 +11,7 @@ import {
   addDays, addMonths, bucketByDate, dayHeadLabel, dueTier, initialAnchor,
   monthGrid, monthLabel, relPhrase, sortDayOps, startOfMonth, startOfWeek,
   todayIso, weekDays, weekLabel, WEEKDAY_HEADS,
+  daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
 } from './cal-grid.js';
 import { nextSelection, isSelected } from './cal-plan.js';
 
@@ -599,6 +600,71 @@ function wireNav() {
     renderCalendarOps();
   });
 
+  // Ticking off an item the user added. Its own endpoint and its own store,
+  // but the same serialized-per-item discipline the task tick has: two fast
+  // clicks must not land out of order and leave the file at the older intent.
+  $('cal-ops').addEventListener('change', async (ev) => {
+    const box = ev.target.closest('[data-cal-custom-done]');
+    if (!box) return;
+    const id = box.dataset.calCustomDone;
+    const done = box.checked;
+    box.closest('.cal-row, .cal-chip')?.classList.toggle('is-done', done);
+    const key = `custom|${id}`;
+    const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
+    // Each queued turn carries the value of ITS OWN click, so a double
+    // toggle ends where the user's last click put it rather than wherever
+    // the slowest response happened to land.
+    const run = tail.then(() => patchCustomItem(id, { done }));
+    const settled = run.catch(() => {}).finally(() => {
+      if (CAL_POST_QUEUE.get(key) === settled) CAL_POST_QUEUE.delete(key);
+    });
+    CAL_POST_QUEUE.set(key, settled);
+    try {
+      await run;
+    } catch (err) {
+      toast(`Could not save that: ${err.message}`);
+    }
+  });
+
+  // Opening an item: the user's own goes to its editor, a lecture to its own
+  // small page. Both are real destinations — see calItemModel on 2.10.
+  $('cal-ops').addEventListener('click', (ev) => {
+    const custom = ev.target.closest('[data-open-custom]');
+    if (custom) {
+      const item = customItemById(custom.dataset.openCustom);
+      if (item) openItemDialog({ mode: 'custom', item });
+      return;
+    }
+    const opBtn = ev.target.closest('[data-open-op]');
+    if (!opBtn) return;
+    const key = opBtn.dataset.openOp;
+    const folder = opBtn.dataset.opClass;
+    const op = (CAL_WORKLIST?.ops ?? []).find(o => o.note_key === key);
+    if (op && folder) openItemDialog({ mode: 'op', op, folder, noteKey: key, note: op.note ?? '' });
+  });
+
+  // The Add button. Opens on a day the user is actually looking at: the
+  // period they have on screen when that period is not this one, and today
+  // otherwise — landing an item in August because the grid is showing
+  // November would be a small betrayal every time.
+  $('cal-add').addEventListener('click', () => {
+    openItemDialog({ mode: 'create', date: addDayForNewItem() });
+  });
+
+  wireCalendarDrag();
+  wireItemDialog();
+}
+
+/** Which day a brand-new item should default to. */
+function addDayForNewItem() {
+  const today = localTodayIso();
+  if (CAL_VIEW === 'list' || !CAL_ANCHOR) return today;
+  const days = CAL_VIEW === 'week'
+    ? weekDays(CAL_ANCHOR)
+    : [startOfMonth(CAL_ANCHOR), addDays(addMonths(startOfMonth(CAL_ANCHOR), 1), -1)];
+  const first = days[0];
+  const last = days[days.length - 1];
+  return today >= first && today <= last ? today : first;
 }
 
 // ---------------------------------------------------------------------------
@@ -809,7 +875,12 @@ async function loadClasses() {
   // repaint; the home page is useful without it, so nothing waits on it.
   if (!CAL_WORKLIST) {
     apiJson('/api/calendar')
-      .then(({ worklist }) => { CAL_WORKLIST = worklist; seedCalDone(); renderHome(); })
+      .then(({ worklist, custom_items }) => {
+        CAL_WORKLIST = worklist;
+        if (Array.isArray(custom_items)) CAL_CUSTOM = custom_items;
+        seedCalDone();
+        renderHome();
+      })
       .catch(() => {});
   }
   // A late or retried colour load has to reach the calendar too, and the
@@ -1176,6 +1247,17 @@ function renderAssignment() {
   submit.classList.toggle('hidden', !a.submit_url);
   if (a.submit_url) submit.href = a.submit_url;
 
+  // Your own notes. Filled from user_state.json, which is the same field the
+  // task list's editor writes and the same one the calendar event's
+  // description carries — one note per assignment, wherever you type it.
+  const noteEl = $('assignment-note');
+  if (noteEl) {
+    noteEl.value = a.user_state?.note ?? '';
+    noteEl.dataset.folder = a.folder;
+    noteEl.dataset.task = a.id;
+    $('assignment-note-state').textContent = '';
+  }
+
   const parts = [];
   // Say what this IS before anything else: an AI-added item has no Canvas row,
   // so there is no submit box to hunt for. Strictly the server's word — a
@@ -1239,6 +1321,36 @@ function wireAssignment() {
     // otherwise the next visit to Classes finds nothing showing at all.
     showClassesPanel(CURRENT ? 'detail' : 'class-home');
     if (ASSIGNMENT_RETURN === 'calendar') navTo('calendar');
+  });
+
+  // The notes field. Debounced, because writing the file on every keystroke
+  // would rebuild the worklist on every keystroke — and the state line has to
+  // say "Saved" rather than leaving the user wondering whether it took.
+  const noteEl = $('assignment-note');
+  const state = $('assignment-note-state');
+  let noteTimer = null;
+  noteEl?.addEventListener('input', () => {
+    const { folder, task } = noteEl.dataset;
+    if (!folder || !task) return;
+    state.textContent = 'Saving…';
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(async () => {
+      const text = noteEl.value;
+      try {
+        await postTask(folder, task, { note: text });
+        // Only claim what is true: the field may have moved on while the
+        // request was in flight, and the next tick will save that.
+        if (noteEl.dataset.task === task) {
+          state.textContent = noteEl.value === text ? 'Saved' : 'Saving…';
+          if (ASSIGNMENT?.id === task) {
+            ASSIGNMENT.user_state = { ...(ASSIGNMENT.user_state ?? {}), note: text };
+          }
+        }
+        refreshCalendarSoon();
+      } catch (err) {
+        state.textContent = `Not saved — ${err.message}`;
+      }
+    }, 600);
   });
 }
 
@@ -2049,6 +2161,58 @@ function renderPack() {
 
 let CAL_WORKLIST = null;
 let CAL_GROUP = localStorage.getItem('calGroup') || 'day';
+
+// ---------------------------------------------------------------------------
+// Items the user added themselves.
+//
+// These are the one kind of calendar entry the pipeline cannot regenerate, and
+// the client is their authority between edits: the worklist only learns about
+// a new item when the debounced rebuild lands, which is ~2 seconds after the
+// user let go of the mouse. So the ops drawn for them are derived from THIS
+// list, and any custom op the worklist happens to carry is dropped on the way
+// in — one source, so a dragged item can never be drawn twice or snap back to
+// where it was for a second and a half. CALENDAR-SPEC §8.
+// ---------------------------------------------------------------------------
+
+let CAL_CUSTOM = [];   // the user's own items, newest state, straight from the bridge
+
+// The reserved pseudo-class an item with no class wears, so the chips row, the
+// colour map and the filters have one thing to name rather than a null.
+const PERSONAL_SLUG = 'personal';
+const PERSONAL_COLOR = '#6A6152';
+
+/**
+ * One stored item as the op the calendar draws.
+ *
+ * Deliberately NOT the server's op: that one carries a marker (a content hash
+ * the browser cannot compute synchronously) and a class-prefixed title that
+ * every renderer here strips again anyway. This is exactly the fields the
+ * grid, the list and the dialog read, so the two cannot disagree about
+ * anything the user can see.
+ */
+function customRenderOp(item) {
+  return {
+    calendar: 'custom',
+    kind: 'personal',
+    title: item.title,
+    date: item.date,
+    end_date: item.end_date ?? null,
+    time: item.time ?? null,
+    end_time: item.end_time ?? null,
+    all_day: !item.time,
+    description: item.description || '',
+    note: item.description || null,
+    category: 'personal',
+    class: item.class || PERSONAL_SLUG,
+    custom_id: item.id,
+    origin: 'user',
+    _custom: item,
+  };
+}
+
+function customItemById(id) {
+  return CAL_CUSTOM.find(it => it.id === id) ?? null;
+}
 // Items ticked off here since the last worklist load. The worklist itself
 // drops finished work (the routine must not create events for it), so without
 // this a ticked row would vanish mid-click with no acknowledgement.
@@ -2156,6 +2320,10 @@ let COLOR_DRAFT = null;     // { slug, hex } | null
 function classColor(slug) {
   const s = String(slug || '');
   if (COLOR_DRAFT && COLOR_DRAFT.slug === s) return COLOR_DRAFT.hex;
+  // "Personal" is not a class the bridge knows about — it is where an item
+  // with no class goes — so it carries its own quiet ink rather than the
+  // grey that means "we could not resolve this".
+  if (s === PERSONAL_SLUG) return CLASS_COLORS[s] ?? PERSONAL_COLOR;
   return CLASS_COLORS[s] ?? NO_CLASS_COLOR;
 }
 
@@ -2217,9 +2385,10 @@ function setHiddenClasses(set) {
 }
 
 function calDisplayName(slug) {
+  if (slug === PERSONAL_SLUG) return 'Personal';
   const hit = (CLASSES || []).find(c => c.folder === slug || c.slug === slug);
   if (hit && hit.code) return hit.code;
-  return slug.replace(/-/g, ' ').toUpperCase();
+  return String(slug ?? '').replace(/-/g, ' ').toUpperCase();
 }
 
 // Titles arrive prefixed with the class ("BUSI 380 · Read Ch 4", legacy
@@ -2267,17 +2436,28 @@ function calUrl(description) {
 function calItemModel(op) {
   const isMeeting = op.calendar === 'meeting';
   const isCheckpoint = op.calendar === 'checkpoint';
+  // An item the user typed in. It has no class folder and no mined id — its
+  // identity is its own uuid, and every control on it goes to a different
+  // endpoint from every other row's.
+  const isCustom = op.calendar === 'custom';
+  const customId = op.custom_id ?? null;
   const folder = calFolder(op.class);
   const id = op.item_id ?? null;
   // A prep block belongs to an item but is not the item. Ticking one has to
   // name the block, so a checkpoint with no id of its own is NOT checkable —
   // the alternative is a checkbox that quietly marks the whole assignment done.
   const cpId = op.checkpoint_id ?? null;
-  const checkable = !isMeeting && !!folder && id != null && (!isCheckpoint || !!cpId);
+  const checkable = isCustom
+    ? !!customId
+    : (!isMeeting && !!folder && id != null && (!isCheckpoint || !!cpId));
   // Anything ticked off can be clicked into: a deadline opens its own page,
   // and a prep block opens the assignment it preps for — same id, same panel.
-  // CALENDAR-SPEC 2.12.
-  const openable = checkable;
+  // CALENDAR-SPEC 2.12. A meeting has no page of its own on Canvas, but it
+  // does now have somewhere to keep a note about it, which is a real
+  // destination rather than the dead control 2.10 forbids.
+  const noteKey = isCustom ? null : (op.note_key ?? (isMeeting ? null : id));
+  const notable = isCustom || (!!folder && !!noteKey);
+  const openable = checkable || (isMeeting && notable);
   const url = op.url || calUrl(op.description);
   const submitUrl = op.submit_url || null;
   const noLink = op.calendar === 'due' && !url && !submitUrl;
@@ -2286,9 +2466,44 @@ function calItemModel(op) {
   // it; a worklist built before the field falls back to "no link anywhere",
   // which is true of exactly the same rows. CALENDAR-SPEC 2.13.
   const aiAdded = op.calendar === 'due' && (op.origin ? op.origin === 'syllabus' : noLink);
-  const key = calDoneKey(folder, id, cpId);
-  const done = checkable && CAL_DONE.has(key);
-  return { isMeeting, isCheckpoint, folder, id, cpId, key, checkable, openable, url, submitUrl, noLink, aiAdded, done };
+  const key = isCustom ? `custom|${customId}` : calDoneKey(folder, id, cpId);
+  const done = isCustom
+    ? Boolean(op._custom?.done ?? op._completed)
+    : (checkable && CAL_DONE.has(key));
+
+  // What a pointer may do to this row. Three separate questions, because the
+  // answers genuinely differ:
+  //
+  //   An item the user added is theirs entirely — move it, stretch it, retitle
+  //   it, delete it.
+  //   A deadline can be MOVED (that writes the same dueOverride the task
+  //   editor's "Move to" writes) but not stretched: a deadline is a moment.
+  //   A prep block the user wrote can be moved. An AUTOMATIC one cannot — it
+  //   is defined as an offset from its deadline, so it follows the deadline by
+  //   design, and letting it be dragged would strand it (CALENDAR-SPEC 2.9).
+  //   A lecture and an office-hours block come from the syllabus. Dragging one
+  //   would assert a schedule change nothing downstream believes.
+  const autoCheckpoint = isCheckpoint && String(cpId ?? '').startsWith('auto:');
+  const movable = isCustom
+    ? !!customId
+    : (op.calendar === 'due' ? checkable : (isCheckpoint && checkable && !autoCheckpoint));
+  const resizable = isCustom && !!customId;
+  // Why a drag was refused, in words the row can say when the user tries.
+  // Office hours are written to the MEETING calendar, so `isMeeting` is true
+  // of them too — ask the kind first or every office-hours block is told to
+  // go and edit its class times, which is not where its hours come from.
+  const immovableWhy = movable ? null
+    : op.kind === 'office_hours' ? 'Office hours come from the syllabus, not from the calendar.'
+    : isMeeting ? 'Class meetings come from the syllabus — change them under Class times.'
+    : autoCheckpoint ? 'A prep block follows its deadline — move the deadline and it moves with it.'
+    : 'This item has no date of its own to move.';
+
+  return {
+    isMeeting, isCheckpoint, isCustom, customId, folder, id, cpId, key,
+    checkable, openable, notable, noteKey, note: op.note ?? null,
+    movable, resizable, immovableWhy,
+    url, submitUrl, noLink, aiAdded, done,
+  };
 }
 
 /**
@@ -2303,6 +2518,12 @@ function calDoneKey(folder, id, cpId) {
 /** The checkbox, or a spacer that keeps the column aligned. */
 function calCheckHtml(op, m, title) {
   if (!m.checkable) return '<span class="cal-check-gap"></span>';
+  // An item the user added ticks itself off through its own endpoint, so it
+  // carries its own id rather than a class folder and a task id.
+  if (m.isCustom) {
+    return `<input type="checkbox" class="cal-check" data-cal-custom-done="${esc(m.customId)}"`
+      + `${m.done ? ' checked' : ''} aria-label="Mark ${esc(title)} done" />`;
+  }
   return `<input type="checkbox" class="cal-check" data-cal-done="${esc(m.id)}"`
     + ` data-cal-class="${esc(m.folder)}"${m.cpId ? ` data-cal-cp="${esc(m.cpId)}"` : ''}`
     + `${m.done ? ' checked' : ''}`
@@ -2311,6 +2532,15 @@ function calCheckHtml(op, m, title) {
 
 /** The title: an in-app button, a Canvas link, or plain text. Never a dead link. */
 function calTitleHtml(op, m, title) {
+  // The user's own item opens its editor — the page it clicks in to.
+  if (m.isCustom) {
+    return `<button type="button" class="linky-title" data-open-custom="${esc(m.customId)}">${esc(title)}</button>`;
+  }
+  // A lecture opens its own small page: what it is, and the notes field.
+  if (m.isMeeting && m.notable) {
+    return `<button type="button" class="linky-title" data-open-op="${esc(m.noteKey)}"`
+      + ` data-op-class="${esc(m.folder)}">${esc(title)}</button>`;
+  }
   if (m.openable) {
     return `<button type="button" class="linky-title" data-open-assignment="${esc(m.id)}"`
       + ` data-assignment-class="${esc(m.folder)}">${esc(title)}</button>`;
@@ -2319,6 +2549,48 @@ function calTitleHtml(op, m, title) {
     return `<a href="${esc(m.url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>`;
   }
   return esc(title);
+}
+
+/**
+ * The attributes that make a row or chip draggable, and the handles that make
+ * it resizable.
+ *
+ * `data-cal-drag` is what the pointer handler looks for; it carries everything
+ * the handler needs to write the move without going back to the op list. The
+ * handles only appear on the ends of a span — the middle day of a three-day
+ * item has no edge of its own — and only in the two grid views, where a day is
+ * a place on screen rather than a heading in a list.
+ */
+function calDragAttrs(op, m, iso = null) {
+  // A chip that cannot move carries the reason instead, so a user who tries
+  // gets an explanation rather than the silence of a thing that does nothing.
+  if (!m.movable) return m.immovableWhy ? ` data-immovable="${esc(m.immovableWhy)}"` : '';
+  const bits = [
+    ' data-cal-drag="1"',
+    ` data-drag-date="${esc(op.date)}"`,
+    op.end_date ? ` data-drag-end="${esc(op.end_date)}"` : '',
+    m.isCustom ? ` data-drag-custom="${esc(m.customId)}"` : '',
+    !m.isCustom && m.folder ? ` data-drag-folder="${esc(m.folder)}"` : '',
+    !m.isCustom && m.id != null ? ` data-drag-item="${esc(m.id)}"` : '',
+    !m.isCustom && m.cpId ? ` data-drag-cp="${esc(m.cpId)}"` : '',
+    m.resizable ? ' data-cal-resizable="1"' : '',
+    iso ? ` data-drag-day="${esc(iso)}"` : '',
+  ];
+  return bits.join('');
+}
+
+/** The two grab edges of a resizable item, on the days that own them. */
+function calHandlesHtml(op, m, iso) {
+  if (!m.resizable || !iso) return '';
+  const pos = spanPosition(op, iso);
+  const out = [];
+  if (pos === 'start' || pos === 'only') {
+    out.push('<span class="cal-grip start" data-cal-grip="start" aria-hidden="true"></span>');
+  }
+  if (pos === 'end' || pos === 'only') {
+    out.push('<span class="cal-grip end" data-cal-grip="end" aria-hidden="true"></span>');
+  }
+  return out.join('');
 }
 
 /** Submit, or the reason there is nothing to submit to. */
@@ -2343,12 +2615,12 @@ function calSubmitHtml(m, { dense = false } = {}) {
 function calOpRow(op, { showClass = false } = {}) {
   const m = calItemModel(op);
   // A past lecture is history, not a missed deadline — no overdue red.
-  const overdue = !m.isMeeting && !m.done && daysUntil(op.date) < 0;
-  const when = op.all_day ? 'All day' : op.time ? fmtTimeSpan(op.time, op.end_time) : '—';
+  const overdue = calOverdue(op, m);
+  const when = calWhenLabel(op);
   const title = showClass ? op.title : stripClassPrefix(op.title, op.class || '');
   const pts = calPoints(op.description);
   return `
-    <div class="cal-row${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}"
+    <div class="cal-row${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}"
          data-class-slug="${esc(op.class || '')}"
          style="--class-color:${classColor(op.class)}">
       ${calCheckHtml(op, m, title)}
@@ -2357,12 +2629,41 @@ function calOpRow(op, { showClass = false } = {}) {
       <span class="cal-tags">
         ${op.location ? `<span class="cal-loc">${esc(op.location)}</span>` : ''}
         ${op.recurrence ? `<span class="cal-loc">weekly ${esc(op.recurrence.byday.join(''))}</span>` : ''}
-        ${!m.isMeeting && op.category && op.category !== 'other' ? `<span class="cal-cat ${esc(op.category)}">${esc(op.category)}</span>` : ''}
+        ${!m.isMeeting && !m.isCustom && op.category && op.category !== 'other' ? `<span class="cal-cat ${esc(op.category)}">${esc(op.category)}</span>` : ''}
         ${pts ? `<span class="cal-pts">${esc(pts)} pts</span>` : ''}
         ${op.calendar === 'checkpoint' ? '<span class="cal-kind checkpoint">checkpoint</span>' : ''}
+        ${m.isCustom ? '<span class="cal-kind personal">added by you</span>' : ''}
+        ${m.note && !m.isCustom ? '<span class="cal-kind note" title="You wrote a note on this">note</span>' : ''}
         ${calSubmitHtml(m)}
       </span>
     </div>`;
+}
+
+/**
+ * Is this late? Measured from the LAST day it covers, not the first.
+ *
+ * A three-day trip that started yesterday is in progress, not missed, and
+ * marking it overdue paints an alarm on every item the user is in the middle
+ * of. Same reasoning as "a past lecture is history, not a missed deadline".
+ */
+function calOverdue(op, m) {
+  if (m.isMeeting || m.done) return false;
+  const dates = spanDates(op);
+  const last = dates.length ? dates[dates.length - 1] : op.date;
+  return daysUntil(last) < 0;
+}
+
+/**
+ * "9:00 AM–5:00 PM", "All day", "Thu–Sat" — what a row says about when it
+ * happens. A span has to say so here, because the list has no column for the
+ * days it covers and "All day" over three days is a third of the truth.
+ */
+function calWhenLabel(op) {
+  const dates = spanDates(op);
+  const multi = dates.length > 1;
+  if (!multi) return op.all_day ? 'All day' : op.time ? fmtTimeSpan(op.time, op.end_time) : '—';
+  const ends = `${fmtDayLabel(dates[0])} – ${fmtDayLabel(dates[dates.length - 1])}`;
+  return op.time ? `${fmtTimeChip(op.time)} ${ends}` : ends;
 }
 
 /**
@@ -2371,20 +2672,27 @@ function calOpRow(op, { showClass = false } = {}) {
  * three interfaces — just short of the tags, which do not survive a 170px
  * column and are one click away in the list.
  */
-function calChip(op) {
+function calChip(op, iso = null) {
   const m = calItemModel(op);
-  const overdue = !m.isMeeting && !m.done && daysUntil(op.date) < 0;
+  const overdue = calOverdue(op, m);
   const title = stripClassPrefix(op.title, op.class || '');
   const when = op.all_day || !op.time ? '' : fmtTimeChip(op.time);
+  // Which day of a span this chip is. A run of days reads as one bar rather
+  // than three separate items: only the first says the title and the time,
+  // and only the two ends carry a grab handle.
+  const pos = iso ? spanPosition(op, iso) : 'only';
+  const spanCls = pos === 'only' ? '' : ` span span-${pos}`;
+  const lead = pos === 'only' || pos === 'start';
   return `
-    <div class="cal-chip${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}"
+    <div class="cal-chip${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}${spanCls}"
          data-class-slug="${esc(op.class || '')}"
          style="--class-color:${classColor(op.class)}"
-         title="${esc(calDisplayName(op.class))} — ${esc(op.title)}">
-      ${calCheckHtml(op, m, title)}
-      ${when ? `<span class="chip-when">${esc(when)}</span>` : ''}
-      <span class="chip-title">${calTitleHtml(op, m, title)}</span>
-      ${calSubmitHtml(m, { dense: true })}
+         title="${esc(calDisplayName(op.class))} — ${esc(op.title)}"${calDragAttrs(op, m, iso)}>
+      ${lead ? calCheckHtml(op, m, title) : ''}
+      ${lead && when ? `<span class="chip-when">${esc(when)}</span>` : ''}
+      <span class="chip-title">${lead ? calTitleHtml(op, m, title) : '<span class="chip-cont" aria-hidden="true">&nbsp;</span>'}</span>
+      ${lead ? calSubmitHtml(m, { dense: true }) : ''}
+      ${calHandlesHtml(op, m, iso)}
     </div>`;
 }
 
@@ -2493,7 +2801,9 @@ function renderCalendarWeek(ops) {
           ${dayOps.length ? `<span class="daycol-count">${dayOps.length}</span>` : ''}
         </header>
         <div class="cal-daycol-body">
-          ${dayOps.length ? dayOps.map(calChip).join('') : '<p class="daycol-empty">—</p>'}
+          ${dayOps.map(o => calChip(o, iso)).join('')}
+          <div class="cal-daycol-space" data-cal-newday="${esc(iso)}"
+               title="Drag to add an item"></div>
         </div>
       </section>`;
   }).join('');
@@ -2519,7 +2829,10 @@ function renderCalendarMonth(ops) {
           <span class="tile-day">${d.day}</span>
           ${dayOps.length ? `<span class="tile-count">${dayOps.length}</span>` : ''}
         </div>
-        <div class="tile-body">${shown.map(calChip).join('')}</div>
+        <div class="tile-body">
+          ${shown.map(o => calChip(o, d.iso)).join('')}
+          <div class="tile-space" data-cal-newday="${esc(d.iso)}" title="Drag to add an item"></div>
+        </div>
         ${hidden > 0
           ? `<button type="button" class="tile-more" data-cal-expand="${esc(d.iso)}">+${hidden} more</button>`
           : open && dayOps.length > MONTH_TILE_MAX
@@ -2528,6 +2841,606 @@ function renderCalendarMonth(ops) {
       </div>`;
   }).join('');
   return `<div class="cal-gridwrap"><div class="cal-monthgrid" id="cal-month">${heads}${tiles}</div></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Direct manipulation: move an item, stretch it, or draw a new one.
+//
+// CALENDAR-SPEC §8. Three gestures share one pointer handler because they
+// share one hard requirement: NONE of them may cost the user a click. The
+// calendar's existing controls — the checkbox, the title that opens a page,
+// the Submit link — sit inside the very things being dragged, and a naive
+// mousedown handler that starts a drag immediately makes every one of them
+// unreliable.
+//
+// So nothing happens until the pointer has moved DRAG_SLOP pixels. Under that,
+// the gesture was a click: the handler never captures the pointer, never calls
+// preventDefault, and the click reaches the button exactly as it did before
+// any of this existed. Over it, the click that the browser fires at the end of
+// the drag is swallowed once, so letting go over a title does not also open it.
+//
+// Dates are read off the DOM (`[data-cal-day]` under the pointer) rather than
+// computed from geometry: the grids are CSS grid and flexbox, and any
+// arithmetic here would be a second, drifting copy of the layout.
+// ---------------------------------------------------------------------------
+
+// How far the pointer must travel before a press becomes a drag. 4px is under
+// the tremor of a deliberate click and well under any intended movement.
+const DRAG_SLOP = 4;
+
+// The gesture in flight, or null. One object for all three kinds so the
+// pointermove/pointerup handlers have exactly one thing to reason about.
+let CAL_DRAG = null;
+
+/** The ISO date of the day cell under a point, or null. */
+function dayUnder(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el?.closest?.('[data-cal-day]')?.dataset.calDay ?? null;
+}
+
+/** Paint the days a gesture is currently proposing. */
+function paintDragTargets(dates) {
+  const want = new Set(dates ?? []);
+  document.querySelectorAll('#cal-ops [data-cal-day]').forEach((cell) => {
+    cell.classList.toggle('drop-target', want.has(cell.dataset.calDay));
+  });
+}
+
+function clearDragPaint() {
+  paintDragTargets([]);
+  document.querySelectorAll('#cal-ops .dragging, #cal-ops .resizing')
+    .forEach(el => el.classList.remove('dragging', 'resizing'));
+  $('cal-ops').classList.remove('dragging-any');
+}
+
+/**
+ * Begin a gesture. Called on pointerdown; decides WHICH gesture this could be
+ * but commits to none of them until the pointer actually moves.
+ */
+function calPointerDown(ev) {
+  // Left button only, and never on a control that owns its own click.
+  if (ev.button !== 0 || CAL_DRAG) return;
+  if (ev.target.closest('input, a, .tile-more, [data-cal-expand]')) return;
+
+  const grip = ev.target.closest('[data-cal-grip]');
+  const chip = ev.target.closest('[data-cal-drag]');
+  const blank = ev.target.closest('[data-cal-newday]');
+
+  if (grip && chip) {
+    CAL_DRAG = {
+      kind: 'resize', edge: grip.dataset.calGrip, el: chip, moved: false,
+      x0: ev.clientX, y0: ev.clientY,
+      from: chip.dataset.dragDate, to: chip.dataset.dragEnd || chip.dataset.dragDate,
+      target: null,
+    };
+  } else if (chip) {
+    CAL_DRAG = {
+      kind: 'move', el: chip, moved: false,
+      x0: ev.clientX, y0: ev.clientY,
+      from: chip.dataset.dragDate, to: chip.dataset.dragEnd || chip.dataset.dragDate,
+      // Which day of a span was grabbed, so a three-day item dragged by its
+      // last day moves by the days the POINTER moved, not by where its start
+      // happens to be.
+      grabbed: chip.dataset.dragDay || chip.dataset.dragDate,
+      target: null,
+    };
+  } else if (blank) {
+    CAL_DRAG = {
+      kind: 'select', el: null, moved: false,
+      x0: ev.clientX, y0: ev.clientY,
+      anchor: blank.dataset.calNewday, target: blank.dataset.calNewday,
+    };
+  } else {
+    // A chip that cannot move. Nothing happens on a CLICK — the title still
+    // opens its page — but if the user actually tries to drag it, say why
+    // rather than letting it sit there feeling broken.
+    const fixed = ev.target.closest('[data-immovable]');
+    if (!fixed) return;
+    CAL_DRAG = {
+      kind: 'refused', el: null, moved: false,
+      x0: ev.clientX, y0: ev.clientY, why: fixed.dataset.immovable,
+    };
+  }
+  CAL_DRAG.pointerId = ev.pointerId;
+}
+
+function calPointerMove(ev) {
+  const d = CAL_DRAG;
+  if (!d || ev.pointerId !== d.pointerId) return;
+  if (!d.moved) {
+    if (Math.abs(ev.clientX - d.x0) < DRAG_SLOP && Math.abs(ev.clientY - d.y0) < DRAG_SLOP) return;
+    // A drag on something fixed: explain it once, and end the gesture there.
+    if (d.kind === 'refused') {
+      CAL_DRAG = null;
+      toast(d.why);
+      return;
+    }
+    // Past the slop: this is a drag. Take the pointer so the gesture survives
+    // leaving the element, and mark the surface so the cursor and the chips
+    // stop inviting clicks.
+    d.moved = true;
+    try { $('cal-ops').setPointerCapture(d.pointerId); } catch { /* not fatal */ }
+    $('cal-ops').classList.add('dragging-any');
+    if (d.el) d.el.classList.add(d.kind === 'resize' ? 'resizing' : 'dragging');
+  }
+  ev.preventDefault();
+
+  const day = dayUnder(ev.clientX, ev.clientY);
+  if (!day) return;
+  d.target = day;
+
+  if (d.kind === 'select') {
+    const range = orderedRange(d.anchor, day);
+    paintDragTargets(range ? spanDates({ date: range.from, end_date: range.to }) : []);
+    return;
+  }
+  if (d.kind === 'move') {
+    const delta = daysBetween(d.grabbed, day);
+    const moved = movedDates({ date: d.from, end_date: d.to !== d.from ? d.to : null }, delta);
+    paintDragTargets(moved ? spanDates(moved) : spanDates({ date: d.from, end_date: d.to }));
+    return;
+  }
+  const op = { date: d.from, end_date: d.to !== d.from ? d.to : null };
+  const next = resizedDates(op, d.edge, day);
+  paintDragTargets(spanDates(next ?? op));
+}
+
+async function calPointerUp(ev) {
+  const d = CAL_DRAG;
+  if (!d || ev.pointerId !== d.pointerId) return;
+  CAL_DRAG = null;
+  try { $('cal-ops').releasePointerCapture(d.pointerId); } catch { /* already gone */ }
+
+  // Never moved: this was a click. Leave it entirely alone — the checkbox, the
+  // title button and the Submit link all depend on that.
+  if (!d.moved) { clearDragPaint(); return; }
+
+  // It WAS a drag, so swallow the click the browser is about to synthesise;
+  // otherwise letting go over a title opens the page you just dragged.
+  const swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
+  window.addEventListener('click', swallow, { capture: true, once: true });
+  // If no click follows (dropping on empty space), the listener must not sit
+  // there waiting to eat the user's next real click.
+  setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+
+  clearDragPaint();
+  const day = d.target;
+  if (!day) return;
+
+  if (d.kind === 'select') {
+    const range = orderedRange(d.anchor, day);
+    if (range) openItemDialog({ mode: 'create', date: range.from, endDate: range.from === range.to ? null : range.to });
+    return;
+  }
+
+  const op = { date: d.from, end_date: d.to !== d.from ? d.to : null };
+  const next = d.kind === 'move'
+    ? movedDates(op, daysBetween(d.grabbed, day))
+    : resizedDates(op, d.edge, day);
+  if (!next) return;   // no movement, or a gesture with no meaning
+  await applyDragResult(d, next);
+}
+
+/**
+ * Write the result of a drag, and paint it immediately.
+ *
+ * Three different stores are reachable from one gesture, because three
+ * different kinds of thing are draggable — and each one already had exactly
+ * one right way to be moved before any of this existed. Nothing new is
+ * invented here; the drag is a second way to reach the same field.
+ */
+async function applyDragResult(d, next) {
+  const el = d.el;
+  const customId = el?.dataset.dragCustom || null;
+  const folder = el?.dataset.dragFolder || null;
+  const itemId = el?.dataset.dragItem ?? null;
+  const cpId = el?.dataset.dragCp || null;
+
+  if (customId) {
+    await patchCustomItem(customId, { date: next.date, end_date: next.end_date })
+      .catch(err => toast(`Could not move that: ${err.message}`));
+    return;
+  }
+  if (!folder || itemId == null) return;
+
+  if (cpId) {
+    // A prep block the user wrote. Its date lives in the checkpoint list on
+    // the parent task, so the whole list is echoed back with one date changed
+    // — the same shape the task editor's checkpoint rows already send.
+    const cps = (CURRENT?.folder === folder ? taskState(itemId).checkpoints : null)
+      ?? await loadCheckpointsFor(folder, itemId).catch(() => null);
+    if (!cps) { toast('Could not move that prep block.'); return; }
+    const updated = cps.map(c => (c.id === cpId ? { ...c, date: next.date } : c));
+    await postTask(folder, itemId, { checkpoints: updated })
+      .then(() => refreshCalendarSoon())
+      .catch(err => toast(`Could not move that: ${err.message}`));
+    return;
+  }
+
+  // A deadline. Dragging it writes the SAME dueOverride the task editor's
+  // "Move to" field writes, so the two can never disagree and the "moved"
+  // badge appears on both.
+  await postTask(folder, itemId, { dueOverride: next.date })
+    .then(() => refreshCalendarSoon())
+    .catch(err => toast(`Could not move that: ${err.message}`));
+}
+
+/**
+ * One task PATCH, serialized per item the way the tick handler is.
+ *
+ * Two writes to the same task must not race: a drag that moves a deadline and
+ * a note typed a moment later both land on one JSON object, and the loser of
+ * a race silently reverts the winner.
+ */
+function postTask(folder, id, patch) {
+  const key = `task|${folder}|${id}`;
+  const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
+  const run = tail.then(() => api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }));
+  // The chain must survive a rejection, or one failure wedges every later
+  // write for the same item; and it must not accumulate a key per item for
+  // the life of the page.
+  const settled = run.catch(() => {}).finally(() => {
+    if (CAL_POST_QUEUE.get(key) === settled) CAL_POST_QUEUE.delete(key);
+  });
+  CAL_POST_QUEUE.set(key, settled);
+  return run;
+}
+
+/** The checkpoint list of a task this page has not opened. */
+async function loadCheckpointsFor(folder, itemId) {
+  const data = await apiJson(`/api/class/${folder}`);
+  return data?.user_state?.[itemId]?.checkpoints ?? null;
+}
+
+/**
+ * Pull the worklist again once the bridge has had time to rebuild it.
+ *
+ * A move that writes to user_state.json only reaches the calendar through the
+ * worklist, and that rebuild is debounced ~1.5s. Until it lands the grid still
+ * shows the item where it was, so the drag would look like it failed. Waiting
+ * is not an option either — the user is holding the mouse. So: paint nothing
+ * optimistic for these (the store is not ours to mirror), and refetch shortly
+ * after, which is the same mechanism the meeting-times editor uses.
+ */
+let calRefreshTimer = null;
+function refreshCalendarSoon(delay = 1800) {
+  clearTimeout(calRefreshTimer);
+  calRefreshTimer = setTimeout(async () => {
+    // Never repaint out from under a gesture in progress. The pointer is
+    // captured on the container so the drag itself would survive, but the
+    // chip under the cursor would be replaced mid-move and the drop-target
+    // highlight would be wiped — the user would be dragging a ghost.
+    if (CAL_DRAG) { refreshCalendarSoon(600); return; }
+    try {
+      const { worklist, custom_items } = await apiJson('/api/calendar');
+      CAL_WORKLIST = worklist;
+      if (Array.isArray(custom_items)) CAL_CUSTOM = custom_items;
+      seedCalDone();
+      renderCalendarOps();
+      if (CURRENT) refreshCurrentClass();
+    } catch { /* the next full load catches up */ }
+  }, delay);
+}
+
+/** Re-read the open class so its task list agrees with a calendar edit. */
+async function refreshCurrentClass() {
+  const folder = CURRENT?.folder;
+  if (!folder) return;
+  try {
+    const data = await apiJson(`/api/class/${folder}`);
+    if (CURRENT?.folder !== folder) return;   // the user moved on
+    CURRENT = data;
+    if (!$('detail').classList.contains('hidden')) renderTasks();
+  } catch { /* the next open re-reads it */ }
+}
+
+// ---------------------------------------------------------------------------
+// The item dialog — where a calendar item is written, changed, or read.
+//
+// One dialog, three jobs, because they are three views of one question ("what
+// is this thing on my calendar?"):
+//
+//   create   a new item, from the Add button or from a range dragged on the
+//            grid, which arrives with its dates already filled in
+//   custom   an item the user added: every field editable, and deletable
+//   op       a lecture or an office-hours block: its facts, stated and not
+//            editable — they come from the syllabus — plus the one thing that
+//            IS the user's, a note
+//
+// A native <dialog>, so Escape, the backdrop and focus containment are the
+// platform's job rather than this file's. CALENDAR-SPEC §8.
+// ---------------------------------------------------------------------------
+
+let ITEM_DIALOG = null;   // { mode, item?, op?, folder?, noteKey? } while open
+
+/** Every class the user could file an item under, plus Personal. */
+function itemClassOptions(selected) {
+  const rows = [{ slug: PERSONAL_SLUG, name: 'Personal (no class)' }]
+    .concat((CLASSES || []).map(c => ({ slug: c.slug, name: c.code || c.folder })));
+  return rows.map(r =>
+    `<option value="${esc(r.slug)}"${r.slug === (selected || PERSONAL_SLUG) ? ' selected' : ''}>${esc(r.name)}</option>`
+  ).join('');
+}
+
+function openItemDialog(spec) {
+  const dlg = $('cal-item-dialog');
+  if (!dlg) return;
+  ITEM_DIALOG = spec;
+  renderItemDialog();
+  if (!dlg.open) dlg.showModal();
+  // The title is what a new item needs; a note is what an existing one is
+  // usually opened for.
+  const focus = dlg.querySelector('[data-item-title]:not([disabled])')
+    ?? dlg.querySelector('[data-item-note]');
+  focus?.focus();
+}
+
+function closeItemDialog() {
+  ITEM_DIALOG = null;
+  const dlg = $('cal-item-dialog');
+  if (dlg?.open) dlg.close();
+}
+
+function renderItemDialog() {
+  const d = ITEM_DIALOG;
+  const form = $('cal-item-form');
+  if (!d || !form) return;
+  form.innerHTML = d.mode === 'op' ? opDialogHtml(d) : customDialogHtml(d);
+}
+
+/** The editor for an item the user owns — new or existing. */
+function customDialogHtml(d) {
+  const it = d.item ?? {};
+  const date = d.date ?? it.date ?? localTodayIso();
+  const endDate = d.endDate ?? it.end_date ?? '';
+  const time = it.time ?? '';
+  const endTime = it.end_time ?? '';
+  const editing = d.mode === 'custom';
+  return `
+    <header class="item-head">
+      <h3>${editing ? 'Edit item' : 'New calendar item'}</h3>
+      <button type="button" class="linky" data-item-cancel>close</button>
+    </header>
+    <label class="item-field">
+      <span>Title</span>
+      <input type="text" data-item-title maxlength="300" required
+             value="${esc(it.title ?? '')}" placeholder="Study group, advising, dinner…" />
+    </label>
+    <label class="item-field">
+      <span>Calendar</span>
+      <select data-item-class>${itemClassOptions(it.class)}</select>
+    </label>
+    <div class="item-row">
+      <label class="item-field">
+        <span>Date</span>
+        <input type="date" data-item-date value="${esc(date)}" required />
+      </label>
+      <label class="item-field">
+        <span>Ends (optional)</span>
+        <input type="date" data-item-enddate value="${esc(endDate)}" />
+      </label>
+    </div>
+    <div class="item-row">
+      <label class="item-field">
+        <span>Start time</span>
+        <input type="time" data-item-time value="${esc(time)}" />
+      </label>
+      <label class="item-field">
+        <span>End time</span>
+        <input type="time" data-item-endtime value="${esc(endTime)}" />
+      </label>
+    </div>
+    <p class="item-hint">Leave the times empty for an all-day item.</p>
+    <label class="item-field">
+      <span>Notes</span>
+      <textarea data-item-note rows="3" maxlength="4000"
+                placeholder="Anything you want on the event itself">${esc(it.description ?? '')}</textarea>
+    </label>
+    <div class="item-actions">
+      ${editing ? '<button type="button" class="danger" data-item-delete>Delete</button>' : ''}
+      <span class="spacer"></span>
+      <span class="item-error" data-item-error></span>
+      <button type="button" data-item-cancel>Cancel</button>
+      <button type="submit" class="primary" data-item-save>${editing ? 'Save' : 'Add to calendar'}</button>
+    </div>`;
+}
+
+/** The read-and-annotate page for a lecture or an office-hours block. */
+function opDialogHtml(d) {
+  const op = d.op ?? {};
+  const facts = [];
+  if (op.date) {
+    facts.push(`<div class="item-fact"><span>When</span><b>${esc(fmtDayLabel(op.date))} · ${esc(calWhenLabel(op))}</b></div>`);
+  }
+  if (op.location) facts.push(`<div class="item-fact"><span>Where</span><b>${esc(op.location)}</b></div>`);
+  if (op.recurrence?.byday?.length) {
+    facts.push(`<div class="item-fact"><span>Repeats</span><b>weekly ${esc(op.recurrence.byday.join(''))}</b></div>`);
+  }
+  facts.push(`<div class="item-fact"><span>Class</span><b>${esc(calDisplayName(op.class))}</b></div>`);
+  // The op's description minus the note we appended to it — printing the note
+  // twice on the page where it is being edited reads as a bug.
+  const body = String(op.description ?? '')
+    .split('\n')
+    .filter(l => l.trim() && !/^Note:\s/.test(l))
+    .map(l => `<p>${esc(l)}</p>`).join('');
+  return `
+    <header class="item-head">
+      <h3>${esc(op.title ?? 'Calendar item')}</h3>
+      <button type="button" class="linky" data-item-cancel>close</button>
+    </header>
+    <div class="item-facts">${facts.join('')}</div>
+    ${body ? `<div class="item-body">${body}</div>` : ''}
+    <p class="item-hint">${op.kind === 'office_hours'
+      ? 'These hours come from the syllabus, so they are not editable here.'
+      : 'This comes from the syllabus, so its day and time are not editable here — correct them under <b>Class times</b> on the calendar.'}
+      Your note is yours.</p>
+    <label class="item-field">
+      <span>Your notes</span>
+      <textarea data-item-note rows="3" maxlength="4000"
+                placeholder="Bring the case pack, ask about Q3…">${esc(d.note ?? '')}</textarea>
+    </label>
+    <div class="item-actions">
+      <span class="spacer"></span>
+      <span class="item-error" data-item-error></span>
+      <button type="button" data-item-cancel>Close</button>
+      <button type="submit" class="primary" data-item-save>Save note</button>
+    </div>`;
+}
+
+/** Read the editor back out. Empty strings become nulls, never "". */
+function readItemForm(form) {
+  const val = (sel) => form.querySelector(sel)?.value?.trim() ?? '';
+  const slug = val('[data-item-class]');
+  return {
+    title: val('[data-item-title]'),
+    class: !slug || slug === PERSONAL_SLUG ? null : slug,
+    date: val('[data-item-date]'),
+    end_date: val('[data-item-enddate]') || null,
+    time: val('[data-item-time]') || null,
+    end_time: val('[data-item-endtime]') || null,
+    description: val('[data-item-note]') || null,
+  };
+}
+
+async function submitItemDialog() {
+  const d = ITEM_DIALOG;
+  const form = $('cal-item-form');
+  if (!d || !form) return;
+  const err = form.querySelector('[data-item-error]');
+  const say = (msg) => { if (err) err.textContent = msg; };
+
+  if (d.mode === 'op') {
+    const note = form.querySelector('[data-item-note]')?.value ?? '';
+    say('Saving…');
+    try {
+      await postTask(d.folder, d.noteKey, { note });
+      closeItemDialog();
+      refreshCalendarSoon();
+    } catch (e) { say(`Could not save that: ${e.message}`); }
+    return;
+  }
+
+  const fields = readItemForm(form);
+  if (!fields.title) { say('Give it a title.'); return; }
+  if (!fields.date) { say('Give it a date.'); return; }
+  say('Saving…');
+  try {
+    if (d.mode === 'custom') await patchCustomItem(d.item.id, fields);
+    else await createCustomItem(fields);
+    closeItemDialog();
+  } catch (e) {
+    // The bridge's own message says exactly what is wrong with the shape —
+    // "an item spanning days needs an end time" beats "could not save".
+    say(e.message);
+  }
+}
+
+// --- the three writes, each painting before it waits ------------------------
+
+async function createCustomItem(fields) {
+  const { item } = await apiJson('/api/calendar/items', {
+    method: 'POST', body: JSON.stringify(fields),
+  });
+  CAL_CUSTOM = [...CAL_CUSTOM, item];
+  renderCalendarOps();
+  return item;
+}
+
+async function patchCustomItem(id, patch) {
+  const before = CAL_CUSTOM;
+  // Paint it first: a dragged item that waits for the network snaps back to
+  // where it was for as long as the round trip takes, which reads as the drag
+  // having failed.
+  CAL_CUSTOM = CAL_CUSTOM.map(it => (it.id === id ? { ...it, ...patch } : it));
+  renderCalendarOps();
+  try {
+    const { item } = await apiJson(`/api/calendar/items/${id}`, {
+      method: 'PATCH', body: JSON.stringify(patch),
+    });
+    CAL_CUSTOM = CAL_CUSTOM.map(it => (it.id === id ? item : it));
+    renderCalendarOps();
+    return item;
+  } catch (e) {
+    CAL_CUSTOM = before;
+    renderCalendarOps();
+    throw e;
+  }
+}
+
+async function deleteCustomItem(id) {
+  const before = CAL_CUSTOM;
+  CAL_CUSTOM = CAL_CUSTOM.filter(it => it.id !== id);
+  renderCalendarOps();
+  try {
+    await api(`/api/calendar/items/${id}`, { method: 'DELETE' });
+  } catch (e) {
+    CAL_CUSTOM = before;
+    renderCalendarOps();
+    throw e;
+  }
+}
+
+function wireItemDialog() {
+  const dlg = $('cal-item-dialog');
+  const form = $('cal-item-form');
+  if (!dlg || !form) return;
+
+  form.addEventListener('submit', (ev) => {
+    // The form is method="dialog"; without this the dialog closes on Enter
+    // before anything is written.
+    ev.preventDefault();
+    submitItemDialog();
+  });
+
+  form.addEventListener('click', async (ev) => {
+    if (ev.target.closest('[data-item-cancel]')) { closeItemDialog(); return; }
+    const del = ev.target.closest('[data-item-delete]');
+    if (!del) return;
+    // Two presses, like the class cleanup: deleting is the one action here
+    // that cannot be undone by typing the same thing back in.
+    if (del.dataset.armed !== '1') {
+      del.dataset.armed = '1';
+      del.textContent = 'Confirm — delete this item';
+      return;
+    }
+    const id = ITEM_DIALOG?.item?.id;
+    if (!id) return;
+    del.disabled = true;
+    try {
+      await deleteCustomItem(id);
+      closeItemDialog();
+    } catch (e) {
+      del.disabled = false;
+      form.querySelector('[data-item-error]').textContent = `Could not delete that: ${e.message}`;
+    }
+  });
+
+  // Closing by Escape or the backdrop has to clear the state too, or the next
+  // open renders whatever was on screen last.
+  dlg.addEventListener('close', () => { ITEM_DIALOG = null; });
+  dlg.addEventListener('click', (ev) => {
+    // A click on the backdrop lands on the dialog element itself.
+    if (ev.target === dlg) closeItemDialog();
+  });
+}
+
+function wireCalendarDrag() {
+  const box = $('cal-ops');
+  box.addEventListener('pointerdown', calPointerDown);
+  box.addEventListener('pointermove', calPointerMove);
+  box.addEventListener('pointerup', calPointerUp);
+  box.addEventListener('pointercancel', () => { CAL_DRAG = null; clearDragPaint(); });
+  // A drag abandoned with the keyboard leaves nothing painted and writes
+  // nothing — the same escape hatch the colour picker has.
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || !CAL_DRAG) return;
+    CAL_DRAG = null;
+    clearDragPaint();
+  });
 }
 
 /**
@@ -2680,6 +3593,12 @@ function cssEsc(s) {
 function chipRowsSource() {
   const fromClasses = (CLASSES || [])
     .map(c => ({ slug: c.slug, name: c.code || c.folder, resolvable: true }));
+  // Personal items get a chip of their own as soon as one exists, so they can
+  // be hidden and recoloured like any class. It is listed only when there is
+  // something in it — a filter for an empty category is a dead control.
+  if (CAL_CUSTOM.some(it => !it.class)) {
+    fromClasses.push({ slug: PERSONAL_SLUG, name: 'Personal', resolvable: true });
+  }
   const known = new Set(fromClasses.map(r => r.slug));
   // A slug the worklist mentions but the class list does not: the bridge
   // resolves colours by walking class folders, so it has no colour to return
@@ -2875,8 +3794,13 @@ function handleColorPopClick(ev) {
  */
 function completedOps() {
   const dropped = CAL_WORKLIST?.dropped ?? [];
+  // Finished items the user added come from CAL_CUSTOM for the same reason
+  // the live ones do: it is newer than the worklist's `dropped` record.
+  const custom = CAL_CUSTOM
+    .filter(it => it.done)
+    .map(it => ({ ...customRenderOp(it), _completed: true }));
   return dropped
-    .filter(d => d && d.reason === 'done' && d.date)
+    .filter(d => d && d.reason === 'done' && d.date && d.calendar !== 'custom')
     .map(d => ({
       ...d,
       calendar: d.calendar || (d.kind === 'checkpoint' ? 'checkpoint' : 'due'),
@@ -2887,7 +3811,8 @@ function completedOps() {
       title: d.event_title || d.title,
       all_day: d.all_day ?? !d.time,
       _completed: true,
-    }));
+    }))
+    .concat(custom);
 }
 
 /**
@@ -2922,7 +3847,12 @@ function seedCalDone() {
 function renderCalendarOps() {
   const el = $('cal-ops');
   const toolbar = $('cal-toolbar');
-  const base = CAL_WORKLIST?.ops ?? [];
+  // The worklist's own custom ops are dropped and re-derived from CAL_CUSTOM:
+  // between an edit and the rebuild that follows it, this list is newer than
+  // the worklist, and drawing both would show the item twice.
+  const base = (CAL_WORKLIST?.ops ?? [])
+    .filter(o => o.calendar !== 'custom')
+    .concat(CAL_CUSTOM.filter(it => !it.done).map(customRenderOp));
   const done = completedOps();
   const all = CAL_SHOW_DONE ? base.concat(done) : base;
   syncCalControls(done.length);
@@ -3025,8 +3955,9 @@ async function loadCalendar() {
   // colour promise itself; it is memoised, so this costs one tick when warm.
   if (!CLASSES || !CLASSES.length) await loadClasses().catch(() => {});
   await loadClassColors().catch(() => {});
-  const { worklist } = await apiJson('/api/calendar');
+  const { worklist, custom_items } = await apiJson('/api/calendar');
   CAL_WORKLIST = worklist;
+  if (Array.isArray(custom_items)) CAL_CUSTOM = custom_items;
   seedCalDone();
   renderCalendarOps();
   // The class-times list arrives behind the grid — the calendar is useful

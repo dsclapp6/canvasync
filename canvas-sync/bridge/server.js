@@ -29,11 +29,16 @@ import { tasksForClass } from '../canvas-tasks.js';
 import { modelLockStatus, anthropicKeyStatus } from '../scripts/_util.js';
 import { DEFAULT_PALETTE, COLORS_FILE, resolveColors, applyColorPatch } from '../class-colors.js';
 import { countMeetings } from '../scripts/cal-meetings.js';
+import { shortCourseCode } from '../scripts/cal-names.js';
 import { classGrades } from '../scripts/grades.js';
 import {
   recoverMeetingTimes, writeMeetingOverride, clearMeetingOverride,
   revertMeetingOverride, readMeetingRevert, describeRevertTarget, describeMeetingSource,
 } from '../scripts/meeting-times.js';
+import {
+  readCustomItems, createCustomItem, patchCustomItem, deleteCustomItem,
+  customItemOp, CustomItemError, ID_RE as CUSTOM_ID_RE,
+} from '../custom-items.js';
 import { indexProgressRouter } from './routes/index-progress.js';
 
 // From the manifest, never a copy: this is the number the UI footer and
@@ -1406,10 +1411,93 @@ export function buildApp(config) {
   // GET /api/calendar — worklist + routine doc
   dashRouter.get('/calendar', async (req, res) => {
     const calDir = path.join(syncHome(), 'calendar');
-    const [worklist] = await Promise.all([
+    const [worklist, custom] = await Promise.all([
       readJsonOrNull(path.join(calDir, 'worklist.json')),
+      readCustomItems(calDir),
     ]);
-    res.json({ worklist, calendar_dir: calDir });
+    // The user's own items ride along with the worklist rather than needing a
+    // request of their own: the calendar cannot draw an editor for an item it
+    // has only seen as an op (an op's title carries the class prefix and its
+    // description carries our own footer), and a second fetch could answer
+    // from a different moment than the worklist it is annotating.
+    res.json({ worklist, custom_items: custom.items, calendar_dir: calDir });
+  });
+
+  // --- Items the user adds by hand -----------------------------------------
+  //
+  // The one kind of calendar entry no pipeline stage can regenerate, so it
+  // lives in its own file (calendar/custom_items.json) that nothing but these
+  // routes writes. Every mutation schedules a worklist rebuild, because the
+  // worklist is what the grid and the .ics files are drawn from — but each
+  // response also carries the op the item became, so the client can paint the
+  // change immediately instead of waiting on the debounce.
+  // CALENDAR-SPEC §8.
+  const calendarDir = () => path.join(syncHome(), 'calendar');
+
+  // The course code a class-attached item wears, resolved the same way the
+  // worklist resolves it, so an item's title reads identically in both.
+  async function customCodeFor() {
+    const classesDir = path.join(syncHome(), 'classes');
+    const map = new Map();
+    let folders = [];
+    try {
+      folders = (await fs.readdir(classesDir)).filter(n => CLASS_RE.test(n));
+    } catch { /* no classes yet — personal items still work */ }
+    await Promise.all(folders.map(async (folder) => {
+      const metadata = await readJsonOrNull(path.join(classesDir, folder, 'metadata.json'));
+      const code = metadata?.course_code ?? metadata?.course?.code ?? null;
+      if (code) map.set(folder.replace(/^[0-9]+-/, ''), shortCourseCode(code));
+    }));
+    return slug => map.get(slug) ?? null;
+  }
+
+  const customItemError = (res, err) => {
+    if (err instanceof CustomItemError) return res.status(400).json({ error: err.message });
+    console.error('[bridge] custom item error:', err.message);
+    return res.status(500).json({ error: 'write failed' });
+  };
+
+  dashRouter.get('/calendar/items', async (req, res) => {
+    const { items } = await readCustomItems(calendarDir());
+    res.json({ items });
+  });
+
+  dashRouter.post('/calendar/items', disabledCheck, async (req, res) => {
+    try {
+      const item = await createCustomItem(calendarDir(), req.body ?? {});
+      const codeFor = await customCodeFor();
+      scheduleWorklistRebuild();
+      res.json({ ok: true, item, op: customItemOp(item, { codeFor }), rebuild_scheduled: true });
+    } catch (err) {
+      customItemError(res, err);
+    }
+  });
+
+  dashRouter.patch('/calendar/items/:id', disabledCheck, async (req, res) => {
+    const { id } = req.params;
+    if (!CUSTOM_ID_RE.test(id)) return res.status(400).json({ error: 'invalid item id' });
+    try {
+      const item = await patchCustomItem(calendarDir(), id, req.body ?? {});
+      if (!item) return res.status(404).json({ error: 'not found' });
+      const codeFor = await customCodeFor();
+      scheduleWorklistRebuild();
+      res.json({ ok: true, item, op: customItemOp(item, { codeFor }), rebuild_scheduled: true });
+    } catch (err) {
+      customItemError(res, err);
+    }
+  });
+
+  dashRouter.delete('/calendar/items/:id', disabledCheck, async (req, res) => {
+    const { id } = req.params;
+    if (!CUSTOM_ID_RE.test(id)) return res.status(400).json({ error: 'invalid item id' });
+    try {
+      const removed = await deleteCustomItem(calendarDir(), id);
+      if (!removed) return res.status(404).json({ error: 'not found' });
+      scheduleWorklistRebuild();
+      res.json({ ok: true, removed: true, rebuild_scheduled: true });
+    } catch (err) {
+      customItemError(res, err);
+    }
   });
 
   // GET /api/calendar/classes — every class in scope, with the meeting times
@@ -1581,11 +1669,22 @@ export function buildApp(config) {
     } catch { return []; }
   };
 
+  // "personal" is where an item with no class goes (custom-items.js). It is
+  // deliberately NOT one of the slugs the palette rotates over: resolveColors
+  // assigns defaults by sorted position, so slipping a pseudo-class into that
+  // list would silently repaint every real class after it in the alphabet.
+  // It still gets to hold an override, so the chip's colour picker works on it
+  // like any other; with none stored the client draws its own quiet default.
+  const PERSONAL_SLUG = 'personal';
+  const withPersonal = (colors, stored) => (
+    stored?.[PERSONAL_SLUG] ? { ...colors, [PERSONAL_SLUG]: stored[PERSONAL_SLUG] } : colors
+  );
+
   dashRouter.get('/class-colors', async (req, res) => {
     const stored = (await readJsonOrNull(colorsPath())) ?? {};
     const slugs = await listClassSlugs();
     res.json({
-      colors: resolveColors(slugs, stored),
+      colors: withPersonal(resolveColors(slugs, stored), stored),
       overrides: stored,
       palette: DEFAULT_PALETTE,
     });
@@ -1608,7 +1707,11 @@ export function buildApp(config) {
       return res.status(500).json({ error: 'could not save colours' });
     }
     const slugs = await listClassSlugs();
-    res.json({ ok: true, colors: resolveColors(slugs, overrides), overrides, palette: DEFAULT_PALETTE, rejected });
+    res.json({
+      ok: true,
+      colors: withPersonal(resolveColors(slugs, overrides), overrides),
+      overrides, palette: DEFAULT_PALETTE, rejected,
+    });
   });
 
   // --- Anthropic API key -----------------------------------------------------

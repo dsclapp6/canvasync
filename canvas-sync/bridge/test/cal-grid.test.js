@@ -10,6 +10,8 @@ import {
   isoDate, parseIso, addDays, addMonths, startOfWeek, startOfMonth, weekDays,
   monthGrid, bucketByDate, sortDayOps, monthLabel, weekLabel, dayHeadLabel,
   initialAnchor, relPhrase, dueTier, WEEKDAY_HEADS,
+  daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
+  MAX_SPAN_DAYS,
 } from '../public/cal-grid.js';
 
 // --- ISO in, ISO out, always local --------------------------------------
@@ -270,6 +272,110 @@ test('relPhrase names the near days and counts the far ones in weeks', () => {
   assert.equal(relPhrase(63), 'in 9 weeks');
   assert.equal(relPhrase(-2), '2 days ago');
   assert.equal(relPhrase(-14), '2 weeks ago');
+});
+
+// --- spans, moves and resizes ----------------------------------------------
+// The maths behind dragging an item around the grid (CALENDAR-SPEC §8). Every
+// one of these is a gesture a pointer can actually make, including the ones
+// that must be refused.
+
+test('daysBetween is exact across the November DST change', () => {
+  // 2026-11-01 is the US fall-back. A midnight-anchored subtraction reports
+  // 13.958 days across it and rounds to the wrong side of a boundary.
+  assert.equal(daysBetween('2026-10-25', '2026-11-08'), 14);
+  assert.equal(daysBetween('2026-11-08', '2026-10-25'), -14);
+  assert.equal(daysBetween('2026-08-24', '2026-08-24'), 0);
+});
+
+test('an ordinary op covers exactly its own day', () => {
+  assert.deepEqual(spanDates({ date: '2026-09-14' }), ['2026-09-14']);
+  assert.deepEqual(spanDates({ date: '2026-09-14', end_date: null }), ['2026-09-14']);
+  // The same day stated twice is one day, not two.
+  assert.deepEqual(spanDates({ date: '2026-09-14', end_date: '2026-09-14' }), ['2026-09-14']);
+});
+
+test('a span covers every day it runs through, ends included', () => {
+  assert.deepEqual(spanDates({ date: '2026-09-14', end_date: '2026-09-16' }),
+    ['2026-09-14', '2026-09-15', '2026-09-16']);
+  // Across a month edge, where a day-number loop breaks.
+  assert.deepEqual(spanDates({ date: '2026-08-31', end_date: '2026-09-02' }),
+    ['2026-08-31', '2026-09-01', '2026-09-02']);
+});
+
+test('a nonsense span degrades to one day rather than flooding the grid', () => {
+  assert.deepEqual(spanDates({ date: '2026-09-14', end_date: '2026-09-01' }), ['2026-09-14']);
+  assert.deepEqual(spanDates({ date: '2026-01-01', end_date: '2027-01-01' }), ['2026-01-01']);
+  assert.deepEqual(spanDates({ date: 'nope', end_date: '2026-09-16' }), []);
+  // Exactly at the cap is still a real span — the refusal starts one past it.
+  const capped = spanDates({ date: '2026-01-01', end_date: addDays('2026-01-01', MAX_SPAN_DAYS) });
+  assert.equal(capped.length, MAX_SPAN_DAYS + 1);
+});
+
+test('a spanning op lands in every bucket it covers', () => {
+  const ops = [
+    { id: 'trip', date: '2026-09-14', end_date: '2026-09-16' },
+    { id: 'hw', date: '2026-09-15' },
+  ];
+  const b = bucketByDate(ops);
+  assert.deepEqual([...b.keys()].sort(), ['2026-09-14', '2026-09-15', '2026-09-16']);
+  assert.deepEqual(b.get('2026-09-14').map(o => o.id), ['trip']);
+  assert.deepEqual(b.get('2026-09-15').map(o => o.id), ['trip', 'hw']);
+  assert.deepEqual(b.get('2026-09-16').map(o => o.id), ['trip']);
+});
+
+test('a multi-day run sits above the appointments inside the day', () => {
+  // Every column stacks independently, so a span only reads as ONE bar across
+  // the week if it holds the same position in each day it covers.
+  const ops = [
+    { id: 'hw', date: '2026-09-15', time: '09:00' },
+    { id: 'trip', date: '2026-09-14', end_date: '2026-09-17' },
+    { id: 'lecture', date: '2026-09-15', all_day: true },
+    { id: 'weekend', date: '2026-09-12', end_date: '2026-09-20' },
+  ];
+  // Longest run first, then the timed work, then the undated marker.
+  assert.deepEqual(sortDayOps(ops).map(o => o.id), ['weekend', 'trip', 'hw', 'lecture']);
+});
+
+test('spanPosition names the two ends and everything between', () => {
+  const op = { date: '2026-09-14', end_date: '2026-09-17' };
+  assert.equal(spanPosition(op, '2026-09-14'), 'start');
+  assert.equal(spanPosition(op, '2026-09-15'), 'mid');
+  assert.equal(spanPosition(op, '2026-09-17'), 'end');
+  assert.equal(spanPosition({ date: '2026-09-14' }, '2026-09-14'), 'only');
+});
+
+test('a selection dragged backwards picks the same range as forwards', () => {
+  assert.deepEqual(orderedRange('2026-09-16', '2026-09-14'), { from: '2026-09-14', to: '2026-09-16' });
+  assert.deepEqual(orderedRange('2026-09-14', '2026-09-16'), { from: '2026-09-14', to: '2026-09-16' });
+  assert.deepEqual(orderedRange('2026-09-14', '2026-09-14'), { from: '2026-09-14', to: '2026-09-14' });
+  assert.equal(orderedRange('2026-09-14', 'nope'), null);
+  // A selection dragged off the end of the year is clamped, not refused.
+  assert.equal(orderedRange('2026-01-01', '2027-06-01').to, addDays('2026-01-01', MAX_SPAN_DAYS));
+});
+
+test('moving an item keeps its length', () => {
+  assert.deepEqual(movedDates({ date: '2026-09-14' }, 3), { date: '2026-09-17', end_date: null });
+  assert.deepEqual(movedDates({ date: '2026-09-14', end_date: '2026-09-16' }, -2),
+    { date: '2026-09-12', end_date: '2026-09-14' });
+  // A drag that ends where it started writes nothing — that gesture is a click.
+  assert.equal(movedDates({ date: '2026-09-14' }, 0), null);
+});
+
+test('resizing moves one edge and refuses to turn the item inside out', () => {
+  const op = { date: '2026-09-14', end_date: '2026-09-16' };
+  assert.deepEqual(resizedDates(op, 'end', '2026-09-18'), { date: '2026-09-14', end_date: '2026-09-18' });
+  assert.deepEqual(resizedDates(op, 'start', '2026-09-12'), { date: '2026-09-12', end_date: '2026-09-16' });
+  // Collapsing onto a single day clears end_date rather than storing a
+  // same-day span, so the stored shape has exactly one reading.
+  assert.deepEqual(resizedDates(op, 'start', '2026-09-16'), { date: '2026-09-16', end_date: null });
+  assert.deepEqual(resizedDates(op, 'end', '2026-09-14'), { date: '2026-09-14', end_date: null });
+  // Dragging an edge past the other one is a gesture with no meaning.
+  assert.equal(resizedDates(op, 'start', '2026-09-17'), null);
+  assert.equal(resizedDates(op, 'end', '2026-09-13'), null);
+  // No movement, no write.
+  assert.equal(resizedDates(op, 'end', '2026-09-16'), null);
+  // Past the cap.
+  assert.equal(resizedDates(op, 'end', '2027-09-16'), null);
 });
 
 test('dueTier is monotonic — a deadline never gets quieter as it closes', () => {

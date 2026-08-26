@@ -129,10 +129,23 @@ export function opToVevent(op, { dtstamp }) {
   lines.push(`UID:${escText(op.marker)}`);
   lines.push(`DTSTAMP:${dtstamp}`);
 
+  // An item the user dragged across days carries `end_date` — the last day it
+  // covers, INCLUSIVE, which is how a person reads "Thu to Sat". Every DTEND
+  // below is exclusive, so the conversion happens once, here.
+  const endDate = icsDate(op.end_date) && op.end_date > date ? op.end_date : null;
+
   const timed = op.all_day === false && op.time;
   if (timed) {
     let start, end;
-    if (op.end_time) {
+    if (endDate) {
+      // A timed span ENDS on its last day, at its own clock time: "Fri 9:00
+      // through Sun 17:00" is one event, not three. custom-items.js requires
+      // an end_time for exactly this shape, so there is nothing to invent;
+      // without one, fall back to the start clock rather than dropping the op.
+      start = icsDateTime(date, op.time);
+      end = icsDateTime(endDate, op.end_time || op.time);
+      if (!start || !end) return null;
+    } else if (op.end_time) {
       // A real span (meetings, office hours) keeps its actual start and end.
       start = icsDateTime(date, op.time);
       end = icsDateTime(date, op.end_time);
@@ -152,9 +165,11 @@ export function opToVevent(op, { dtstamp }) {
   } else {
     // All-day. Emitted for every op the pipeline could date but not time —
     // "the day is known and the hour is not" is a fact the student needs, and
-    // an invented 09:00 would hide it.
+    // an invented 09:00 would hide it. An all-day DTEND is EXCLUSIVE, so a
+    // span ending Saturday ends at the start of Sunday; getting this wrong
+    // renders every multi-day item a day short.
     lines.push(`DTSTART;VALUE=DATE:${icsDate(date)}`);
-    lines.push(`DTEND;VALUE=DATE:${icsDate(nextDay(date))}`);
+    lines.push(`DTEND;VALUE=DATE:${icsDate(nextDay(endDate || date))}`);
   }
 
   const r = op.recurrence;
@@ -176,8 +191,11 @@ export function opToVevent(op, { dtstamp }) {
   if (op.kind) lines.push(`CATEGORIES:${escText(op.kind)}`);
   if (op.url) lines.push(`URL:${escText(op.url)}`);
   // A deadline is a point in the student's day, not a claim about where they
-  // are. Marking it TRANSPARENT keeps it out of free/busy.
-  lines.push(`TRANSP:${op.kind === 'meeting' || op.kind === 'office_hours' ? 'OPAQUE' : 'TRANSPARENT'}`);
+  // are. Marking it TRANSPARENT keeps it out of free/busy. An item the user
+  // added by hand is the opposite: they put it there because that time is
+  // spoken for, so it counts as busy exactly the way a lecture does.
+  const busy = op.kind === 'meeting' || op.kind === 'office_hours' || op.kind === 'personal';
+  lines.push(`TRANSP:${busy ? 'OPAQUE' : 'TRANSPARENT'}`);
   lines.push('END:VEVENT');
   return lines;
 }
@@ -226,6 +244,10 @@ export const ICS_FILES = [
   { file: 'deadlines.ics', name: 'CANVASync — Deadlines', calendars: ['due'] },
   { file: 'checkpoints.ics', name: 'CANVASync — Prep', calendars: ['checkpoint'] },
   { file: 'classes.ics', name: 'CANVASync — Classes', calendars: ['meeting'] },
+  // Items the user typed in themselves. Their own file because they are the
+  // one kind nothing regenerates: a subscriber who wants their own plans in a
+  // different colour — or wants only these — can have exactly that.
+  { file: 'personal.ics', name: 'CANVASync — Added by you', calendars: ['custom'] },
   { file: 'canvasync.ics', name: 'CANVASync', calendars: null },   // null = everything
 ];
 

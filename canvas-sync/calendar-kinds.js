@@ -18,7 +18,7 @@
 //
 // Node builtins only — the bridge, the scripts and the desktop app all load it.
 
-export const KINDS = ['meeting', 'office_hours', 'homework', 'reading', 'exam', 'checkpoint'];
+export const KINDS = ['meeting', 'office_hours', 'homework', 'reading', 'exam', 'checkpoint', 'personal'];
 
 export const KIND_LABELS = {
   meeting:      'Meetings',
@@ -27,11 +27,13 @@ export const KIND_LABELS = {
   reading:      'Readings',
   exam:         'Exams',
   checkpoint:   'Checkpoints',
+  personal:     'Added by you',
 };
 
-// Which of the three target calendars a kind is written to. Office hours are a
-// standing weekly commitment in a room, so they belong with class meetings and
-// not among the deadlines.
+// Which target calendar a kind is written to. Office hours are a standing
+// weekly commitment in a room, so they belong with class meetings and not
+// among the deadlines. 'custom' is the user's own items (custom-items.js) —
+// their own file, so a subscriber can colour them apart from the pipeline's.
 export const KIND_CALENDAR = {
   meeting:      'meeting',
   office_hours: 'meeting',
@@ -39,6 +41,7 @@ export const KIND_CALENDAR = {
   reading:      'due',
   exam:         'due',
   checkpoint:   'checkpoint',
+  personal:     'custom',
 };
 
 /** Singular and plural, for a sentence shown to a student. */
@@ -49,6 +52,7 @@ export const KIND_NOUN = {
   reading:      ['reading', 'readings'],
   exam:         ['exam', 'exams'],
   checkpoint:   ['prep block', 'prep blocks'],
+  personal:     ['item you added', 'items you added'],
 };
 
 export function isKind(v) {

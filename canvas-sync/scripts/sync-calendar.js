@@ -57,6 +57,7 @@ import { recoverMeetingTimes } from './meeting-times.js';
 import { officeHoursFor, resolveRange, describeOfficeHours } from './cal-office-hours.js';
 import { icsFilesFor } from './cal-ics.js';
 import { tasksForClass } from '../canvas-tasks.js';
+import { readCustomItems, opsForCustomItems } from '../custom-items.js';
 
 const PAST_GRACE_DAYS = 7;     // still emit ops for items due up to a week ago (late updates)
 const HORIZON_DAYS = 180;      // how far ahead to schedule
@@ -320,6 +321,11 @@ function opsForItem(it, {
       submit_url: it.submit_url || null,
       item_id: it.id ?? null,
       origin: originOf(it),
+      // The note is already inside the description; carried as a field too so
+      // the calendar can mark a row that has one without parsing prose, the
+      // same way `url` and `submit_url` are. CALENDAR-SPEC 8.6.
+      note: state.note || null,
+      note_key: it.id ?? null,
     }));
   }
 
@@ -484,7 +490,7 @@ function sessionKey(m, used) {
 function opsForMeetings({
   classSlug, courseCode, syllabusParsed, canvasEvents, minIso, maxIso,
   patterns = null, timeWarnings = null, holidayDates = null, refused = null,
-  instructor = null,
+  instructor = null, noteFor = null,
 }) {
   const ops = [];
   const meetings = collectMeetings({ syllabusParsed, canvasEvents, patterns, refused })
@@ -525,6 +531,14 @@ function opsForMeetings({
       descLines.push('Other synced classes mark this date as a holiday — verify this session happens.');
     }
     descLines.push(`Source: ${m.source}.`);
+    // A note the user typed on this session's own page. Keyed on the marker
+    // PREFIX, which is the one part of a meeting's identity that survives a
+    // date correction (see sessionKey) — so a note written against Tuesday's
+    // lecture stays on it when the parser learns the lecture is Wednesday.
+    // CALENDAR-SPEC 8.6.
+    const prefix = `[csync:m|${classSlug}|${sessionKey(m, used)}|`;
+    const note = noteFor?.(prefix) ?? null;
+    if (note) descLines.push(`Note: ${note}`);
     const desc = descLines.join('\n');
     // "Virani 182 - BUSI380 - VanHorn". A no-class day keeps the label instead:
     // naming the room and the professor for a session that does not happen is
@@ -538,11 +552,15 @@ function opsForMeetings({
       ? meetingTitle({ code: courseCode, label: 'No class' })
       : meetingTitle({ code: courseCode, label: m.label, location: m.location, instructor });
     const hash = shortHash(title, m.date, m.start, desc);
-    const marker = `[csync:m|${classSlug}|${sessionKey(m, used)}|${hash}]`;
+    const marker = `${prefix}${hash}]`;
     ops.push(markerOp(marker, {
       calendar: 'meeting',
       kind: 'meeting',
       title,
+      // What a note on this session is filed under, so the UI never has to
+      // rebuild the prefix rule for itself.
+      note_key: prefix,
+      note: note || null,
       date: m.date,
       time: m.start || null,
       end_time: m.end || null,
@@ -569,13 +587,16 @@ function opsForMeetings({
     ? syllabusParsed.course.term_end
     : maxIso;
   const title = meetingTitle({ code: courseCode, location: pattern.location, instructor });
+  const weeklyPrefix = `[csync:m|${classSlug}|weekly|`;
+  const weeklyNote = noteFor?.(weeklyPrefix) ?? null;
   const desc = [
     pattern.location ? `Location: ${pattern.location}` : null,
     `Pattern: ${pattern.source}`,
     'No dated class schedule was found, so this is a weekly recurrence — check it against your section.',
+    weeklyNote ? `Note: ${weeklyNote}` : null,
   ].filter(Boolean).join('\n');
   const hash = shortHash(title, pattern.byday.join(','), pattern.start, desc);
-  const marker = `[csync:m|${classSlug}|weekly|${hash}]`;
+  const marker = `${weeklyPrefix}${hash}]`;
   // Anchor on a day the pattern actually meets — see firstOnByday.
   const anchor = firstOnByday(
     minIso > localIsoDate(new Date()) ? minIso : localIsoDate(new Date()),
@@ -586,6 +607,8 @@ function opsForMeetings({
     calendar: 'meeting',
     kind: 'meeting',
     title,
+    note_key: weeklyPrefix,
+    note: weeklyNote || null,
     date: anchor,
     time: pattern.start,
     end_time: pattern.end,
@@ -629,7 +652,7 @@ function classTermEnd(syllabusParsed, maxIso) {
  * professor said something we would not repeat" — ECON 205 names a weekday and
  * an end time and no start, and the student should still be told that.
  */
-function opsForOfficeHours({ classSlug, courseCode, syllabusParsed, minIso, maxIso, drops }) {
+function opsForOfficeHours({ classSlug, courseCode, syllabusParsed, minIso, maxIso, drops, noteFor = null }) {
   const ops = [];
   const oh = officeHoursFor(syllabusParsed);
   // A Fall office hour does not recur into February. No syllabus in this corpus
@@ -661,6 +684,11 @@ function opsForOfficeHours({ classSlug, courseCode, syllabusParsed, minIso, maxI
     const span = resolveRange(p.range, minIso, termEnd);
     if (span.to < span.from) continue;
     const title = officeHoursTitle(courseCode, oh.instructor, p.location);
+    // The prefix keys on the weekly slot, not on the date the recurrence starts:
+    // a term that shifts by a day must update the event, not create a second one.
+    // It is also what a note on this block is filed under. CALENDAR-SPEC 8.6.
+    const prefix = `[csync:h|${classSlug}|${p.byday.join('')}@${p.start}|`;
+    const note = noteFor?.(prefix) ?? null;
     const desc = [
       `Office hours: ${describeOfficeHours(p)}.`,
       p.location ? `Location: ${p.location}` : null,
@@ -670,11 +698,10 @@ function opsForOfficeHours({ classSlug, courseCode, syllabusParsed, minIso, maxI
       // The professor's exact words, once, at the bottom. Every reformatting
       // above is this file's reading of them; this is the source.
       oh.text ? `Syllabus: ${oh.text}` : null,
+      note ? `Note: ${note}` : null,
     ].filter(Boolean).join('\n');
     const hash = shortHash(title, p.byday.join(','), `${p.start}-${p.end}`, `${span.from}..${span.to}`, desc);
-    // The prefix keys on the weekly slot, not on the date the recurrence starts:
-    // a term that shifts by a day must update the event, not create a second one.
-    const marker = `[csync:h|${classSlug}|${p.byday.join('')}@${p.start}|${hash}]`;
+    const marker = `${prefix}${hash}]`;
     // Anchor on a day the pattern actually meets — see firstOnByday. A window
     // the snap pushes past its own end has no occurrences left to show.
     const anchor = firstOnByday(span.from, p.byday);
@@ -683,6 +710,8 @@ function opsForOfficeHours({ classSlug, courseCode, syllabusParsed, minIso, maxI
       calendar: KIND_CALENDAR.office_hours,
       kind: 'office_hours',
       title,
+      note_key: prefix,
+      note: note || null,
       date: anchor,
       time: p.start,
       end_time: p.end,
@@ -972,6 +1001,16 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
     }
 
     const caveat = scheduleCaveatFor(syllabusParsed);
+    // Notes on things that are not tasks — a lecture, an office-hours block —
+    // are filed in the same user_state.json under the op's marker prefix,
+    // rather than in a second store that could disagree with it. Only the
+    // `note` field of such an entry is ever read here: a marker prefix is not
+    // a task id, so nothing else about it would mean anything.
+    // CALENDAR-SPEC 8.6.
+    const noteFor = (prefix) => {
+      const n = userState[prefix]?.note;
+      return typeof n === 'string' && n.trim() ? n.trim() : null;
+    };
 
     for (const it of items) {
       if (it.recurring) continue;
@@ -1000,6 +1039,7 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
         patterns: recovered?.patterns ?? null,
         timeWarnings: recovered?.warnings ?? null,
         syllabusParsed, canvasEvents, holidayDates, refused: refusedRows,
+        noteFor,
       }));
       for (const r of refusedRows) {
         drops.push({
@@ -1014,7 +1054,21 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
     // Office hours. A standing weekly commitment stated on every syllabus in
     // this corpus and on nobody's calendar.
     ops.push(...opsForOfficeHours({
-      classSlug, courseCode, syllabusParsed, minIso, maxIso, drops,
+      classSlug, courseCode, syllabusParsed, minIso, maxIso, drops, noteFor,
+    }));
+  }
+
+  // Items the user typed in themselves. Not per class — one item may belong to
+  // a class or to nothing at all ("personal") — so they are folded in once,
+  // after every class has contributed. They are the only ops on the calendar
+  // that no pipeline stage can regenerate, which is why they live in their own
+  // file and are read, never written, here. CALENDAR-SPEC §8.
+  {
+    const codeBySlug = new Map(contexts.map(c => [c.classSlug, shortCourseCode(c.courseCode)]));
+    const { items: customItems } = await readCustomItems(join(baseDir, 'calendar'));
+    ops.push(...opsForCustomItems(customItems, {
+      minIso, maxIso, drops,
+      codeFor: slug => codeBySlug.get(slug) ?? null,
     }));
   }
 
@@ -1091,9 +1145,18 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
         globalReasons[d.reason] = (globalReasons[d.reason] ?? 0) + 1;
       }
     }
+    // "You have not added anything yet" is not a note, it is the absence of
+    // one — the Add control two inches above says everything there is to say.
+    // Every other kind is a claim about DATA (the miner found no readings);
+    // this one would be a claim about the user. Speak only when items exist
+    // and something kept them off the calendar.
+    const vacuousPersonal = kind === 'personal'
+      && !Object.values(globalReasons).some(n => n > 0);
     kindNotes[kind] = {
       ops: counts[kind],
-      note: counts[kind] ? null : kindNote(kind, globalReasons, { where: ' in any synced class' }),
+      note: counts[kind] || vacuousPersonal
+        ? null
+        : kindNote(kind, globalReasons, { where: ' in any synced class' }),
       classes,
     };
   }

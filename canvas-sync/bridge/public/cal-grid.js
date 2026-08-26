@@ -122,16 +122,123 @@ export function monthGrid(iso, today = null) {
   return { days, month };
 }
 
-/** Group ops by their `date` field. Ops with no usable date are dropped. */
+/** Whole days from `a` to `b`, signed. Both are local ISO dates. */
+export function daysBetween(a, b) {
+  const x = parseIso(a);
+  const y = parseIso(b);
+  if (!x || !y) return 0;
+  // Both are noon-anchored, so the division is exact across DST.
+  return Math.round((y - x) / 864e5);
+}
+
+// The most days one item may cover. Mirrors MAX_SPAN_DAYS in custom-items.js —
+// the server refuses longer, and a grid that tried to draw one would put a
+// chip on every tile of the month.
+export const MAX_SPAN_DAYS = 60;
+
+/**
+ * Every date an op covers, inclusive: `[date]` for the ordinary case, and the
+ * whole run for an item the user dragged across days (`end_date`).
+ *
+ * An end before the start, or a span past the cap, degrades to the start day
+ * alone. A calendar that silently drew a 4000-day event because a field was
+ * wrong would be worse than one that drew a single day.
+ */
+export function spanDates(op) {
+  const start = String(op?.date ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return [];
+  const end = String(op?.end_date ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(end) || end <= start) return [start];
+  const n = daysBetween(start, end);
+  if (n < 1 || n > MAX_SPAN_DAYS) return [start];
+  return Array.from({ length: n + 1 }, (_, i) => addDays(start, i));
+}
+
+/**
+ * Group ops by date. Ops with no usable date are dropped; an op carrying an
+ * `end_date` lands in EVERY bucket it covers, because a three-day trip is on
+ * the calendar on all three days — that is the whole point of a span.
+ */
 export function bucketByDate(ops) {
   const out = new Map();
   for (const op of ops || []) {
-    const iso = String(op?.date ?? '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
-    if (!out.has(iso)) out.set(iso, []);
-    out.get(iso).push(op);
+    for (const iso of spanDates(op)) {
+      if (!out.has(iso)) out.set(iso, []);
+      out.get(iso).push(op);
+    }
   }
   return out;
+}
+
+/**
+ * Where one day sits in an op's span: 'only' (a single day), or 'start' /
+ * 'mid' / 'end'. The renderers use it to round the outer corners of a run and
+ * to put the resize handles on the two ends only — a chip in the middle of a
+ * span has no edge of its own to drag.
+ */
+export function spanPosition(op, iso) {
+  const dates = spanDates(op);
+  if (dates.length < 2) return 'only';
+  if (iso === dates[0]) return 'start';
+  if (iso === dates[dates.length - 1]) return 'end';
+  return 'mid';
+}
+
+/**
+ * The inclusive date range between two days a pointer touched, in order —
+ * so dragging a selection right-to-left picks the same range as left-to-right.
+ * Capped at MAX_SPAN_DAYS, and null when either end is not a date.
+ */
+export function orderedRange(a, b) {
+  const x = String(a ?? '').slice(0, 10);
+  const y = String(b ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(x) || !/^\d{4}-\d{2}-\d{2}$/.test(y)) return null;
+  const [from, to] = x <= y ? [x, y] : [y, x];
+  const n = daysBetween(from, to);
+  return { from, to: n > MAX_SPAN_DAYS ? addDays(from, MAX_SPAN_DAYS) : to };
+}
+
+/**
+ * An op moved by `days`, as the fields a PATCH would carry. A span keeps its
+ * length: dragging a three-day item moves both ends, it does not stretch it.
+ * Returns null when nothing would change, so a click that happens to end on
+ * the day it started writes nothing.
+ */
+export function movedDates(op, days) {
+  if (!days) return null;
+  const start = String(op?.date ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return null;
+  const date = addDays(start, days);
+  const dates = spanDates(op);
+  const end = dates.length > 1 ? addDays(dates[dates.length - 1], days) : null;
+  return { date, end_date: end };
+}
+
+/**
+ * An op whose named edge was dragged to `iso`, as the fields a PATCH would
+ * carry — or null when the drag would invert the item.
+ *
+ * Dragging the START edge past the end (or the END edge before the start) is
+ * a gesture with no meaning, and the honest answer is to refuse it rather
+ * than to silently swap the two and move an item the user was resizing.
+ */
+export function resizedDates(op, edge, iso) {
+  const dates = spanDates(op);
+  if (!dates.length) return null;
+  const start = dates[0];
+  const end = dates[dates.length - 1];
+  const to = String(iso ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) return null;
+  if (edge === 'start') {
+    if (to > end) return null;
+    if (to === start) return null;
+    if (daysBetween(to, end) > MAX_SPAN_DAYS) return null;
+    return { date: to, end_date: to === end ? null : end };
+  }
+  if (to < start) return null;
+  if (to === end) return null;
+  if (daysBetween(start, to) > MAX_SPAN_DAYS) return null;
+  return { date: start, end_date: to === start ? null : to };
 }
 
 /**
@@ -140,7 +247,20 @@ export function bucketByDate(ops) {
  * a 9am deadline just because its string happens to compare low.
  */
 export function sortDayOps(ops) {
+  // A run of days is a BANNER over each of them, not an appointment inside
+  // one, so it sits at the top of every day it covers — which is also the only
+  // way the pieces line up into one bar across a week of independently
+  // stacked columns. Longest-running first, so a week away does not get drawn
+  // underneath the weekend inside it.
+  const span = (o) => {
+    const d = spanDates(o);
+    return d.length > 1 ? d.length : 0;
+  };
   return [...(ops || [])].sort((a, b) => {
+    const as = span(a);
+    const bs = span(b);
+    if (as !== bs) return bs - as;
+    if (as && bs) return String(a.date).localeCompare(String(b.date));
     const at = a.all_day || !a.time ? null : a.time;
     const bt = b.all_day || !b.time ? null : b.time;
     if (at && bt) return at < bt ? -1 : at > bt ? 1 : 0;

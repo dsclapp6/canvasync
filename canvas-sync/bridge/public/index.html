@@ -133,6 +133,19 @@
               <a id="assignment-submit" class="btn-link primary hidden" target="_blank" rel="noopener noreferrer">Submit</a>
             </div>
           </header>
+          <!-- Your own notes on this assignment. Above the Canvas description
+               because on a page you have opened twice, what YOU wrote is what
+               you came back for. Saved to user_state.json (never to mined
+               output, which the pipeline rewrites) and carried onto the
+               calendar event's description. CALENDAR-SPEC 8.6. -->
+          <section class="note-block" id="assignment-notes">
+            <div class="note-head">
+              <h3>Your notes</h3>
+              <span class="note-state" id="assignment-note-state"></span>
+            </div>
+            <textarea id="assignment-note" rows="3" maxlength="4000"
+                      placeholder="What is left, what to ask, where you got stuck"></textarea>
+          </section>
           <div id="assignment-body"></div>
         </div>
         <!-- One class file, read in the app. Same back-button panel pattern as
@@ -213,6 +226,10 @@
           <div class="cal-bar">
             <div class="cal-summary" id="cal-summary"></div>
             <div class="cal-controls">
+              <!-- The other way in. Selecting a range on the grid is faster
+                   once you know it is there; a button is how you find out it
+                   exists at all. Both open the same editor. CALENDAR-SPEC 8.1. -->
+              <button type="button" id="cal-add" class="primary cal-add">+ Add</button>
               <!-- The three interfaces. A stacked list answers "what is coming
                    up"; it cannot answer "what does Tuesday look like" or "how
                    heavy is October". CALENDAR-SPEC 1. -->
@@ -259,6 +276,18 @@
         </details>
         <div id="cal-ops"></div>
       </section>
+
+      <!-- The one editor every calendar item opens into: a new item from the
+           Add button or from a range selected on the grid, an item the user
+           added (fully editable, deletable), or a lecture or office-hours
+           block (its facts, read-only, plus the notes field — the schedule
+           belongs to the syllabus, the note belongs to the student).
+           A native <dialog>, so Escape and the backdrop close it and focus is
+           trapped without any of that being written here.
+           Rendered by renderItemDialog(). CALENDAR-SPEC §8. -->
+      <dialog id="cal-item-dialog" class="item-dialog" aria-label="Calendar item">
+        <form id="cal-item-form" method="dialog"></form>
+      </dialog>
     </main>
 
     <!-- Settings view. Activity lives here too — it is a diagnostic, not a

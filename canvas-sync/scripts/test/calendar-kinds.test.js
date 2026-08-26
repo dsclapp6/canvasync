@@ -5,7 +5,7 @@ import { KINDS, KIND_LABELS, KIND_CALENDAR, KIND_NOUN, isKind } from '../../cale
 test('every kind has a label, a target calendar and both nouns', () => {
   for (const k of KINDS) {
     assert.equal(typeof KIND_LABELS[k], 'string', k);
-    assert.ok(['due', 'checkpoint', 'meeting'].includes(KIND_CALENDAR[k]), k);
+    assert.ok(['due', 'checkpoint', 'meeting', 'custom'].includes(KIND_CALENDAR[k]), k);
     assert.equal(KIND_NOUN[k]?.length, 2, k);
   }
 });

@@ -440,15 +440,129 @@ is one of this file's checkable numbers under rule 4, so it is worth being
 exact about. `npm test` in `canvas-sync/bridge` globs `test/*.test.js`, which
 counts any scratch file left in that directory.)
 
+## §8 — The calendar is something you can write on
+
+Added 2026-08-26. The user's words: *"add calendar item adding function by
+either selecting a section on the cal like with apple cal, or by using an add
+function. Also make calendar items draggable so I can move them around. Make
+sure this doesnt break functionality of just clicking into them. also allow
+extending them by dragging an edge in either direction. Make the cal item add
+functionality pretty thorough; it should ask what class to add, or if to put in
+'personal' cal as independent item. and then make it so it presents similarly to
+all the other cal items where there is a desc in them. also add 'notes' where
+user can add info to any assignment or calendar items descriptions on the
+clicked-in page."*
+
+Until now every item on this calendar was DERIVED — mined from a syllabus, read
+from Canvas, or generated from a meeting pattern — and the only thing the user
+could do to one was tick it off. This section is the calendar becoming
+writable.
+
+**"Make sure this doesnt break functionality of just clicking into them" is the
+load-bearing sentence,** and row 8.4 is where it is measured. Every control the
+previous seven sections built — the checkbox, the title that opens a page, the
+Submit link — sits *inside* the thing that is now draggable.
+
+| # | Requirement | Check | Built | Live | User |
+| ---: | --- | --- | :---: | :---: | :---: |
+| 8.1 | Two ways to add: a `+ Add` button in the toolbar, and dragging across empty space in Week or Month, which opens the editor with those dates already filled in. | `#cal-add` exists; a drag from one day's blank area to another opens the dialog with `date`/`end_date` set to the ends of the range, in either drag direction | x | x | |
+| 8.2 | The editor asks **what class, or personal** — one select listing every synced class plus `Personal (no class)` — and carries a title, a date, an optional end date, optional start/end times, and a notes field that becomes the item's description. | The select holds `1 + CLASSES.length` options; a saved item filed under a class wears that class's colour and code, one with none wears the reserved `personal` slug | x | x | |
+| 8.3 | An added item **presents like every other item**: the same row in List, the same chip in Week and Month, a checkbox, a click-in page, and its description where the others carry theirs. | An added item's row is `.cal-row.custom` with a `[data-cal-custom-done]` checkbox and a title button; its kind chip reads `Added by you` | x | x | |
+| 8.4 | **Dragging never costs a click.** Nothing happens until the pointer has moved 4px; under that the gesture is a click and reaches the control untouched. Over it, the click the browser synthesises at the end of the drag is swallowed once, so dropping on a title does not also open it. | Click a chip title → its page opens and nothing moves. Drag the same title 200px → the item moves and the page does NOT open. Both, in Week and in Month | x | x | |
+| 8.5 | **An edge drags in either direction.** The two ends of an item the user added carry grab handles; dragging the end edge later or the start edge earlier stretches it, and dragging either past the other is refused rather than silently inverting the item. | `resizedDates` unit-tested in both directions incl. the refusals; live, an item stretched across days renders as ONE bar (`.span-start`/`.span-mid`/`.span-end`) and stores `end_date` | x | x | |
+| 8.6 | **Notes on anything with a page.** An assignment's notes live on its panel above the description; an added item's live in its editor; a lecture's or an office-hours block's live on a small page of its own, keyed on the marker prefix so the note survives a date correction. Every note reaches the calendar event's description. | Type a note on an assignment → `user_state.json` holds it, the due op carries `note`, and the `.ics` DESCRIPTION ends `Note: …`. Same for a lecture, filed under its `note_key` | x | x | |
+| 8.7 | Only what is genuinely movable moves, and a refusal **says why**. A deadline drags (writing the same `dueOverride` the task editor writes); an item the user added drags and stretches; a user-written prep block drags. A lecture, an office-hours block and an automatic prep block do not — and trying tells you what does govern them. | Dragging a lecture toasts *"Class meetings come from the syllabus — change them under Class times."*; office hours and auto-prep get their own sentences; a click on any of them still opens its page silently | x | x | |
+| 8.8 | Added items are the one thing on this calendar no rebuild can regenerate, so they live in their own file, are never written by `scripts/`, and get their own `.ics` a subscriber can colour apart. | `calendar/custom_items.json`; `personal.ics` in `ICS_FILES`; a multi-day timed item is ONE VEVENT spanning both days, not one per day | x | x | |
+| 8.9 | Ticking an added item off obeys 2.5: it drops from the calendar but not from the file, and `Show completed` brings it back tickable. | Tick → the row goes; `Show N completed` → it returns struck and checked; un-tick → it is live again and `done: false` on disk | x | x | |
+| 8.10 | An in-progress span is **not overdue**. A run of days is late only once its LAST day is past. | A span starting yesterday and ending tomorrow carries no `.overdue` | x | x | |
+
+**Driven 2026-08-26** in a real browser on a fixture bridge (`:3851`) holding
+the six real Fall 2026 classes — every class-root JSON copied so writes land in
+the fixture, only `files/`, `materials/`, `AI_CONTEXT/` symlinked; torn down
+after. Real pointer gestures throughout (CDP mouse input, not synthetic
+events):
+
+```
+baseline                        271 ops — identical to the real worklist's 271
++ Add → BUSI 380 item           273 ops · counts.personal 2
+drag Thu 8/27 → Sat 8/29        chip on 8/29 AND stored date 2026-08-29, 18:00 kept
+drag end grip Sat → Sun         span-start + span-end, end_date 2026-08-30
+click the same title            "Edit item" opens, all six fields prefilled
+drag the same title 200px       item moves; dialog does NOT open  ← 8.4
+select Mon→Wed on blank space   "New calendar item", date 8/24, end 8/26
+drag a real deadline Thu → Fri  user_state.json: dueOverride 2026-08-28
+drag a lecture                  toast: "Class meetings come from the syllabus…"
+month view drag 8/27 → 8/29     stored 2026-08-29, time preserved
+```
+
+Counts after, on 273 ops: List **273 rows, 161 checkboxes, 74 Submit links, 38
+AI-added, 0 dead meeting controls**; `[data-open-assignment]` **159 = 131 due +
+28 checkpoints** — §2.6's invariant is untouched, and §2.10 still measures 0
+checkboxes and 0 `<a href>` titles on meetings (their new click-in is a
+`<button>` to a page that exists, not a dead link). Week: 7 tracks, today ×1.
+Month: 42 tiles, 42 % 7 = 0, 11 adjacent, today ×1. Overflow: **12 of 12** at
+375 / 768 / 1280 across all three views plus the dialog on a phone
+(`scrollWidth - clientWidth = 0`, dialog 341px inside 375px).
+
+`personal.ics`, unfolded:
+
+```
+UID:[csync:u|8809c30e-…|91164cf3]   SUMMARY:BUSI 380 · Study group — case prep
+DTSTART:20260829T180000  DTEND:20260829T200000  TRANSP:OPAQUE
+UID:[csync:u|5868df4f-…|cc5d1ea6]   SUMMARY:Conference
+DTSTART:20260910T090000  DTEND:20260912T170000  TRANSP:OPAQUE
+```
+
+The second is the shape that made 8.8 worth stating: a conference from Thursday
+morning to Saturday evening is **one** event, and an all-day span's `DTEND` is
+the day AFTER its last (`20260824`→`20260827` for Mon–Wed), because an all-day
+DTEND is exclusive and getting it wrong renders every multi-day item a day
+short. `TRANSP:OPAQUE` because an item the user put there by hand is time that
+is spoken for — the opposite of a deadline, which is a point and stays
+TRANSPARENT.
+
+**Three refusals worth keeping.** A timed item that runs over days must state
+an end time — *"Friday 9:00 through Sunday"* names no end and every honest
+rendering would have to invent one; the dialog prints the bridge's own sentence
+and stays open. An item stretched onto a single day stores `end_date: null`
+rather than a same-day span, so the stored shape has exactly one reading. And a
+span past 60 days is refused at the store and degrades to its start day in the
+grid, because a field that is wrong must not put a chip on every tile of the
+month.
+
+**What a keyboard can do here.** Dragging is a pointer gesture and has no
+keyboard equivalent; the *outcome* does. Every date and time a drag can change
+is a real form field in the item's editor, which is reached by the same
+tabbable title button every other row has. The resize grips are decorative
+(`aria-hidden`) for that reason: they are a second way to reach a control that
+already exists, not the only way.
+
+**Two bugs this drive caught before they shipped.** Office-hours ops are
+written to the `meeting` calendar, so the `isMeeting` branch claimed them and
+told the user to go and edit their class times — which is not where a
+professor's office hours come from; the refusal now asks the KIND first. And
+the refusal explanation was first wired to a *click*, so clicking a lecture to
+open its notes page also toasted "you cannot move this" — it now fires when a
+drag actually begins, which is the only moment the user has asked the question.
+
+**A note on where spans sit.** `sortDayOps` now puts a multi-day run above the
+appointments inside the day. Each column stacks independently, so this is the
+only way the pieces of one span line up into one bar across a week — it is the
+same reason every other calendar keeps an all-day row at the top.
+
+Suites at this note: `bridge/` **311 pass / 0 fail** (cal-grid +7,
+custom-items-route +10), `scripts/` **599 pass / 0 fail** (custom-items +15).
+
 ---
 
 ## Ledger
 
-**Open rows: 8 of 57** — every one of them open in the `User` column only.
+**Open rows: 18 of 67** — every one of them open in the `User` column only.
 2.12 and 2.13 are `~` (they ride on `server.js`, so they wait for the app to be
-relaunched); 7.1–7.6 are blank, because §7 has been driven on a byte copy of
-the real data root but not yet on the app-owned bridge. Nothing is open in
-`Built`, and only 7.6 is open in `Live`.
+relaunched); 7.1–7.6 and 8.1–8.10 are blank for the same reason — both sections
+have been driven against the six real classes on a fixture bridge, and both add
+routes to `server.js`, so the app has to be relaunched before the user can
+reach them. Nothing is open in `Built`, and only 7.6 is open in `Live`.
 
 **5.2 closed 2026-08-24 17:00.** The user said *"kill anything old so I can run
 just the newest version of this"*. The three stray bridges on `:3848` (pid
