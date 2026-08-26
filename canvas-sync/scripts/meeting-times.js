@@ -543,9 +543,28 @@ export async function writeMeetingOverride(classDir, patch = {}) {
   if (hasStart !== hasEnd) {
     throw new TypeError('writeMeetingOverride: set start and end together, or neither');
   }
-  const { override, warnings } = validateOverride(merged);
-  if (!override) throw new TypeError(`writeMeetingOverride: ${warnings[0] ?? 'invalid override'}`);
-  if (hasStart && !override.start) throw new TypeError(`writeMeetingOverride: ${warnings[0]}`);
+  // validateOverride's warnings are written for the LOAD path — they name the
+  // file and say what was salvaged from it ("meeting_override.json: … —
+  // keeping the days only"). Reaching a person who is typing into a form,
+  // that text names a file they have never heard of and describes a salvage
+  // that did not happen: a rejected save keeps nothing, it saves nothing. So
+  // the write path states its own terms. (Invisible until the bridge started
+  // forwarding the reason to the editor — the branch that showed it was
+  // unreachable, so this read fine in a unit test and nowhere else.)
+  const { override } = validateOverride(merged);
+  if (!override) {
+    throw new TypeError('writeMeetingOverride: those days are not ones I can read — use day codes like TU, TH');
+  }
+  if (hasStart && !override.start) {
+    // validateOverride collapses "not a clock at all" and "end not after
+    // start" into one branch, which is fine when it is salvaging a file but
+    // useless as advice: told "the end must come after the start" about
+    // 25:00, a user checks the order and finds nothing wrong with it.
+    const badClock = !HHMM_RE.test(String(merged.start)) || !HHMM_RE.test(String(merged.end));
+    throw new TypeError(badClock
+      ? 'writeMeetingOverride: a start and end must be times on a 24-hour clock, like 14:30'
+      : 'writeMeetingOverride: the end time has to come after the start time');
+  }
 
   // Never create the class directory. A typo in the class id would otherwise
   // leave a phantom class holding nothing but the time the user typed, in a

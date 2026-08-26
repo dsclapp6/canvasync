@@ -212,8 +212,46 @@ test('writeMeetingOverride refuses what it cannot stand behind', async () => {
   );
   await assert.rejects(
     () => writeMeetingOverride(dir, { days: ['MO'], start: '25:00', end: '26:00' }),
-    /HH:MM/,
+    /24-hour clock/,
   );
+  assert.equal(await readMeetingOverride(dir), null);
+  await rm(dir, { recursive: true, force: true });
+});
+
+// These strings are read by a student in a form, not by a developer in a log,
+// and the bridge forwards them verbatim. They must name what THIS save did
+// wrong and nothing else: the load path's warnings, which is what the write
+// path used to borrow, name an internal file and describe a salvage that a
+// rejected save never performed ("keeping the days only" — it kept nothing).
+test('a rejected save explains itself in the words of someone typing, not of a file reader', async () => {
+  const dir = await seedClass({});
+  const reasonFor = async (patch) => {
+    try { await writeMeetingOverride(dir, patch); return null; }
+    catch (e) { return e.message.replace(/^writeMeetingOverride: /, ''); }
+  };
+
+  // End before start: the order IS the problem, so say so.
+  assert.equal(
+    await reasonFor({ days: ['MO'], start: '14:00', end: '13:00' }),
+    'the end time has to come after the start time',
+  );
+  // 25:00 is not a clock at all. Telling this user to check the ORDER sends
+  // them looking at the one thing that is not wrong.
+  assert.equal(
+    await reasonFor({ days: ['MO'], start: '25:00', end: '26:00' }),
+    'a start and end must be times on a 24-hour clock, like 14:30',
+  );
+  assert.equal(await reasonFor({ days: ['TBD'] }), 'days must be day codes, e.g. ["TU","TH"]');
+
+  for (const patch of [
+    { days: ['MO'], start: '14:00', end: '13:00' },
+    { days: ['MO'], start: '25:00', end: '26:00' },
+  ]) {
+    const msg = await reasonFor(patch);
+    assert.doesNotMatch(msg, /meeting_override|\.json/, `names an internal file: ${msg}`);
+    assert.doesNotMatch(msg, /keeping the days only/, `claims a salvage that never happened: ${msg}`);
+  }
+  // And nothing was written by any of them.
   assert.equal(await readMeetingOverride(dir), null);
   await rm(dir, { recursive: true, force: true });
 });

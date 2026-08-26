@@ -405,9 +405,36 @@ still there after the app is closed and reopened — not just within a session.
 
 7.6 stays `Built`-only by design: a corrupt stash and a no-op re-save are
 states the UI cannot be made to produce on demand, so unit tests are the
-evidence. `User` waits until this runs on the app-owned bridge. Suites at this
-note: `scripts/` **580 pass / 0 fail** (7 new revert tests), `bridge/` **285
-pass / 0 fail**.
+evidence. `User` waits until this runs on the app-owned bridge.
+
+**Re-driven 2026-08-26 on `c8df6cf`**, whose audit fixed four defects in this
+feature — so the rows were re-checked rather than left ticked on the strength
+of a drive that predated the fixes (rule 3). Each fix, exercised against the
+six real classes:
+
+| Fixed | Driven |
+| --- | --- |
+| `saveMeetEditor`'s `!res.ok` branch was unreachable (`api()` throws), so a rejected save read `Saving…` forever | End 13:00 before start 14:00 → editor prints the server's own reason, stays open, keeps the typed days and times |
+| A background rebuild tick repainted the open editor once a second | Saved on ECON 205 to start the poll, then typed into BUSI 380's editor mid-poll: `09:25`, a typed room and a newly ticked `FR` all survived 4+ ticks |
+| A failed undo left its button disabled and dead | Deleted the stash behind the UI, clicked undo → 409, button re-enabled, toast `nothing to revert`, refetch dropped the stale control |
+| Clearing an *unreadable* override left an older stash as the undo target | Corrupted the override, `DELETE` → stash becomes `previous: null`, so undo offers `back to the syllabus` and not a state the user never left |
+
+That first fix made the error path reachable for the first time, which
+immediately showed it was speaking the wrong language: it borrowed
+`validateOverride`'s **load-path** warnings, so a student who typed an end
+before a start was told `meeting_override.json: … — keeping the days only` —
+a file they have never heard of, and a salvage a rejected save never performs
+(it keeps nothing). The write path now states its own terms and separates the
+two failures the load path collapses: `the end time has to come after the
+start time` vs `a start and end must be times on a 24-hour clock, like 14:30`
+— told the former about `25:00`, a user checks the one thing that is not
+wrong. Pinned by `a rejected save explains itself in the words of someone
+typing…`, which asserts the copy AND the two rules behind it (never name an
+internal file, never claim a salvage that did not happen) — a looser
+assertion would have passed the very message that caused this.
+
+Suites at this note: `scripts/` **585 pass / 0 fail**, `bridge/` **292 pass /
+0 fail**.
 
 ---
 
