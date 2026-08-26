@@ -54,9 +54,42 @@ export async function readCustomItems(calDir) {
 async function writeCustomItems(calDir, state) {
   await fs.mkdir(calDir, { recursive: true });
   const file = itemsPath(calDir);
-  const tmp = `${file}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
-  await fs.rename(tmp, file);
+  // A pid is NOT unique between two concurrent requests — the bridge is one
+  // process serving every route, so two mutations in flight together used the
+  // same tmp path: both wrote it, the first rename moved it away, and the
+  // second got ENOENT and answered 500 for a change that had in fact landed
+  // (while the other answered 200 for one that had been overwritten). Random
+  // per call, and cleaned up if the rename never happens.
+  const tmp = `${file}.tmp.${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
+// Every mutation is read-modify-write over the WHOLE file, so two of them in
+// flight together lose one of the two changes even when they touch different
+// items — the second write is computed from a snapshot taken before the first
+// landed. There is no lock to take (the file is this module's alone), so the
+// serialization is a per-path promise chain: mutations queue, reads do not.
+// Cross-process safety is not claimed and is not needed — only the bridge
+// writes this file, and the pipeline never does.
+const MUTATION_QUEUES = new Map();
+function withItemsLock(calDir, fn) {
+  const key = itemsPath(calDir);
+  // The stored tail never rejects, so one failed mutation cannot poison the
+  // queue behind it; the caller still sees its own rejection through `run`.
+  const tail = MUTATION_QUEUES.get(key) ?? Promise.resolve();
+  const run = tail.then(fn);
+  const settled = run.then(() => {}, () => {});
+  MUTATION_QUEUES.set(key, settled);
+  settled.then(() => {
+    if (MUTATION_QUEUES.get(key) === settled) MUTATION_QUEUES.delete(key);
+  });
+  return run;
 }
 
 function str(value, max, field) {
@@ -170,7 +203,11 @@ export function normalizeCustomItem(base, patch) {
   return next;
 }
 
-export async function createCustomItem(calDir, fields) {
+export function createCustomItem(calDir, fields) {
+  return withItemsLock(calDir, () => createCustomItemLocked(calDir, fields));
+}
+
+async function createCustomItemLocked(calDir, fields) {
   const state = await readCustomItems(calDir);
   if (state.items.length >= MAX_ITEMS) {
     throw new CustomItemError(`too many custom items (max ${MAX_ITEMS})`);
@@ -189,7 +226,11 @@ export async function createCustomItem(calDir, fields) {
   return item;
 }
 
-export async function patchCustomItem(calDir, id, patch) {
+export function patchCustomItem(calDir, id, patch) {
+  return withItemsLock(calDir, () => patchCustomItemLocked(calDir, id, patch));
+}
+
+async function patchCustomItemLocked(calDir, id, patch) {
   const state = await readCustomItems(calDir);
   const i = state.items.findIndex(it => it.id === id);
   if (i < 0) return null;
@@ -203,7 +244,11 @@ export async function patchCustomItem(calDir, id, patch) {
   return item;
 }
 
-export async function deleteCustomItem(calDir, id) {
+export function deleteCustomItem(calDir, id) {
+  return withItemsLock(calDir, () => deleteCustomItemLocked(calDir, id));
+}
+
+async function deleteCustomItemLocked(calDir, id) {
   const state = await readCustomItems(calDir);
   const before = state.items.length;
   state.items = state.items.filter(it => it.id !== id);

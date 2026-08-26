@@ -203,3 +203,72 @@ test('a span counts as in-window while any of it is', () => {
   assert.equal(ops.length, 1);
   assert.equal(ops[0].end_date, '2026-09-03');
 });
+
+// --- concurrent mutations -------------------------------------------------
+// The bridge is ONE process serving every route, so two mutations really do
+// overlap: a tick while a drag's PATCH is in flight, two quick ticks, a
+// delete during an edit. Both defects below were live and compounded — the
+// lost update silently dropped a change, and the shared tmp path made the
+// API report the OPPOSITE of what it stored.
+
+test('two concurrent patches on different items both survive', async () => {
+  const cal = await tmpCal();
+  const a = await createCustomItem(cal, { title: 'A', date: '2026-09-01' });
+  const b = await createCustomItem(cal, { title: 'B', date: '2026-09-02' });
+
+  const [ra, rb] = await Promise.all([
+    patchCustomItem(cal, a.id, { done: true }),
+    patchCustomItem(cal, b.id, { done: true }),
+  ]);
+  assert.equal(ra.done, true);
+  assert.equal(rb.done, true);
+
+  // What the callers were told must be what is on disk — a read-modify-write
+  // over the whole file used to drop whichever change was computed first.
+  const { items } = await readCustomItems(cal);
+  assert.deepEqual(
+    Object.fromEntries(items.map(i => [i.title, i.done])),
+    { A: true, B: true },
+  );
+});
+
+test('a burst of patches on ONE item all apply, last write winning', async () => {
+  const cal = await tmpCal();
+  const it = await createCustomItem(cal, { title: 'Burst', date: '2026-09-01' });
+  const titles = ['t1', 't2', 't3', 't4', 't5'];
+  await Promise.all(titles.map(t => patchCustomItem(cal, it.id, { title: t })));
+  const { items } = await readCustomItems(cal);
+  assert.equal(items.length, 1, 'no duplicate rows from interleaved writes');
+  assert.ok(titles.includes(items[0].title));
+});
+
+test('a create racing a delete leaves the store consistent', async () => {
+  const cal = await tmpCal();
+  const doomed = await createCustomItem(cal, { title: 'Doomed', date: '2026-09-01' });
+  const [, removed] = await Promise.all([
+    createCustomItem(cal, { title: 'Fresh', date: '2026-09-03' }),
+    deleteCustomItem(cal, doomed.id),
+  ]);
+  assert.equal(removed, true);
+  const { items } = await readCustomItems(cal);
+  assert.deepEqual(items.map(i => i.title), ['Fresh'],
+    'the create is not erased by the delete rewriting a stale snapshot');
+});
+
+test('a rejected mutation does not wedge the ones queued behind it', async () => {
+  const cal = await tmpCal();
+  const it = await createCustomItem(cal, { title: 'Keep', date: '2026-09-01' });
+  const bad = patchCustomItem(cal, it.id, { date: '2026-02-31' }).then(
+    () => 'resolved', e => (e instanceof CustomItemError ? 'rejected' : 'wrong-error'));
+  const good = patchCustomItem(cal, it.id, { title: 'Still works' });
+  assert.equal(await bad, 'rejected');
+  assert.equal((await good).title, 'Still works');
+});
+
+test('no .tmp files are left behind by concurrent writes', async () => {
+  const cal = await tmpCal();
+  const it = await createCustomItem(cal, { title: 'X', date: '2026-09-01' });
+  await Promise.all([1, 2, 3, 4].map(n => patchCustomItem(cal, it.id, { title: `n${n}` })));
+  const left = (await fs.readdir(cal)).filter(n => n.includes('.tmp.'));
+  assert.deepEqual(left, [], 'a per-call temp name, cleaned up on failure');
+});
