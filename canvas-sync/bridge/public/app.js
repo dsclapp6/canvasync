@@ -542,7 +542,14 @@ function wireNav() {
     // A prep block ticks itself off by id; the assignment it belongs to stays
     // open. Anything else ticks the item.
     const cpId = box.dataset.calCp || null;
+    // Two keys, deliberately. `key` identifies the tickable THING (a prep
+    // block is not its parent), and is what CAL_DONE and the pending overlay
+    // are keyed on. `writeKey` identifies the FILE the write lands in — one
+    // JSON object per task, rewritten wholesale — so a tick, a note and a
+    // dragged sibling all queue behind each other instead of overwriting one
+    // another.
     const key = calDoneKey(folder, id, cpId);
+    const writeKey = taskWriteKey(folder, id);
     const done = box.checked;
     // `.cal-row` in the list, `.cal-chip` in the week and month grids — the
     // same checkbox is rendered into both, so the handler cannot assume one.
@@ -556,7 +563,7 @@ function wireNav() {
     // stale intent while the pending overlay pins the newer one: the row
     // redrew unchecked on every reload, forever, and the saved state was
     // simply wrong.
-    const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
+    const tail = CAL_POST_QUEUE.get(writeKey) ?? Promise.resolve();
     const run = tail.then(async () => {
       // The pending map is the newest intent when it still holds one, and
       // THIS click's own value otherwise. It must never be read as "nothing
@@ -585,10 +592,10 @@ function wireNav() {
       } finally {
         // Drop the tail once it is the last one: the settled promise's
         // closure pins `box` and `row`, detached after any re-render.
-        if (CAL_POST_QUEUE.get(key) === run) CAL_POST_QUEUE.delete(key);
+        if (CAL_POST_QUEUE.get(writeKey) === run) CAL_POST_QUEUE.delete(writeKey);
       }
     });
-    CAL_POST_QUEUE.set(key, run);
+    CAL_POST_QUEUE.set(writeKey, run);
   });
 
   // A month tile that holds more than it can show. CALENDAR-SPEC 3.8.
@@ -609,18 +616,11 @@ function wireNav() {
     const id = box.dataset.calCustomDone;
     const done = box.checked;
     box.closest('.cal-row, .cal-chip')?.classList.toggle('is-done', done);
-    const key = `custom|${id}`;
-    const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
-    // Each queued turn carries the value of ITS OWN click, so a double
-    // toggle ends where the user's last click put it rather than wherever
-    // the slowest response happened to land.
-    const run = tail.then(() => patchCustomItem(id, { done }));
-    const settled = run.catch(() => {}).finally(() => {
-      if (CAL_POST_QUEUE.get(key) === settled) CAL_POST_QUEUE.delete(key);
-    });
-    CAL_POST_QUEUE.set(key, settled);
+    // Each queued turn carries the value of ITS OWN click, so a double toggle
+    // ends where the user's last click put it rather than wherever the slowest
+    // response happened to land.
     try {
-      await run;
+      await queueCustomWrite(id, { done });
     } catch (err) {
       toast(`Could not save that: ${err.message}`);
     }
@@ -1332,23 +1332,29 @@ function wireAssignment() {
   noteEl?.addEventListener('input', () => {
     const { folder, task } = noteEl.dataset;
     if (!folder || !task) return;
+    // The TEXT is captured here, with the task it belongs to — not inside the
+    // timer. Opening another assignment within the debounce window replaces
+    // both the field's value and its dataset, so a timer that read the value
+    // when it fired would file the new assignment's note under the old one's
+    // id and lose the note the user actually typed.
+    const text = noteEl.value;
     state.textContent = 'Saving…';
     clearTimeout(noteTimer);
     noteTimer = setTimeout(async () => {
-      const text = noteEl.value;
       try {
         await postTask(folder, task, { note: text });
-        // Only claim what is true: the field may have moved on while the
-        // request was in flight, and the next tick will save that.
+        if (ASSIGNMENT?.id === task) {
+          ASSIGNMENT.user_state = { ...(ASSIGNMENT.user_state ?? {}), note: text };
+        }
+        // Only say "Saved" on the page that is actually showing this note,
+        // and only while it still reads what was saved.
         if (noteEl.dataset.task === task) {
           state.textContent = noteEl.value === text ? 'Saved' : 'Saving…';
-          if (ASSIGNMENT?.id === task) {
-            ASSIGNMENT.user_state = { ...(ASSIGNMENT.user_state ?? {}), note: text };
-          }
         }
         refreshCalendarSoon();
       } catch (err) {
-        state.textContent = `Not saved — ${err.message}`;
+        if (noteEl.dataset.task === task) state.textContent = `Not saved — ${err.message}`;
+        else toast(`Could not save a note on ${task}: ${err.message}`);
       }
     }, 600);
   });
@@ -2950,8 +2956,13 @@ function calPointerMove(ev) {
   if (!d.moved) {
     if (Math.abs(ev.clientX - d.x0) < DRAG_SLOP && Math.abs(ev.clientY - d.y0) < DRAG_SLOP) return;
     // A drag on something fixed: explain it once, and end the gesture there.
+    // The click still has to be eaten — the press began on a title, so
+    // without this the item opens on top of the toast that just explained why
+    // it would not move, hiding the explanation behind the answer to a
+    // question the user did not ask.
     if (d.kind === 'refused') {
       CAL_DRAG = null;
+      swallowNextClick({ afterPointerUp: true });
       toast(d.why);
       return;
     }
@@ -2997,15 +3008,23 @@ function calPointerMove(ev) {
 function swallowNextClick({ afterPointerUp = false } = {}) {
   const swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
   window.addEventListener('click', swallow, { capture: true, once: true });
-  const disarm = () => setTimeout(
-    () => window.removeEventListener('click', swallow, { capture: true }), 0,
-  );
-  // Cancelling with Escape happens with the button still DOWN, so the click
-  // this is here to eat does not arrive until the user lets go — which may be
-  // seconds away. Disarming on the next tick would drop the trap before the
-  // click ever reached it.
-  if (afterPointerUp) window.addEventListener('pointerup', disarm, { once: true });
-  else disarm();
+  const off = () => window.removeEventListener('click', swallow, { capture: true });
+  const disarm = () => setTimeout(off, 0);
+  if (!afterPointerUp) { disarm(); return; }
+  // Cancelling with Escape (or refusing a drag) happens with the button still
+  // DOWN, so the click this is here to eat does not arrive until the user lets
+  // go — which may be seconds away. Disarming on the next tick would drop the
+  // trap before the click ever reached it.
+  //
+  // Every way the press can end has to disarm it, or a trap set here waits
+  // forever and eats an innocent click much later: pointerup is the normal
+  // end, pointercancel is the one the OS can force (a system gesture, the
+  // window losing the pointer), and the timeout is the backstop for a press
+  // that ends in neither.
+  const end = () => { window.removeEventListener('pointercancel', end); disarm(); };
+  window.addEventListener('pointerup', end, { once: true });
+  window.addEventListener('pointercancel', end, { once: true });
+  setTimeout(off, 10000);
 }
 
 async function calPointerUp(ev) {
@@ -3053,21 +3072,31 @@ async function applyDragResult(d, next) {
   const cpId = el?.dataset.dragCp || null;
 
   if (customId) {
-    await patchCustomItem(customId, { date: next.date, end_date: next.end_date })
+    // Through the same per-item queue the tick uses. Two quick drags of one
+    // item are two PATCHes of one record, and if they land out of order the
+    // file ends up at the earlier date while the screen shows the later one.
+    await queueCustomWrite(customId, { date: next.date, end_date: next.end_date })
       .catch(err => toast(`Could not move that: ${err.message}`));
     return;
   }
   if (!folder || itemId == null) return;
 
   if (cpId) {
-    // A prep block the user wrote. Its date lives in the checkpoint list on
-    // the parent task, so the whole list is echoed back with one date changed
-    // — the same shape the task editor's checkpoint rows already send.
-    const cps = (CURRENT?.folder === folder ? taskState(itemId).checkpoints : null)
-      ?? await loadCheckpointsFor(folder, itemId).catch(() => null);
-    if (!cps) { toast('Could not move that prep block.'); return; }
-    const updated = cps.map(c => (c.id === cpId ? { ...c, date: next.date } : c));
-    await postTask(folder, itemId, { checkpoints: updated })
+    // A prep block the user wrote. Its date lives in the checkpoint LIST on the
+    // parent task, and patchTask replaces that list wholesale, so this has to
+    // send every sibling back too.
+    //
+    // Which means the list must be read FRESH, immediately before the write.
+    // Reading it from CURRENT — the snapshot taken when the class was last
+    // opened — meant that ticking a prep block off in the calendar (which
+    // never touches CURRENT) and then dragging any of its siblings echoed the
+    // stale `done: false` back over the tick and silently un-finished it.
+    // A refetch costs one request on a gesture that already writes one.
+    await postTask(folder, itemId, async () => {
+      const cps = await loadCheckpointsFor(folder, itemId);
+      if (!cps) throw new Error('this prep block is not in the saved list');
+      return { checkpoints: cps.map(c => (c.id === cpId ? { ...c, date: next.date } : c)) };
+    })
       .then(() => refreshCalendarSoon())
       .catch(err => toast(`Could not move that: ${err.message}`));
     return;
@@ -3082,19 +3111,34 @@ async function applyDragResult(d, next) {
 }
 
 /**
- * One task PATCH, serialized per item the way the tick handler is.
+ * One key per task, for every write anywhere in the app.
  *
- * Two writes to the same task must not race: a drag that moves a deadline and
- * a note typed a moment later both land on one JSON object, and the loser of
- * a race silently reverts the winner.
+ * Every field of one task — done, note, dueOverride, the checkpoint list —
+ * lives in ONE JSON object that the server rewrites wholesale, so two writes
+ * to the same task must never overlap regardless of which control started
+ * them. The checkpoint id is deliberately NOT in this key: ticking a prep
+ * block and dragging its sibling write the same object and must queue behind
+ * each other.
+ */
+function taskWriteKey(folder, id) {
+  return `task|${folder}|${id}`;
+}
+
+/**
+ * One task PATCH, serialized per task.
+ *
+ * `patch` may be a function, evaluated when this write's turn comes up rather
+ * than when it was queued. A read-modify-write (the checkpoint list) has to
+ * read INSIDE its turn, or it reads state that the write in front of it is
+ * about to change.
  */
 function postTask(folder, id, patch) {
-  const key = `task|${folder}|${id}`;
+  const key = taskWriteKey(folder, id);
   const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
-  const run = tail.then(() => api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
+  const run = tail.then(async () => api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
+    body: JSON.stringify(typeof patch === 'function' ? await patch() : patch),
   }));
   // The chain must survive a rejection, or one failure wedges every later
   // write for the same item; and it must not accumulate a key per item for
@@ -3177,6 +3221,13 @@ let ITEM_DIALOG = null;   // { mode, item?, op?, folder?, noteKey? } while open
 function itemClassOptions(selected) {
   const rows = [{ slug: PERSONAL_SLUG, name: 'Personal (no class)' }]
     .concat((CLASSES || []).map(c => ({ slug: c.slug, name: c.code || c.folder })));
+  // An item filed under a class that has since been unsynced or deleted keeps
+  // its own row. Without it the select falls back to the first option, so
+  // simply OPENING such an item and saving anything — a typo in the title —
+  // silently re-filed it as Personal and lost which class it belonged to.
+  if (selected && selected !== PERSONAL_SLUG && !rows.some(r => r.slug === selected)) {
+    rows.push({ slug: selected, name: `${calDisplayName(selected)} (no longer synced)` });
+  }
   return rows.map(r =>
     `<option value="${esc(r.slug)}"${r.slug === (selected || PERSONAL_SLUG) ? ' selected' : ''}>${esc(r.name)}</option>`
   ).join('');
@@ -3345,7 +3396,7 @@ async function submitItemDialog() {
   if (!fields.date) { say('Give it a date.'); return; }
   say('Saving…');
   try {
-    if (d.mode === 'custom') await patchCustomItem(d.item.id, fields);
+    if (d.mode === 'custom') await queueCustomWrite(d.item.id, fields);
     else await createCustomItem(fields);
     closeItemDialog();
   } catch (e) {
@@ -3364,6 +3415,25 @@ async function createCustomItem(fields) {
   CAL_CUSTOM = [...CAL_CUSTOM, item];
   renderCalendarOps();
   return item;
+}
+
+/**
+ * One write to one added item, serialized against every other write to it.
+ *
+ * The store is a single JSON file the bridge rewrites wholesale, so two
+ * overlapping PATCHes of one item are a lost update — and since the client
+ * paints from the response, the screen would settle on whichever reply came
+ * back last rather than on what is actually stored.
+ */
+function queueCustomWrite(id, patch) {
+  const key = `custom|${id}`;
+  const tail = CAL_POST_QUEUE.get(key) ?? Promise.resolve();
+  const run = tail.then(() => patchCustomItem(id, patch));
+  const settled = run.catch(() => {}).finally(() => {
+    if (CAL_POST_QUEUE.get(key) === settled) CAL_POST_QUEUE.delete(key);
+  });
+  CAL_POST_QUEUE.set(key, settled);
+  return run;
 }
 
 async function patchCustomItem(id, patch) {
@@ -3910,7 +3980,11 @@ function renderCalendarOps() {
   renderCalPeriod();
   renderCalNotes();
 
-  const w = CAL_WORKLIST.window || {};
+  // Optional: an item the user added is drawn from CAL_CUSTOM, which can hold
+  // something before a worklist has ever been built — a first run where the
+  // pipeline has not finished, and the user adds a personal item. Reading
+  // `.window` off a null worklist threw and emptied the whole calendar.
+  const w = CAL_WORKLIST?.window || {};
   const classCount = new Set(ops.map(o => o.class)).size;
   const range = w.from && w.to ? `${fmtDayLabel(w.from)} – ${fmtDayLabel(w.to)} · ` : '';
   const hiddenNote = byKind.length - ops.length > 0

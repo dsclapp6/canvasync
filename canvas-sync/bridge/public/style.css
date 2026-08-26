@@ -2191,9 +2191,15 @@ body { overflow-x: hidden; }
   .cal-chip[data-cal-drag] { cursor: grab; }
   .cal-chip[data-cal-drag]:active { cursor: grabbing; }
 }
-/* The gesture must own the pointer once it starts: without this the browser's
-   own scroll/pan takes the touch and the item never moves. */
-.cal-chip[data-cal-drag] { touch-action: none; }
+/* The gesture needs the HORIZONTAL axis: a day is a column in Week and a cell
+   in Month, so every move and every resize is a sideways drag. Vertical
+   panning stays the browser's, or a month grid — which is mostly chips — could
+   not be scrolled by touch at all, and the page would trap the finger.
+   `pan-y` gives us the axis we use and keeps the one we do not. */
+.cal-chip[data-cal-drag] { touch-action: pan-y; }
+/* The grips are 7px targets whose only gesture is horizontal; there is no
+   vertical pan to preserve on something that thin. */
+.cal-grip { touch-action: none; }
 
 /* Lifted. Kept deliberately quiet — this is a page of paper, and a chip that
    balloons on pickup would be the loudest thing on it. */
@@ -2268,7 +2274,9 @@ body { overflow-x: hidden; }
 @media (hover: hover) {
   .cal-daycol-space, .tile-space { cursor: cell; }
 }
-.cal-daycol-space, .tile-space { touch-action: none; }
+/* Same trade as the chips: drawing a new item is a sideways gesture, and the
+   blank area of a day column is most of the surface a finger would scroll on. */
+.cal-daycol-space, .tile-space { touch-action: pan-y; }
 
 /* Items the user added. A tick of the pen rather than a badge: the class
    colour already says which calendar it is on, so all this adds is that it is

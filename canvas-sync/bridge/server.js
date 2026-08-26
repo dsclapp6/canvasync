@@ -771,11 +771,16 @@ export function buildApp(config) {
   dashRouter.get('/calendar/subscriptions', async (req, res) => {
     const calDir = path.join(syncHome(), 'calendar');
     const base = `http://127.0.0.1:${config.bridgePort ?? 3847}/ics/${icsToken}`;
+    // Every file icsFilesFor() writes gets a row. A calendar generated on disk
+    // and never offered here is one a subscriber cannot reach at all — which
+    // is what happened to personal.ics until this list was made to agree with
+    // the writer.
     const files = [
       { file: 'canvasync.ics', name: 'Everything' },
       { file: 'deadlines.ics', name: 'Deadlines' },
       { file: 'checkpoints.ics', name: 'Prep blocks' },
       { file: 'classes.ics', name: 'Classes and office hours' },
+      { file: 'personal.ics', name: 'Added by you' },
     ];
     const out = await Promise.all(files.map(async (f) => {
       const p = path.join(calDir, f.file);
