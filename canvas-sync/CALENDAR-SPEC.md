@@ -461,6 +461,18 @@ So a count one higher than expected is **not** evidence of a stray scratch
 file in `bridge/test/`; looking for one finds nothing. `scripts/` has no
 `test/helpers/`, and both commands agree there (600 at `7ec8fef`).
 
+**A stray file inflates the count too — a different mechanism, same symptom.**
+The glob `test/*.test.js` matches ANY file named that way, so a scratch probe
+left in `bridge/test/` is counted by `npm test` itself (it would also be found
+by the bare form; that is why it cannot explain the one-test gap above). This
+is not hypothetical: review agents write probes there, and `bridge/ 312` in
+`05df819`'s commit message is one — the real count at that commit is **311**,
+measured after removing `zz-concurrency-probe.test.js`. Before quoting a
+suite count, run `git status --porcelain` and make sure nothing untracked is
+sitting in a test directory. Two ways to be wrong about this number have now
+been found the hard way, one per session; the fix for both is the same, which
+is to measure on a clean tree and say which command you ran.
+
 ## §8 — The calendar is something you can write on
 
 Added 2026-08-26. The user's words: *"add calendar item adding function by
