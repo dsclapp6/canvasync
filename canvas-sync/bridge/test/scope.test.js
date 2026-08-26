@@ -268,3 +268,37 @@ test('scope endpoints keep their auth: dashboard secret required, extension orig
   // able to publish a scope even holding the secret.
   assert.equal((await request('POST', '/config/scope', asDash({ body: { courseIds: [] } }))).status, 403);
 });
+
+// --- an empty selection is "sync nothing", never "discard everything" -------
+// The picker's own `none` button saves []. Read as a plain allowlist, that
+// made EVERY class out-of-scope: the cleanup panel listed all of them,
+// pre-checked, under a `Delete N classes` button — two clicks from wiping the
+// data folder. Both routes now treat an empty allowlist like an unknown one.
+
+test('stale: an EMPTY selection reports nothing stale, and says why', async () => {
+  await request('POST', '/config/scope', asExt({ body: { courseIds: [] } }));
+  const res = await request('GET', '/api/classes/stale', asDash());
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.stale, [], 'an empty selection abandons nothing');
+  assert.equal(res.body.totalBytes, 0);
+  assert.equal(res.body.reason, 'empty-selection', 'the panel needs the real reason to state it');
+});
+
+test('cleanup: refuses everything when the selection is empty', async () => {
+  await request('POST', '/config/scope', asExt({ body: { courseIds: [] } }));
+  const res = await request('POST', '/api/classes/cleanup',
+    asDash({ body: { folders: [...CURRENT, ...STALE] } }));
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /selection is empty/);
+  for (const f of [...CURRENT, ...STALE]) {
+    await fs.access(path.join(tmpHome, 'classes', f)); // every one untouched
+  }
+});
+
+test('an empty selection still syncs nothing — scope semantics are unchanged', async () => {
+  // The fix above must not smuggle "empty means everything" back in.
+  await request('POST', '/config/scope', asExt({ body: { courseIds: [] } }));
+  const res = await request('GET', '/api/classes', asDash());
+  assert.equal(res.body.classes.every(c => c.inScope === false), true,
+    'nothing is in scope, exactly as a strict empty allowlist requires');
+});

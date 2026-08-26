@@ -939,7 +939,13 @@ export function buildApp(config) {
     const scope = readSyncScope(syncHome());
     // An unknown scope means "everything is current" — never offer to delete
     // a user's whole data folder because we could not read last_sync.json.
-    if (!scope.courseIds) return res.json({ scope, stale: [], totalBytes: 0 });
+    if (!scope.courseIds) return res.json({ scope, stale: [], totalBytes: 0, reason: 'scope-unknown' });
+    // An EMPTY allowlist means "sync nothing from now on" — it does NOT mean
+    // every class ever synced is abandoned. Left to the rule below, an empty
+    // selection put all six classes in this list, pre-checked, under a
+    // `Delete 6 classes (1.4 GB)` button: two clicks from wiping the data
+    // folder because the user unticked everything in the picker.
+    if (scope.courseIds.length === 0) return res.json({ scope, stale: [], totalBytes: 0, reason: 'empty-selection' });
 
     let folders = [];
     try {
@@ -976,6 +982,12 @@ export function buildApp(config) {
     const scope = readSyncScope(syncHome());
     if (!scope.courseIds) {
       return res.status(409).json({ error: 'sync scope unknown — run a sync before cleaning up' });
+    }
+    // Same refusal for an empty allowlist: with nothing selected, EVERY class
+    // is out of scope, so this route would happily delete the whole data
+    // folder. "Sync nothing" is not "discard everything".
+    if (scope.courseIds.length === 0) {
+      return res.status(409).json({ error: 'your class selection is empty — select the classes you keep before cleaning up' });
     }
 
     const results = [];

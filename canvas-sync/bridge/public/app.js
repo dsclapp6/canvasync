@@ -985,7 +985,14 @@ async function openCleanup() {
     : 'Nothing to clean up.';
 
   if (!STALE.length) {
-    $('cleanup-list').innerHTML = '<p class="muted">Every class on disk is in your current selection.</p>';
+    // Say WHY it is empty when the reason is not "everything is current" —
+    // an empty selection makes every class out-of-scope, and the server now
+    // refuses to call that abandoned. Naming the fix beats a false all-clear.
+    const why = {
+      'empty-selection': 'Your class selection is empty, so nothing counts as abandoned. Pick the classes you keep in Manage courses.',
+      'scope-unknown': 'No sync selection on record yet — run a sync first.',
+    }[data.reason] ?? 'Every class on disk is in your current selection.';
+    $('cleanup-list').innerHTML = `<p class="muted">${esc(why)}</p>`;
     renderCleanupActions();
     return;
   }
