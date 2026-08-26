@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import { recoverMeetingTimes, describeMeetingSource } from './meeting-times.js';
 import { collectMeetings } from './cal-meetings.js';
-import { tasksForClass } from '../canvas-tasks.js';
+import { tasksForClass, EXAM_RE } from '../canvas-tasks.js';
 import {
   readGraph, buildGraph, selectForQuery, neighbours, stripHtml, tokenise,
 } from './correlation-graph.js';
@@ -229,7 +229,11 @@ function toMeetingFact(m) {
   };
 }
 
-const EXAM_WORD_RE = /\b(exam|midterm|final)\b/i;
+// EXAM_RE comes from canvas-tasks.js so FACTS applies the same guarded
+// reading of "final" the task list does — a bare \bfinal\b here reported
+// "Final Presentation" and "Project: Final Project Report" (real project
+// deliverables on this user's classes) as the next exam, which rule 1 of the
+// prompt then forces the model to repeat verbatim.
 // "Midterm Case Preparation", "Final Session", "Midterm Recess" all name an
 // exam word and none of them is an exam. Reporting one as "your next exam" is
 // worse than reporting nothing, so these are excluded by construction.
@@ -240,7 +244,7 @@ function examCandidatesFromTasks(items, today) {
   const out = [];
   for (const it of items) {
     const title = str(it?.title);
-    const isExam = it?.category === 'exam' || EXAM_WORD_RE.test(title);
+    const isExam = it?.category === 'exam' || EXAM_RE.test(title);
     if (!isExam) continue;
     if (NOT_EXAM_PHRASE_RE.test(title)) continue;
     const date = str(it?.due_date);
@@ -267,7 +271,7 @@ function examCandidatesFromSyllabus(schedule, today) {
     const title = str(e?.title);
     const description = str(e?.description);
     const haystack = `${title} ${type}`;
-    if (!EXAM_WORD_RE.test(haystack)) continue;
+    if (!EXAM_RE.test(haystack)) continue;
     if (NOT_EXAM_PHRASE_RE.test(`${title} ${description}`)) continue;
     if (NOT_EXAM_CONTEXT_RE.test(`${title} ${description}`)) continue;
     out.push({
@@ -399,7 +403,7 @@ export async function classFacts(classDir, { now = new Date() } = {}) {
   // "when is the next exam" — "it exists, nobody has dated it" — and it is the
   // only honest one. Guessing a date from the syllabus prose is not.
   const undatedExams = uniq(allTasks
-    .filter(t => (t?.category === 'exam' || EXAM_WORD_RE.test(str(t?.title)))
+    .filter(t => (t?.category === 'exam' || EXAM_RE.test(str(t?.title)))
       && !ISO_DATE_RE.test(str(t?.due_date))
       && !NOT_EXAM_PHRASE_RE.test(str(t?.title)))
     .map(t => str(t.title) || 'Untitled'));

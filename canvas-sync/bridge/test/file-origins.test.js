@@ -210,3 +210,24 @@ test('a quiz shell keeps its origin when the quiz itself was never synced', () =
   });
   assert.deepEqual(origins.get('42').map(o => o.kind), ['assignment']);
 });
+
+test('a file linked from TWO assignments keeps both attributions', () => {
+  // group was kind-wide, so the second assignment's origin collapsed into the
+  // first's and the related-files panel (which matches on itemId) lost the
+  // file for every item after the first.
+  const body = '<a href="/courses/93903/files/555">rubric</a>';
+  const origins = deriveOrigins({
+    assignments: [
+      { id: 100, name: 'Case 1', description: body },
+      { id: 200, name: 'Case 2', description: body },
+    ],
+  });
+  const list = origins.get('555');
+  assert.deepEqual(list.map(o => o.itemId).sort(), ['100', '200']);
+});
+
+test('the same file linked twice in ONE body still collapses to one origin', () => {
+  const body = '<a href="/files/7">a</a> and again <a href="/files/7">b</a>';
+  const origins = deriveOrigins({ pages: [{ page_id: 1, title: 'Week 1', body }] });
+  assert.equal(origins.get('7').length, 1);
+});

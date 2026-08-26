@@ -251,10 +251,10 @@ chrome.runtime.onMessage.addListener((message) => {
     $syncProgress.textContent = count != null
       ? `Found ${count} courses. Fetching data...`
       : 'Fetching courses...';
-  } else if (phase === 'course') {
+  } else if (phase === 'course-start') {
     $syncProgress.textContent = `Syncing: ${name ?? courseId}`;
   } else if (phase === 'course-done') {
-    $syncProgress.textContent = `Done: ${courseId}`;
+    $syncProgress.textContent = `Done: ${name ?? courseId}`;
   } else if (phase === 'complete') {
     $syncProgress.textContent = `Sync complete — ${courseCount ?? '?'} courses.`;
     _setSyncButton('idle');
@@ -444,9 +444,6 @@ function _folderNameFor(course) {
   return `${course?.id}-${slug}`;
 }
 
-// Same path the "Copy data folder path" button uses — see DATA_FOLDER_PATH.
-const _DATA_ROOT_DISPLAY = DATA_FOLDER_PATH;
-
 // Read-only view. Selection + hard-delete live on courses.html.
 let _trackedState = { courses: [] };
 // Mirrors the setup panel's visibility; see _renderStatus.
@@ -458,7 +455,12 @@ async function _loadTrackedClasses() {
     _renderTrackedClasses();
     return;
   }
-  _trackedState.courses = Array.isArray(resp.courses) ? resp.courses : [];
+  const courses = Array.isArray(resp.courses) ? resp.courses : [];
+  // A class the user deleted in the desktop app rides the bridge's untracked
+  // list and is excluded from every sync — listing it as tracked here would
+  // lie about sync scope, even while it lingers in the saved selection.
+  const untracked = new Set(Array.isArray(resp.untracked) ? resp.untracked : []);
+  _trackedState.courses = courses.filter(c => !untracked.has(_folderNameFor(c)));
   _renderTrackedClasses();
 }
 
@@ -519,14 +521,6 @@ $autoSyncToggle.addEventListener('change', async () => {
   }
   // Pull a fresh status so the header label + Next-weekly value update.
   _fetchStatus();
-});
-
-// Listen for CLASSES_UPDATED broadcasts from the background so multiple
-// open popups (rare, but possible) stay in sync.
-chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === 'CLASSES_UPDATED') {
-    _loadTrackedClasses();
-  }
 });
 
 // ---------------------------------------------------------------------------

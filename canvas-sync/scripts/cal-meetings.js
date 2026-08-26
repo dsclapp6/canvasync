@@ -626,7 +626,11 @@ export function collectMeetings({ syllabusParsed, canvasEvents, patterns = null,
   const at = new Map();
   const out = [];
   for (const m of [...meetingsFromCanvasEvents(canvasEvents), ...meetingsFromSyllabus(syllabusParsed, patterns, refused)]) {
-    const key = `${m.date}|${m.start ?? ''}|${(m.label ?? '').toLowerCase()}`;
+    // date+start ONLY — the label must not split the key. Canvas events say
+    // 'Class' while syllabus lecture rows say 'Lecture', so a label term put
+    // every session listed by both sources on the calendar twice: two
+    // permanent VEVENTs, two ops, one physical time slot.
+    const key = `${m.date}|${m.start ?? ''}`;
     const i = at.get(key);
     if (i === undefined) {
       at.set(key, out.length);

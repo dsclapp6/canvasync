@@ -5,7 +5,7 @@
 //   - mapping.json       { [canvasEventKey]: { googleEventId, contentHash, kind, lastPushedAt } }
 //
 // All live in $CANVAS_SYNC_HOME/calendar/.
-import { readFile, writeFile, mkdir, rename, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, chmod, rm } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { calendarDir } from './sync-home.js';
@@ -20,9 +20,17 @@ const P = {
 async function atomicWrite(filePath, data, mode) {
   await mkdir(dirname(filePath), { recursive: true });
   const tmp = filePath + '.tmp.' + randomBytes(6).toString('hex');
-  await writeFile(tmp, data, 'utf8');
-  if (mode != null) await chmod(tmp, mode);
-  await rename(tmp, filePath);
+  try {
+    // Mode set at creation: the tmp file holds live tokens, so it must never
+    // exist world-readable, not even between writeFile and a later chmod.
+    await writeFile(tmp, data, { encoding: 'utf8', mode: mode ?? 0o666 });
+    if (mode != null) await chmod(tmp, mode);
+    await rename(tmp, filePath);
+  } catch (err) {
+    // A crash between write and rename must not strand a readable token file.
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 async function readJson(filePath, fallback = null) {

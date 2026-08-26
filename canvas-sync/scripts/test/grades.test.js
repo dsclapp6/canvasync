@@ -288,3 +288,28 @@ describe('Canvas is the system of record', () => {
     assert.equal(g.current, null);
   });
 });
+
+describe('drop rules with excused work', () => {
+  const meta = { apply_assignment_group_weights: true };
+  const grp = { id: '1', name: 'Quizzes', group_weight: 100, rules: { drop_lowest: 1 } };
+  const syl = { grading: { components: [{ name: 'Quizzes', weight_pct: 100 }] } };
+
+  it('an excused item does not block the drop forever', () => {
+    // Excused work can never become "graded", so measuring completeness
+    // against the whole bucket left dropsPending stuck at term end — a final
+    // grade 16+ points below the syllabus arithmetic, permanently.
+    const g = classGrades({ metadata: meta, groups: [grp], syllabusParsed: syl,
+      assignments: [graded(10, 10, '1'), graded(10, 4, '1'), graded(10, 8, '1'),
+        asg({ pts: 10, group: '1', sub: { excused: true } })] });
+    assert.equal(g.buckets[0].dropped, 1);
+    assert.equal(g.buckets[0].dropsPending, 0);
+    assert.equal(g.current, 90);          // 18/20 after the 4 falls away
+  });
+  it('still holds the drop while non-excused work is outstanding', () => {
+    const g = classGrades({ metadata: meta, groups: [grp], syllabusParsed: syl,
+      assignments: [graded(10, 10, '1'), graded(10, 4, '1'), asg({ pts: 10, group: '1' }),
+        asg({ pts: 10, group: '1', sub: { excused: true } })] });
+    assert.equal(g.buckets[0].dropped, 0);
+    assert.equal(g.buckets[0].dropsPending, 1);
+  });
+});

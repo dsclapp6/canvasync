@@ -518,3 +518,61 @@ today **as a distance** (the token sheet now states the distinction).
   so it is User-visible on ⌘R with no app relaunch.
 
 Suites at this note: `bridge/` **278 pass / 0 fail**, `scripts/` untouched.
+
+**2026-08-25, later still — repo-wide bug hunt: the calendar's share.** A
+59-agent adversarial review (8 finders, 1–2 skeptics per finding) swept every
+package; 40 findings survived verification and all are fixed. The
+calendar-relevant ones, so this file stays the ledger:
+
+- **ICS correctness** (`scripts/cal-ics.js`): `escText` now really escapes
+  `;` — the old replacement string was the literal `'\;'`, which IS `;`, and
+  the test pinned the typo rather than the header's stated RFC 5545 rule.
+  Timed deadline blocks now END at the deadline (15:45–16:00 for a 16:00
+  due) instead of starting there — the old test only exercised 23:59, the
+  one time where the clamp hid the direction error. The push-then-filter
+  `X-WR-TIMEZONE:` scaffolding is gone.
+- **One session, one meeting** (`scripts/cal-meetings.js`): the collect
+  dedupe key dropped its label term. Canvas hardcodes `Class`, syllabus rows
+  default `Lecture`, so a class listed by both sources put every session on
+  the calendar twice; the old guard test passed only because its 00:00Z
+  fixture crossed midnight into a different local date. New test drives the
+  genuine collision: one row, Canvas wins the slot, the topic merges.
+- **No phantom occurrences** (`scripts/sync-calendar.js`): weekly recurring
+  ops (office hours, the weekly-meeting fallback) now anchor DTSTART on the
+  first date their BYDAY actually names — clients render DTSTART as an
+  occurrence, so a M/W/F rule anchored on the Tuesday the window opened
+  painted an office-hours block on a day it never happens. User-checkpoint
+  markers now hash the parent's due date (as auto-prep already did), so a
+  moved deadline updates the routine's event instead of matching-and-skipping
+  forever.
+- **The merge defends itself** (`canvas-tasks.js`): a stale FIRST covered id
+  no longer flips an item to `syllabus` while swallowing the live rows behind
+  it (resolution now picks the first id Canvas still HAS); an item whose row
+  was deleted-and-recreated under the same name now merges with the live row
+  by title instead of suppressing it with a link-less AI-added ghost carrying
+  the mined date; merged items carry the RESOLVED row's id so the panel's
+  claim-follow lands. The assignment route resolves through `tasksForClass`
+  itself now, so panel origin can never disagree with the task list (2.13).
+- **Ticks survive the nav** (`bridge/public/app.js`): `seedCalDone` carries a
+  session-pending overlay across refetches, so Calendar → Classes → Calendar
+  inside the rebuild debounce no longer redraws a SAVED tick as unchecked
+  (2.2/2.4's failure mode via the nav path). Home's Coming up finally honors
+  ticks — it filtered `CAL_DONE` by `op.marker`, a key format the set never
+  holds; it keys on `calDoneKey` now. Show-completed survives an all-ticked
+  window (2.5: the one control that resurrects a mis-ticked item no longer
+  hides with the toolbar). The Status anchor no longer trips the view
+  switcher (a Cmd-click left the origin tab an empty shell). `slugOf()` is
+  gone — 2.11 finished: every consumer reads the server-shipped `slug`.
+- **Deleted classes leave the calendar** (`bridge/server.js`):
+  `/api/classes/cleanup` now spawns the worklist rebuild its own comment
+  promised — the rebuild IS the event-removal mechanism, so cleaned-up
+  classes' events used to squat in every subscribed .ics until an unrelated
+  rebuild. Class-card `taskCount` also goes through `tasksForClass` now, so
+  the card and the detail view count the same work.
+
+Not driven in a browser this session — every fix above is locked by unit
+tests instead (new: stale-covered-id, recreated-row, two-source collision,
+deadline-block direction, TEXT escaping, off-stage state, excused-drop,
+exam-vs-deliverable, prune safety, selection scope). Suites at this note:
+`bridge/` **282 pass / 0 fail**, `scripts/` **572 pass / 0 fail**,
+`canvas-calendar/` **8 pass / 0 fail** (its first tests beyond the planner).

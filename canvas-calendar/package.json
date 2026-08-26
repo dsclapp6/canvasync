@@ -1,6 +1,6 @@
 {
   "name": "canvas-calendar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Push Canvas assignments + Claude-generated essay checkpoints into Google Calendar. Reads only from the local canvas-sync data folder.",
   "type": "module",
   "bin": {

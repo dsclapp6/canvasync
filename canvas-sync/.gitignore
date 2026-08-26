@@ -37,3 +37,6 @@ coverage/
 # Extension build
 extension/dist/
 extension/*.zip
+
+# tesseract.js language-model cache (written to cwd at OCR time; 5 MB binary)
+*.traineddata

@@ -853,7 +853,15 @@ export function buildApp(config) {
         code: metadata?.course_code ?? metadata?.course?.code ?? null,
         name: metadata?.name ?? metadata?.course?.name ?? folder,
         term: termNameOf(metadata),
-        taskCount: Array.isArray(mined?.items) ? mined.items.length : null,
+        // Through the sanctioned merge (invariant: one merge point) — the
+        // card must agree with the detail view, which counts mined items PLUS
+        // unclaimed dated Canvas rows, and an un-mined class still has work.
+        taskCount: (() => {
+          try {
+            const { items } = tasksForClass({ mined, assignments });
+            return items.length > 0 || mined || assignments ? items.length : null;
+          } catch { return Array.isArray(mined?.items) ? mined.items.length : null; }
+        })(),
         fileCount: Array.isArray(filesIndex) ? filesIndex.length : 0,
         currentScore: enr?.grades?.current_score ?? null,
         currentGrade: enr?.grades?.current_grade ?? null,
@@ -980,9 +988,11 @@ export function buildApp(config) {
         results.push({ folder, ok: false, error: err.message });
         continue;
       }
-      // Same fire-and-forget calendar cleanup as /class/delete — a removed
-      // class must not keep its events in the worklist.
     }
+    // Same fire-and-forget calendar cleanup as /class/delete — a removed
+    // class must not keep its events in the worklist (or the .ics files
+    // rebuilt from it, or dead click-in links in the dashboard calendar).
+    if (results.some(r => r.ok)) spawnWorklistRebuild();
     res.json({ ok: results.every(r => r.ok), results, freedBytes });
     logRequest(req, res, null);
   });
@@ -1070,12 +1080,19 @@ export function buildApp(config) {
       x => String(x?.id) === assignmentId || String(x?.canvas_assignment_id ?? '') === wanted) || null;
     // Asked by mined id, answered with the Canvas row it claims: the calendar
     // opens items by item_id, and a merged item's Canvas links were invisible
-    // from there until the claim was followed.
-    const a = (assignments || []).find(x => String(x?.id) === wanted)
-      || (minedItem?.canvas_assignment_id != null
-        ? (assignments || []).find(x => String(x?.id) === String(minedItem.canvas_assignment_id))
-        : null)
-      || null;
+    // from there until the claim was followed. The claim is followed through
+    // tasksForClass — the SAME resolution the task list and worklist use
+    // (covers arrays, and the by-title rescue for deleted-and-recreated
+    // rows) — or this panel disagrees with them about whether a live Canvas
+    // row stands behind the item.
+    let a = (assignments || []).find(x => String(x?.id) === wanted) || null;
+    if (!a && minedItem) {
+      const { items } = tasksForClass({ mined, assignments });
+      const merged = items.find(x => String(x?.id) === String(minedItem.id));
+      if (merged?.canvas_assignment_id != null) {
+        a = (assignments || []).find(x => String(x?.id) === String(merged.canvas_assignment_id)) || null;
+      }
+    }
     if (!a && !minedItem) return res.status(404).json({ error: 'assignment not found' });
 
     const quiz = a?.quiz_id ? (quizzes || []).find(q => String(q?.id) === String(a.quiz_id)) || null : null;
@@ -1083,14 +1100,17 @@ export function buildApp(config) {
     const stateKey = minedItem?.id ?? `canvas-${wanted}`;
 
     // Files that came from THIS assignment, via the same provenance derivation
-    // the Files tab uses.
+    // the Files tab uses. Origins carry CANVAS ids, so match on the resolved
+    // row's id — the calendar asks by MINED id, and comparing origins against
+    // that slug returned [] for exactly the panel's standard path.
     let related = [];
     try {
       const withOrigins = await filesWithOrigins(dir, filesIndex ?? []);
+      const canvasId = a?.id != null ? String(a.id) : wanted;
       const quizId = a?.quiz_id != null ? String(a.quiz_id) : null;
       related = withOrigins
         .filter(f => (f.origins || []).some(o =>
-          (o.kind === 'assignment' && o.itemId === wanted)
+          (o.kind === 'assignment' && o.itemId === canvasId)
           || (o.kind === 'quiz' && quizId && o.itemId === quizId)))
         .map(f => ({ name: f.displayName, localPath: f.localPath, size: f.size }));
     } catch { /* provenance is a nicety here, not a requirement */ }

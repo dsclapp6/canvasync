@@ -295,6 +295,11 @@ function renderPipelineButton(pipeline) {
 
 function wireNav() {
   document.querySelectorAll('.nav-btn').forEach(btn => {
+    // The Status link is a plain anchor styled as a nav button — no
+    // data-view. Binding the view-switcher to it hid every view and then
+    // threw on #view-undefined, so a Cmd/Ctrl-click (new tab) left the
+    // ORIGINAL tab an empty shell with Status highlighted.
+    if (!btn.dataset.view) return;
     btn.addEventListener('click', () => {
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b === btn));
       document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
@@ -494,6 +499,7 @@ function wireNav() {
     // same checkbox is rendered into both, so the handler cannot assume one.
     const row = box.closest('.cal-row, .cal-chip');
     if (done) CAL_DONE.add(key); else CAL_DONE.delete(key);
+    CAL_DONE_PENDING.set(key, done);
     row?.classList.toggle('is-done', done);
     try {
       await api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
@@ -504,6 +510,7 @@ function wireNav() {
     } catch (err) {
       // Put it back rather than leaving a tick that did not save.
       if (done) CAL_DONE.delete(key); else CAL_DONE.add(key);
+      CAL_DONE_PENDING.delete(key);
       box.checked = !done;
       row?.classList.toggle('is-done', !done);
       toast(`Could not save that: ${err.message}`);
@@ -541,10 +548,11 @@ function subtitleFor(c) {
   return name.startsWith(code) ? name.slice(code.length).trim() : name;
 }
 
-// The slug the colour API keys on: the class folder without its course id.
-function slugOf(folder) {
-  return String(folder || '').replace(/^\d+-/, '');
-}
+// The slug the colour API keys on ships on every /api/classes row (`c.slug`)
+// — spec 2.11: the client must not own a copy of the folder→slug strip rule.
+// A private slugOf() here drifted-by-duplication exactly the way calFolder()
+// once did, so it is gone; DOM nodes carry data-slug where a class row is not
+// at hand.
 
 // ---------------------------------------------------------------------------
 // Home — the Classes tab landing page
@@ -629,7 +637,7 @@ function homeCardHtml(c) {
   if (c.taskCount != null) meta.push(`${c.taskCount} ${c.taskCount === 1 ? 'task' : 'tasks'}`);
   meta.push(`${c.fileCount} ${c.fileCount === 1 ? 'file' : 'files'}`);
   return `<article class="home-card" data-folder="${esc(c.folder)}" tabindex="0"
-           style="--class-color:${classColor(slugOf(c.folder))}">
+           style="--class-color:${classColor(c.slug)}">
       <div class="hc-code">${esc(c.code || c.folder)}</div>
       ${sub ? `<div class="hc-name">${esc(sub)}</div>` : ''}
       ${gradeBlockHtml(g)}
@@ -645,7 +653,15 @@ function upcomingOps(limit = 8) {
   // 5pm local and quietly drops today's own deadlines from "Coming up".
   const today = localTodayIso();
   return ops
-    .filter(o => o.calendar !== 'meeting' && o.date && o.date >= today && !CAL_DONE.has(o.marker))
+    .filter(o => {
+      if (o.calendar === 'meeting' || !o.date || o.date < today) return false;
+      // CAL_DONE holds calDoneKey (`folder|id[|cp]`) strings — testing the
+      // op's `[csync:...]` marker never matched, so a just-ticked deadline
+      // kept showing in Coming up and counting in "due this week".
+      const folder = calFolder(o.class);
+      return !(folder && o.item_id != null
+        && CAL_DONE.has(calDoneKey(folder, o.item_id, o.checkpoint_id ?? null)));
+    })
     .sort((a, b) => a.date.localeCompare(b.date) || String(a.time ?? '').localeCompare(String(b.time ?? '')))
     .slice(0, limit);
 }
@@ -673,7 +689,7 @@ function renderHome() {
   const next = up.slice(0, 8);
   $('home-upcoming').classList.toggle('hidden', next.length === 0);
   $('home-up-list').innerHTML = next.map(o => {
-    const cls = cards.find(c => slugOf(c.folder) === o.class);
+    const cls = cards.find(c => c.slug === o.class);
     const when = new Date(`${o.date}T${o.time ?? '12:00'}`);
     const day = Number.isNaN(when.getTime()) ? o.date
       : when.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
@@ -751,10 +767,11 @@ function renderClassList() {
   for (const c of shown) {
     const li = document.createElement('li');
     li.dataset.folder = c.folder;
+    li.dataset.slug = c.slug;
     li.classList.toggle('out-of-scope', SCOPE.courseIds != null && !c.inScope);
     // The class colour as a 3px rule at the row's edge — the same mark the
     // calendar uses, so a colour learned in one place reads in the other.
-    li.style.setProperty('--class-color', classColor(slugOf(c.folder)));
+    li.style.setProperty('--class-color', classColor(c.slug));
     const gradeStr = c.currentScore != null ? `${c.currentGrade ? c.currentGrade + ' · ' : ''}${c.currentScore}%` : '';
     li.innerHTML = `
       <div class="cl-code">${esc(c.code || c.folder)}</div>
@@ -2071,7 +2088,7 @@ function setHiddenClasses(set) {
 }
 
 function calDisplayName(slug) {
-  const hit = (CLASSES || []).find(c => c.folder === slug || c.folder.replace(/^\d+-/, '') === slug);
+  const hit = (CLASSES || []).find(c => c.folder === slug || c.slug === slug);
   if (hit && hit.code) return hit.code;
   return slug.replace(/-/g, ' ').toUpperCase();
 }
@@ -2533,7 +2550,7 @@ function cssEsc(s) {
 
 function chipRowsSource() {
   const fromClasses = (CLASSES || [])
-    .map(c => ({ slug: slugOf(c.folder), name: c.code || c.folder, resolvable: true }));
+    .map(c => ({ slug: c.slug, name: c.code || c.folder, resolvable: true }));
   const known = new Set(fromClasses.map(r => r.slug));
   // A slug the worklist mentions but the class list does not: the bridge
   // resolves colours by walking class folders, so it has no colour to return
@@ -2646,7 +2663,7 @@ async function saveClassColor(slug, hex) {
 // rule, the calendar rules and the chips from ever disagreeing.
 function repaintClassColors() {
   document.querySelectorAll('#class-list li').forEach((li) => {
-    li.style.setProperty('--class-color', classColor(slugOf(li.dataset.folder)));
+    li.style.setProperty('--class-color', classColor(li.dataset.slug));
   });
   renderCalendarOps();   // rebuilds the chips row, picker included
 }
@@ -2659,7 +2676,7 @@ function previewClassColor(slug) {
   const c = classColor(slug);
   for (const sel of ['#class-list li', `[data-cal-class-toggle="${cssEsc(slug)}"]`, `[data-class-slug="${cssEsc(slug)}"]`]) {
     document.querySelectorAll(sel).forEach((el) => {
-      if (sel !== '#class-list li' || slugOf(el.dataset.folder) === slug) {
+      if (sel !== '#class-list li' || el.dataset.slug === slug) {
         (el.closest('.class-chip') ?? el).style.setProperty('--class-color', c);
       }
     });
@@ -2751,12 +2768,25 @@ function completedOps() {
  * a reload between the tick and the debounced rebuild came back with an empty
  * box for work that was saved. CALENDAR-SPEC 2.4.
  */
+// Ticks (and un-ticks) made this session that the server's worklist has not
+// caught up to yet: the rebuild is debounced ~1.5s plus run time, so a
+// Calendar → Classes → Calendar round trip inside that window refetches a
+// stale worklist. Reseeding from it alone redrew a SAVED tick as unchecked —
+// spec 2.2/2.4's exact failure mode, reintroduced via the nav path. Each
+// entry is key -> intended done state; it retires the moment the server's
+// answer agrees.
+const CAL_DONE_PENDING = new Map();
+
 function seedCalDone() {
   CAL_DONE.clear();
   for (const d of CAL_WORKLIST?.dropped ?? []) {
     if (!d || d.reason !== 'done') continue;
     const folder = calFolder(d.class);
     if (folder && d.item_id != null) CAL_DONE.add(calDoneKey(folder, d.item_id, d.checkpoint_id ?? null));
+  }
+  for (const [key, done] of CAL_DONE_PENDING) {
+    if (CAL_DONE.has(key) === done) { CAL_DONE_PENDING.delete(key); continue; }
+    if (done) CAL_DONE.add(key); else CAL_DONE.delete(key);
   }
 }
 
@@ -2768,8 +2798,17 @@ function renderCalendarOps() {
   const all = CAL_SHOW_DONE ? base.concat(done) : base;
   syncCalControls(done.length);
   if (!all.length) {
-    toolbar.classList.add('hidden');
-    el.innerHTML = '<p class="muted">No calendar operations in the current window.</p>';
+    // Completed records may still exist behind an empty live list (end of
+    // term, everything ticked). The toolbar holds Show completed — the ONE
+    // control that can resurrect a mis-ticked item (spec 2.5) — so hiding it
+    // here made those items unrecoverable from the calendar.
+    if (done.length) {
+      toolbar.classList.remove('hidden');
+      el.innerHTML = '<p class="muted">Everything in this window is ticked done — Show completed brings it back.</p>';
+    } else {
+      toolbar.classList.add('hidden');
+      el.innerHTML = '<p class="muted">No calendar operations in the current window.</p>';
+    }
     return;
   }
   toolbar.classList.remove('hidden');

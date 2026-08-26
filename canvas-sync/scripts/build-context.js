@@ -4,6 +4,7 @@ import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { aiInvoke, readJsonSafe, atomicWriteJson, atomicWriteText } from './_util.js';
 import { canvasItemUrl, canvasSubmitUrl } from '../canvas-links.js';
+import { tasksForClass } from '../canvas-tasks.js';
 
 // OPEN: CLAUDE_SKIP=1 bypasses the external claude CLI call for the "Open
 // questions / ambiguities" section. In skip mode the script uses a deterministic
@@ -200,7 +201,10 @@ function renderMinedItem(it, canvasById, { condensed = false } = {}) {
   const meta = [`Category: ${it.category}`, `Due: ${due}`];
   if (it.points_possible != null) meta.push(`Points: ${it.points_possible}`);
   if (it.weight_note) meta.push(`Weight: ${it.weight_note}`);
-  meta.push(it.kind === 'canvas' ? `Canvas assignment${it.canvas_assignment_id ? ` ${it.canvas_assignment_id}` : ''}` : 'Implicit (not a Canvas assignment)');
+  // `origin` is the merge's provenance verdict and outranks the miner's own
+  // `kind` claim; Canvas extras the miner never saw carry origin only.
+  const backedByCanvas = it.origin ? it.origin === 'canvas' : it.kind === 'canvas';
+  meta.push(backedByCanvas ? `Canvas assignment${it.canvas_assignment_id ? ` ${it.canvas_assignment_id}` : ''}` : 'Implicit (not a Canvas assignment)');
   lines.push(`_${meta.join(' · ')}_`);
   if (it.description) lines.push(`\n${it.description}`);
 
@@ -229,16 +233,21 @@ function renderMinedItem(it, canvasById, { condensed = false } = {}) {
   return lines.join('\n');
 }
 
-function buildMinedSection(mined, assignments) {
+function buildMinedSection(mined, assignments, mergedItems) {
   let md = `## Complete task list (Canvas + implicit work mined from materials)\n\n`;
   if (!mined || !Array.isArray(mined.items) || mined.items.length === 0) {
     md += '_Assignment mining has not run yet — see the Canvas assignment list below._\n\n';
     return md;
   }
   const canvasById = new Map((assignments || []).map(a => [String(a.id), a]));
-  const { upcoming, recurring, undated, past } = partitionMined(mined.items);
+  // Through tasksForClass (invariant: ONE merge point). Rendering mined.items
+  // raw printed the miner's own due_date even when a live Canvas row corrects
+  // it — so this headline section told the assistant a deadline two days
+  // after the assignment actually closed — and omitted every dated Canvas row
+  // mining never claimed.
+  const { upcoming, recurring, undated, past } = partitionMined(mergedItems);
 
-  md += `_Mined ${mined.items.length} items (${mined.items.filter(i => i.kind === 'implicit').length} implicit) on ${String(mined.mined_at || '').slice(0, 10)}. Implicit items were found in slides, pages, announcements, or the syllabus — they do NOT appear as Canvas assignments._\n\n`;
+  md += `_Mined ${mined.items.length} items (${mined.items.filter(i => i.kind === 'implicit').length} implicit) on ${String(mined.mined_at || '').slice(0, 10)}, merged with the Canvas assignment list — Canvas owns every deadline it has. Implicit items were found in slides, pages, announcements, or the syllabus — they do NOT appear as Canvas assignments._\n\n`;
 
   md += `### Upcoming\n\n`;
   md += upcoming.length ? upcoming.map(i => renderMinedItem(i, canvasById)).join('\n\n') + '\n\n' : '_None._\n\n';
@@ -371,6 +380,22 @@ async function main() {
   const tabsData = await readJsonSafe(join(absClassDir, 'tabs.json')) || [];
   const coursePacks = await readJsonSafe(join(absClassDir, 'course_packs.json')) || [];
 
+  // The one sanctioned mined+Canvas merge (canvas-tasks.js): Canvas owns the
+  // deadlines, mining owns titles/descriptions, and unclaimed dated Canvas
+  // rows join the list. Both context.md's task section and context.json's
+  // mined_tasks render THIS, never mined.items raw.
+  const { items: mergedTaskItems } = tasksForClass({ mined, assignments });
+
+  // What actually sits on disk: extract writes _combined.txt, or, past 1 MB,
+  // _combined-NN.txt parts and deletes the unsplit file — a hardcoded path
+  // was a dead link for every materials-heavy class.
+  let combinedFiles = [];
+  try {
+    combinedFiles = (await readdir(join(absClassDir, 'materials')))
+      .filter(n => /^_combined(-\d+)?\.txt$/.test(n)).sort()
+      .map(n => `materials/${n}`);
+  } catch { /* no materials dir yet */ }
+
   const course = syllabusParsed && syllabusParsed.course ? syllabusParsed.course : {};
   const courseCode = course.code || metadata.course_code || metadata.course?.code || 'Unknown';
   const courseTitle = course.title || metadata.name || metadata.course?.name || 'Unknown Course';
@@ -430,7 +455,7 @@ async function main() {
 
   md += buildGradingSection(assignmentGroups, grading, metadata);
 
-  md += buildMinedSection(mined, assignments);
+  md += buildMinedSection(mined, assignments, mergedTaskItems);
 
   md += `## Full Canvas assignment list (sorted by due date)\n\n`;
 
@@ -582,10 +607,11 @@ async function main() {
       older_past: olderPast
     },
     syllabus_only_schedule: syllabusOnlyItems,
-    mined_tasks: mined?.items ?? [],
+    mined_tasks: mergedTaskItems,
     modules,
     course_materials: {
-      combined_path: materialsSection.entries.length > 0 ? 'materials/_combined.txt' : null,
+      combined_path: combinedFiles[0] ?? null,
+      combined_paths: combinedFiles,
       items: materialsSummaryJson(materialsSection.entries),
     },
     recent_announcements: recentAnnouncements,

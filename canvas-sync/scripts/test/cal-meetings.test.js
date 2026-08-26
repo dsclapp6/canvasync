@@ -191,6 +191,24 @@ test('collectMeetings prefers Canvas and does not list a meeting twice', () => {
   assert.equal(dup.filter(m => m.date === '2026-01-12').length, 1);
 });
 
+test('a session both sources list in one slot is ONE meeting, labels notwithstanding', () => {
+  // Canvas hardcodes 'Class' and syllabus lecture rows default to 'Lecture',
+  // so a label term in the dedupe key put every session of the term on the
+  // calendar twice. date+start is the identity; the loser's topic merges in.
+  const dup = collectMeetings({
+    syllabusParsed: {
+      course: { meeting_schedule: 'MW 8:00-9:15' },
+      schedule: [{ date: '2026-01-12', type: 'lecture', title: 'PM Mindset' }],
+    },
+    canvasEvents: [{ title: 'BUSI 396', start_at: '2026-01-12T14:00:00Z', end_at: '2026-01-12T15:15:00Z', location_name: 'Room 120' }],
+  });
+  const day = dup.filter(m => m.date === '2026-01-12');
+  assert.equal(day.length, 1, 'one physical time slot, one meeting');
+  assert.equal(day[0].source, 'Canvas course events', 'Canvas wins the slot');
+  assert.equal(day[0].location, 'Room 120');
+  assert.match(day[0].topic, /PM Mindset/, "the syllabus row's topic is merged, not dropped");
+});
+
 test('collectMeetings returns chronological order', () => {
   const ms = collectMeetings({ syllabusParsed: SYLLABUS, canvasEvents: null });
   const dates = ms.map(m => m.date);

@@ -1521,3 +1521,38 @@ test('buildPrompt omits the RELATED MATERIALS section when there is nothing to p
   // The rule stays: it tells the model what to say when the list is absent.
   assert.match(prompt, /copy the list from RELATED MATERIALS/);
 });
+
+test('a "Final Presentation" is a project deliverable, never the next exam', async () => {
+  // FACTS are authoritative (prompt rule 1), so a wrong next_exam is repeated
+  // verbatim to the student. The bare \bfinal\b this guards against reported
+  // three real project deliverables on this user's classes as exams.
+  const dir = await tempClass({
+    'metadata.json': { course_code: 'ENTR 222' },
+    'assignments.json': [
+      { id: 1, name: 'Final Presentation', due_at: '2026-12-09T04:59:00Z', points_possible: 100 },
+      { id: 2, name: 'Project: Final Project Report', due_at: '2026-12-11T04:59:00Z', points_possible: 100 },
+    ],
+  });
+  try {
+    const facts = await classFacts(dir, { now: new Date(2026, 10, 1, 9, 0) });
+    assert.equal(facts.tasks.next_exam, null,
+      'no exam exists in this class, and saying otherwise is the confident-wrong-answer failure');
+    const rendered = renderFacts(facts);
+    assert.match(rendered, /Next exam: no exam is dated/,
+      '"it exists but nobody dated it" honesty, not a deliverable dressed as an exam');
+    assert.ok(!/Next exam:.*(Presentation|Report)/.test(rendered));
+  } finally { await cleanup(dir); }
+});
+
+test('a real final exam still reads as the next exam', async () => {
+  const dir = await tempClass({
+    'metadata.json': { course_code: 'BUSI 305' },
+    'assignments.json': [
+      { id: 1, name: 'Final Exam', due_at: '2026-12-09T04:59:00Z', points_possible: 200 },
+    ],
+  });
+  try {
+    const facts = await classFacts(dir, { now: new Date(2026, 10, 1, 9, 0) });
+    assert.equal(facts.tasks.next_exam?.title, 'Final Exam');
+  } finally { await cleanup(dir); }
+});

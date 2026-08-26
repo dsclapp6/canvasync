@@ -86,6 +86,11 @@ export function toPassages(text, { target = PASSAGE_TARGET, max = PASSAGE_MAX } 
  * six-word heading beat the table underneath it.
  */
 export function scorePassage(passage, queryTerms) {
+  // Reset BEFORE any early return: this property is read by the caller after
+  // every call, and a value left over from the previous passage let
+  // zero-match passages through the minScore:0 forced-syllabus path — and
+  // leaked across documents and across questions in a long-lived bridge.
+  scorePassage.lastTermsMatched = 0;
   if (!queryTerms.size) return 0;
   const tokens = tokenise(passage);
   if (!tokens.length) return 0;

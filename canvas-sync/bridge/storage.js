@@ -325,14 +325,6 @@ export function isValidFolderName(folderName) {
     && FOLDER_NAME_RE.test(folderName);
 }
 
-async function appendDeleteLog(line) {
-  const logDir = path.join(syncHome(), 'logs');
-  await fs.mkdir(logDir, { recursive: true });
-  const logPath = path.join(logDir, 'delete.log');
-  const entry = `${new Date().toISOString()} ${line}\n`;
-  await fs.appendFile(logPath, entry, 'utf8').catch(() => {});
-}
-
 // Recursively compute size + file count using sync APIs.
 function enumerateDir(dir) {
   let bytes = 0;
@@ -488,25 +480,3 @@ function logDeleteFailSync(rule, input) {
   logDeleteSync(`DELETE_FAILED reason=${rule} input=${JSON.stringify(clipped)}`);
 }
 
-// Exported helper: read assignment IDs before deletion for cleanup script.
-// Returns { assignmentIds: number[], courseId: string, classSlug: string } or null.
-export async function readPreDeleteInfo(folderName) {
-  if (!isValidFolderName(folderName)) return null;
-  const classDir = path.join(syncHome(), 'classes', folderName);
-  const dash = folderName.indexOf('-');
-  const courseId = dash > 0 ? folderName.slice(0, dash) : folderName;
-  const classSlug = dash > 0 ? folderName.slice(dash + 1) : '';
-  let assignmentIds = [];
-  try {
-    const raw = await fs.readFile(path.join(classDir, 'assignments.json'), 'utf8');
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      assignmentIds = parsed
-        .map(a => a && (a.id ?? a.assignment_id))
-        .filter(id => id !== undefined && id !== null);
-    }
-  } catch {
-    // missing/corrupt — return empty list.
-  }
-  return { assignmentIds, courseId, classSlug };
-}

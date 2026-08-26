@@ -32,7 +32,7 @@ export const PRODID = '-//canvas-sync//CANVASync//EN';
 export function escText(v) {
   return String(v ?? '')
     .replace(/\\/g, '\\\\')
-    .replace(/;/g, '\;')
+    .replace(/;/g, '\\;')
     .replace(/,/g, '\\,')
     .replace(/\r\n|\r|\n/g, '\\n');
 }
@@ -96,6 +96,13 @@ function addMinutes(hhmm, mins) {
   return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
 }
 
+/** Subtract minutes from a wall-clock time, clamping at midnight. */
+function subMinutes(hhmm, mins) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const total = Math.max(h * 60 + m - mins, 0);
+  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
+}
+
 /**
  * One op as a VEVENT, or null when the op cannot be placed honestly.
  *
@@ -116,14 +123,21 @@ export function opToVevent(op, { dtstamp }) {
 
   const timed = op.all_day === false && op.time;
   if (timed) {
-    const start = icsDateTime(date, op.time);
-    // A due time is a moment, not a span. The routine made these 15 minutes
-    // long ending AT the deadline, so the block on the calendar is the time you
-    // have left, not an hour after it has passed.
-    const endTime = op.end_time || addMinutes(op.time, 15);
-    let end = icsDateTime(date, endTime);
-    if (!start) return null;
-    if (!end || end <= start) end = icsDateTime(date, addMinutes(op.time, 15)) || start;
+    let start, end;
+    if (op.end_time) {
+      // A real span (meetings, office hours) keeps its actual start and end.
+      start = icsDateTime(date, op.time);
+      end = icsDateTime(date, op.end_time);
+      if (!start) return null;
+      if (!end || end <= start) end = icsDateTime(date, addMinutes(op.time, 15)) || start;
+    } else {
+      // A due time is a moment, not a span. The routine made these 15 minutes
+      // long ending AT the deadline, so the block on the calendar is the time
+      // you have left, not an hour after it has passed.
+      end = icsDateTime(date, op.time);
+      if (!end) return null;
+      start = icsDateTime(date, subMinutes(op.time, 15)) || end;
+    }
     lines.push(`DTSTART:${start}`);
     lines.push(`DTEND:${end}`);
   } else {
@@ -175,10 +189,9 @@ export function buildIcs(ops, { name = 'CANVASync', dtstamp, refreshMinutes = 60
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     `X-WR-CALNAME:${escText(name)}`,
-    `X-WR-TIMEZONE:`,
     `REFRESH-INTERVAL;VALUE=DURATION:PT${refreshMinutes}M`,
     `X-PUBLISHED-TTL:PT${refreshMinutes}M`,
-  ].filter(l => l !== 'X-WR-TIMEZONE:');
+  ];
 
   const skipped = [];
   for (const op of Array.isArray(ops) ? ops : []) {

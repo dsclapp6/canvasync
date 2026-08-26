@@ -3,7 +3,11 @@
 // Google Calendar.
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { classesDir } from './sync-home.js';
+import { classesDir, syncHome } from './sync-home.js';
+// The same scope module the bridge and pipeline scripts load directly — one
+// answer to "is this class current?" (invariant: a saved selection is a strict
+// allowlist; only a NULL scope means everything).
+import { readSyncScope, isInScope, isClassDirName } from '../../canvas-sync/scope.js';
 import { planEventsForClass, contentHash } from './planner.js';
 import { ensureCalendar, insertEvent, patchEvent, deleteEvent } from './calendar-api.js';
 import { loadMapping, saveMapping, loadConfig, eventKey } from './state.js';
@@ -12,9 +16,14 @@ export async function listClassDirs() {
   const root = classesDir();
   let entries;
   try { entries = await readdir(root); } catch { return []; }
+  // Class folders persist on disk after deselection, so the folder set is NOT
+  // the selection. Filter through the shared scope, or a two-year-old account
+  // pushes calendar events (and burns a planner invocation) for every dead
+  // orientation shell it ever synced.
+  const scope = readSyncScope(syncHome());
   const dirs = [];
   for (const e of entries) {
-    if (e.startsWith('.')) continue;
+    if (!isClassDirName(e) || !isInScope(scope, e)) continue;
     const full = join(root, e);
     try {
       const s = await stat(full);
@@ -43,6 +52,7 @@ export async function syncAll({ dryRun = false, onlyClass = null, model = null, 
   }
 
   let created = 0, updated = 0, deleted = 0, skipped = 0, unchanged = 0;
+  let mappingDirty = false;
 
   for (const dir of dirs) {
     const slug = dir.split('/').pop();
@@ -95,6 +105,12 @@ export async function syncAll({ dryRun = false, onlyClass = null, model = null, 
         }
         updated++;
       } else {
+        // Refresh the timestamp even when nothing changed: prune reads
+        // lastPushedAt as "when did a sync last vouch for this event", and a
+        // deadline that has simply been stable for a month is not stale.
+        entry.lastPushedAt = new Date().toISOString();
+        entry.classDir = dir;
+        mappingDirty = true;
         unchanged++;
       }
     }
@@ -105,6 +121,7 @@ export async function syncAll({ dryRun = false, onlyClass = null, model = null, 
     }
   }
 
+  if (mappingDirty && !dryRun) await saveMapping(mapping);
   return { created, updated, deleted, skipped, unchanged };
 }
 
@@ -126,10 +143,14 @@ export async function prune({ dryRun = false, logger = console } = {}) {
   let deleted = 0;
   const now = new Date();
   for (const [key, entry] of Object.entries(mapping)) {
-    // A very conservative heuristic: if lastPushedAt is older than 30 days,
-    // assume stale. The real logic would re-read assignments.json and check
-    // membership — left as a OPEN for iteration.
-    const age = now - new Date(entry.lastPushedAt || 0);
+    // A very conservative heuristic: if no sync has vouched for the entry in
+    // 30 days (syncAll refreshes lastPushedAt on every pass, including
+    // unchanged events), assume stale. An entry with NO timestamp is unknown,
+    // not ancient — deleting a live calendar event on missing data is the
+    // worse failure, so skip it. The real logic would re-read assignments.json
+    // and check membership — left as a OPEN for iteration.
+    if (!entry.lastPushedAt) continue;
+    const age = now - new Date(entry.lastPushedAt);
     if (age > 30 * 24 * 3600 * 1000) {
       logger.log(`  - ${key}`);
       if (!dryRun) {

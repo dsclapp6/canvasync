@@ -66,16 +66,21 @@ function _sleep(ms) {
 }
 
 async function _acquireToken() {
-  _refill();
-  if (_tokens >= 1) {
-    _tokens -= 1;
-    return;
+  // Loop until a token is actually owned. Waking from the sleep is NOT
+  // ownership: every waiter on an empty bucket computes the same msNeeded and
+  // wakes together, so whoever runs first takes the one accrued token and the
+  // rest must re-check and sleep again — otherwise N waiters all proceed on
+  // one token (the old Math.max clamp absorbed the deficit silently) and the
+  // limiter degrades to a fixed delay per request regardless of queue depth.
+  for (;;) {
+    _refill();
+    if (_tokens >= 1) {
+      _tokens -= 1;
+      return;
+    }
+    const msNeeded = Math.ceil((1 - _tokens) / REFILL_PER_MS);
+    await _sleep(msNeeded);
   }
-  // Wait until the bucket has a token
-  const msNeeded = Math.ceil((1 - _tokens) / REFILL_PER_MS);
-  await _sleep(msNeeded);
-  _refill();
-  _tokens = Math.max(0, _tokens - 1);
 }
 
 // --- Core fetch wrapper ----------------------------------------------------------

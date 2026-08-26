@@ -121,7 +121,13 @@ export function deriveOrigins(sources = {}) {
       const itemId = entry?.id != null ? String(entry.id) : null;
       for (const key of bodyKeys) {
         for (const id of extractFileIds(entry?.[key])) {
-          add(id, { kind, label: KIND_LABELS[kind], group: kind, sort: 100 + rankOf(kind), itemLabel: label, itemId });
+          // Group per ITEM, not per kind: the collapse in add() is meant for
+          // "linked twice in one page", but a kind-wide group meant a file
+          // linked from two assignments kept only the first one's attribution
+          // — and the related-files panel matches on itemId, so the second
+          // assignment lost the file entirely. (Modules already group per
+          // module for the same reason.)
+          add(id, { kind, label: KIND_LABELS[kind], group: itemId ? `${kind}:${itemId}` : kind, sort: 100 + rankOf(kind), itemLabel: label, itemId });
         }
       }
     });

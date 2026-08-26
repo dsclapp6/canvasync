@@ -203,24 +203,6 @@ export async function getUntracked() {
 }
 
 /**
- * addUntracked(folderName)
- * Explicit add. Usually not needed directly — /class/delete also adds. Kept
- * for symmetry with removeUntracked.
- */
-export async function addUntracked(folderName) {
-  return bridgePost('/config/untracked/add', { folderName });
-}
-
-/**
- * removeUntracked(folderName)
- * Re-track a previously-deleted class. Does NOT re-download data; next sync
- * will repopulate the folder from scratch.
- */
-export async function removeUntracked(folderName) {
-  return bridgePost('/config/untracked/remove', { folderName });
-}
-
-/**
  * publishScope(courseIds, enrolled)
  * Tells the bridge which courses this extension is syncing, so the dashboard,
  * the pipeline and the calendar can all narrow to the same set. `enrolled` is
@@ -267,18 +249,6 @@ export async function fetchSelectionIntent() {
  */
 export async function ackSelectionIntent(id) {
   return bridgePost('/config/intent/ack', { id });
-}
-
-// --- v1.1: destructive class delete ---------------------------------------------
-
-/**
- * deleteClass(folderName)
- * Asks the bridge to safe-delete `<root>/classes/<folderName>` and add the
- * folder to `untracked`. Returns `{ ok, deleted, cleanupPid }`.
- * The bridge enforces all 8 safe-delete rules; this wrapper just proxies.
- */
-export async function deleteClass(folderName) {
-  return bridgePost('/class/delete', { folderName });
 }
 
 // --- v1.1: course-file ingest + index -------------------------------------------

@@ -458,6 +458,20 @@ async function main() {
     }
   }
 
+  // The verdict fields are recomputed from scratch every run: dedupe and
+  // supersession both read the CURRENT index, so a preserved flag is a stale
+  // claim — and a one-way one. Once wedged (a re-downloaded file re-ordering
+  // a version pair set A→B and B→A simultaneously), both copies of a document
+  // vanished from everything the AI reads with no code path ever clearing the
+  // fields. Pass 1 has already re-extracted anything whose text was unlinked
+  // while hidden, so a fresh verdict is always complete.
+  for (const e of index) {
+    if (!e) continue;
+    e.duplicateOf = null;
+    e.supersededBy = null;
+    if ('versionAmbiguous' in e) delete e.versionAmbiguous;
+  }
+
   // Pass 2 — dedupe by textSha256. For collisions, the later canvasUpdatedAt wins.
   const byHash = new Map();
   for (const entry of index) {
@@ -498,7 +512,6 @@ async function main() {
   // makes the diff below possible — but it stops feeding anything the AI reads.
   const versions = resolveFileVersions(index);
   const byId = new Map(index.map(e => [String(e.canvasId), e]));
-  for (const e of index) e.supersededBy = e.supersededBy ?? null;
 
   for (const s of versions.superseded) {
     const loser = byId.get(String(s.canvasId));
@@ -590,7 +603,35 @@ async function main() {
   // The marker MUST be written last: trigger/sync-all use its mtime as this
   // stage's output anchor (files_index.json is rewritten here too, and in
   // split mode _combined.txt doesn't exist, so neither can serve as anchor).
-  await atomicWriteJson(indexPath, index);
+  //
+  // Merge, don't clobber: the bridge's /ingest/course-file appends to the
+  // SAME file while this minutes-long pass holds its own copy in memory, and
+  // whoever wrote last used to win — a file ingested mid-extraction vanished
+  // from the index (invisible in the UI, never extracted) until the next
+  // sync happened to re-upsert it. Disk entries this pass never saw are kept,
+  // and an entry the bridge re-downloaded mid-pass (newer lastSyncedAt) keeps
+  // the DISK copy — its 'pending' status is about the new bytes, which this
+  // pass's results do not describe.
+  const mergedIndex = await (async () => {
+    const diskNow = await readJsonSafe(indexPath);
+    if (!Array.isArray(diskNow)) return index;
+    const memById = new Map(index.map(e => [String(e?.canvasId), e]));
+    const out = [];
+    const seen = new Set();
+    for (const d of diskNow) {
+      const id = String(d?.canvasId);
+      const m = memById.get(id);
+      seen.add(id);
+      if (!m) { out.push(d); continue; }
+      const newerOnDisk = (d?.lastSyncedAt ?? '') > (m?.lastSyncedAt ?? '');
+      out.push(newerOnDisk ? d : m);
+    }
+    for (const m of index) {
+      if (!seen.has(String(m?.canvasId))) out.push(m);
+    }
+    return out;
+  })();
+  await atomicWriteJson(indexPath, mergedIndex);
   await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
   process.stderr.write(`Updated ${indexPath}\n`);
   process.exit(0);

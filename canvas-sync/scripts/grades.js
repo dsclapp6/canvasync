@@ -394,9 +394,16 @@ function tally(list) {
  */
 function applyDrop(t, rule) {
   if (!rule) return { ...t, dropped: 0, dropsPending: 0 };
-  const drop = rule.drop != null ? rule.drop : Math.max(0, t.total - (rule.keep ?? t.total));
+  // An excused item is neither graded nor outstanding: it can never enter
+  // t.graded, so measuring completeness against t.total blocked the drop
+  // FOREVER for any bucket holding one excused item — a final grade 16+
+  // points below the syllabus arithmetic, permanently. The keep-rule count
+  // likewise works on the gradeable population, or it would over-drop by the
+  // excused count.
+  const gradeable = t.total - t.excused;
+  const drop = rule.drop != null ? rule.drop : Math.max(0, gradeable - (rule.keep ?? gradeable));
   if (drop <= 0) return { ...t, dropped: 0, dropsPending: 0 };
-  if (t.graded < t.total || t.remaining > 0) {
+  if (t.graded < gradeable || t.remaining > 0) {
     return { ...t, dropped: 0, dropsPending: drop };
   }
   const sorted = [...t.scores].sort((a, b) => a.pct - b.pct);

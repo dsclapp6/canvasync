@@ -40,10 +40,16 @@ test('an op with no date is not an event', () => {
 
 test('a timed deadline is a 15-minute block ENDING at the deadline', () => {
   // The block on the calendar is the time you have left, not an hour after the
-  // deadline has already passed.
+  // deadline has already passed. (The old expectation here pinned
+  // DTSTART === DTEND at 23:59 — the one time of day where the clamped
+  // start-AT-deadline bug and the intent coincide, which is how the
+  // direction error survived.)
   const s = ev(OP);
-  assert.match(s, /DTSTART:20260914T235900/);
+  assert.match(s, /DTSTART:20260914T234400/);
   assert.match(s, /DTEND:20260914T235900/);
+  const afternoon = ev({ ...OP, time: '16:00' });
+  assert.match(afternoon, /DTSTART:20260914T154500/);
+  assert.match(afternoon, /DTEND:20260914T160000/);
 });
 
 test('times are floating — no Z, no TZID', () => {
@@ -109,10 +115,13 @@ test('a recurrence with no days is not a recurrence', () => {
 // --- escaping and folding -------------------------------------------------
 
 test('TEXT escaping does backslash first, or it escapes its own escapes', () => {
+  // NOTE: the old expectations here used the literal '\;' — which is just ';'
+  // in a JS string — so the test was pinning the unescaped-semicolon bug the
+  // module header forbids (RFC 5545 TSAFE-CHAR excludes raw ';').
   assert.equal(escText('a\\b'), 'a\\\\b');
-  assert.equal(escText('a;b,c'), 'a\;b\\,c');
+  assert.equal(escText('a;b,c'), 'a\\;b\\,c');
   assert.equal(escText('one\ntwo'), 'one\\ntwo');
-  assert.equal(escText('c:\\dir; x, y'), 'c:\\\\dir\; x\\, y');
+  assert.equal(escText('c:\\dir; x, y'), 'c:\\\\dir\\; x\\, y');
 });
 
 test('a comma in a title cannot split the property', () => {

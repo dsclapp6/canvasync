@@ -212,3 +212,37 @@ test('origin: a mined claim on a Canvas row that no longer exists is syllabus, n
   assert.equal(items[0].origin, 'syllabus');
   assert.equal(items[0].submit_url, null);
 });
+
+test('a stale FIRST covered id does not swallow the live rows behind it', () => {
+  // ids[0] points at a deleted row while ids[1] is live and dated. Resolving
+  // by ids[0] alone flipped the whole item to syllabus with its mined date and
+  // the claim swallowed the live row — a graded Canvas deadline vanished.
+  const mined = { items: [{
+    id: 's2a', title: 'S2a Concept Checks',
+    canvas_assignment_ids: [999999, 532700], category: 'quiz', due_date: '2026-09-01',
+  }] };
+  const { items } = tasksForClass({ mined, assignments: [PAPER_ROW] });
+  assert.equal(items.length, 1, 'the live row is spoken for, not duplicated');
+  assert.equal(items[0].id, 's2a');
+  assert.equal(items[0].origin, 'canvas', 'a live row stands behind the item');
+  assert.equal(items[0].due_date, '2026-03-19', 'Canvas date wins over the mined 2026-09-01');
+  assert.ok(items[0].submit_url, 'the live row supplies the Submit URL');
+});
+
+test('a deleted-and-recreated assignment resolves by title to the live row', () => {
+  // The instructor deleted the row mining claimed and re-created it under the
+  // same name with a new id. The mined item must merge with the live row —
+  // not ship as a link-less AI-added ghost carrying the mined date while the
+  // real deadline and Submit URL are suppressed by its title claim.
+  const mined = { items: [{
+    id: 'ghost', title: 'Midterm Case Assignment', canvas_assignment_id: 999999,
+    due_date: '2026-10-01',
+  }] };
+  const { items } = tasksForClass({ mined, assignments: [PAPER_ROW] });
+  assert.equal(items.length, 1, 'one item — merged, not a ghost beside a row');
+  assert.equal(items[0].id, 'ghost', 'mining keeps the item identity');
+  assert.equal(items[0].canvas_assignment_id, 532700, 'but points at the LIVE row');
+  assert.equal(items[0].origin, 'canvas');
+  assert.equal(items[0].due_date, '2026-03-19', 'the recreated row keeps the real deadline');
+  assert.ok(items[0].submit_url, 'and the real Submit URL');
+});

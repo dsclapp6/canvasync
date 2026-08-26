@@ -1,14 +1,12 @@
 // background.js — Service worker (ES module). Entry point for all background logic.
 // No DOM access. Runs in the extension's isolated service-worker context.
 
-import { paginate, fetchBinary, canvasGetJson, canvasFetch, CANVAS_BASE, AuthError, RateLimitError, NetworkError, ServerError, PermissionError } from './canvas-client.js';
+import { paginate, fetchBinary, canvasGetJson, canvasFetch, CANVAS_BASE, AuthError, NetworkError, ServerError, PermissionError } from './canvas-client.js';
 import {
   bridgePost,
   bridgeHealth,
   handshake,
   getUntracked,
-  removeUntracked,
-  deleteClass,
   ingestCourseFile,
   getFilesIndex,
   publishScope,
@@ -98,7 +96,6 @@ function _currentTermCourseIds(allCourses) {
 // Constants
 // ---------------------------------------------------------------------------
 
-const BRIDGE_URL          = 'http://127.0.0.1:3847';
 const ALARM_NAME          = 'weekly-monday';
 const POLL_ALARM_NAME     = 'interval-poll';
 
@@ -120,13 +117,16 @@ const COURSE_CONCURRENCY  = 3;
 const MAX_LOG_ENTRIES     = 50;
 const MAX_SYNC_HISTORY    = 25;
 const RETRY_DELAYS_MS     = [1_000, 4_000]; // exponential backoff steps for 5xx
-// v1.1: client-side cap on per-file ingest size. Bridge has its own body
-// limit (config.maxIngestMb, default 200). We mirror 200 MB as a hard
-// client ceiling so large blobs are skipped locally before hitting the wire.
-// OPEN: plumb this from bridge config on handshake if/when config exposes it;
-// for now match the bridge's default.
-const MAX_INGEST_MB       = 200;
-const MAX_INGEST_BYTES    = MAX_INGEST_MB * 1024 * 1024;
+// v1.1: client-side cap on per-file ingest size. The bridge's limit
+// (config.maxIngestMb, default 200) is on the JSON BODY, and dataBase64
+// inflates raw bytes by 4/3 plus the JSON envelope — so the raw-file ceiling
+// that actually fits through a 200 MB body is ~150 MB. Gating on the raw size
+// at 200 MB let 150–200 MB files download fully, then 413 at the bridge, on
+// every sync forever. 3% margin covers the envelope and metadata fields.
+// OPEN: plumb the bridge's limit from config on handshake if/when exposed.
+const BRIDGE_BODY_LIMIT_MB = 200;
+const MAX_INGEST_BYTES     = Math.floor(BRIDGE_BODY_LIMIT_MB * (3 / 4) * 0.97) * 1024 * 1024; // 145 MB
+const MAX_INGEST_MB        = Math.floor(MAX_INGEST_BYTES / (1024 * 1024)); // for messages
 
 // ---------------------------------------------------------------------------
 // In-memory state (reset on service-worker restart, persisted fields reloaded)
@@ -680,7 +680,10 @@ async function fullSync(reason) {
       const id = course.id;
       coursesSeen.push(id);
 
-      const itemList = ['assignments', 'groups', 'modules', 'discussions', 'announcements', 'pages', 'quizzes', 'events', 'files', 'grades', 'tabs', 'groups_list', 'files_download', 'syllabus'];
+      // Every key that fetchResource/_resolveCoursePacks will emit a
+      // course-item event for must be announced here: progress.js builds rows
+      // only from this list at course-start and drops events for missing rows.
+      const itemList = ['assignments', 'groups', 'modules', 'discussions', 'announcements', 'pages', 'quizzes', 'events', 'files', 'grades', 'tabs', 'groups_list', 'external_tools', 'course_packs', 'files_download', 'syllabus'];
       _broadcastProgress({
         phase:    'course-start',
         courseId: id,
@@ -1799,45 +1802,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async
   }
 
-  if (type === 'DELETE_CLASS') {
-    const { folderName } = message;
-    if (!folderName || typeof folderName !== 'string') {
-      sendResponse({ ok: false, error: 'folderName required' });
-      return false;
-    }
-    (async () => {
-      try {
-        const result = await deleteClass(folderName);
-        await _log('info', `Deleted class ${folderName} (cleanupPid=${result?.cleanupPid ?? 'n/a'})`, 'delete-class');
-        // Broadcast so any open popup re-renders. Ignore receivers that
-        // closed — chrome.runtime.sendMessage rejects with "no receiver".
-        chrome.runtime.sendMessage({ type: 'CLASSES_UPDATED' }).catch(() => {});
-        sendResponse({ ok: true, ...result });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message });
-      }
-    })();
-    return true; // async
-  }
-
-  if (type === 'RETRACK_CLASS') {
-    const { folderName } = message;
-    if (!folderName || typeof folderName !== 'string') {
-      sendResponse({ ok: false, error: 'folderName required' });
-      return false;
-    }
-    (async () => {
-      try {
-        await removeUntracked(folderName);
-        await _log('info', `Re-tracked class ${folderName}`, 'retrack-class');
-        chrome.runtime.sendMessage({ type: 'CLASSES_UPDATED' }).catch(() => {});
-        sendResponse({ ok: true });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message });
-      }
-    })();
-    return true; // async
-  }
+  // Class delete / re-track live in the desktop app, which talks to the
+  // bridge directly — the extension has no sender for them anywhere.
 
   return false;
 });

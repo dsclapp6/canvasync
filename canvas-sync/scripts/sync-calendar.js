@@ -133,6 +133,24 @@ function isoAddDays(isoDate, days) {
   return localIsoDate(d);
 }
 
+// First date on/after `iso` whose weekday is in `byday`. A weekly recurrence
+// anchored on a weekday its BYDAY does not name is undefined per RFC 5545,
+// and real clients (Google, Apple) render DTSTART itself as an occurrence —
+// so a MO/WE/FR office-hours rule anchored on the Tuesday the window opened
+// painted a phantom block on a day it never happens.
+const BYDAY_INDEX = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+function firstOnByday(iso, byday) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso ?? '')) return iso;
+  const wanted = new Set((Array.isArray(byday) ? byday : []).map(d => BYDAY_INDEX[d]).filter(n => n != null));
+  if (!wanted.size) return iso;
+  const d = new Date(iso + 'T12:00:00');
+  for (let i = 0; i < 7; i++) {
+    if (wanted.has(d.getDay())) return localIsoDate(d);
+    d.setDate(d.getDate() + 1);
+  }
+  return iso;
+}
+
 function classSlugOf(folderName) {
   return folderName.replace(/^[0-9]+-/, '');
 }
@@ -341,7 +359,12 @@ function opsForItem(it, {
     for (const cp of userCps) {
       if (cp.done || doneCps.has(cp.id)) { noteDoneCp(cp, cp.id); continue; }
       if (!cp.date || cp.date < minIso || cp.date > maxIso) continue;
-      const hash = shortHash(cp.title, cp.date, cp.time, it.title);
+      // The parent's due date is IN the description below, so it must be in
+      // the hash: a moved deadline otherwise regenerates an identical marker
+      // and the routine ("full marker matches exactly → skip") leaves the
+      // calendar event asserting the old date forever. The auto-prep block's
+      // hash already does this.
+      const hash = shortHash(cp.title, cp.date, cp.time, it.title, dueDate ?? '', dueTime ?? '');
       const marker = `[csync:s|${classSlug}|${itemRef}@${cp.id}|${hash}]`;
       ops.push(markerOp(marker, {
         calendar: 'checkpoint',
@@ -553,11 +576,17 @@ function opsForMeetings({
   ].filter(Boolean).join('\n');
   const hash = shortHash(title, pattern.byday.join(','), pattern.start, desc);
   const marker = `[csync:m|${classSlug}|weekly|${hash}]`;
+  // Anchor on a day the pattern actually meets — see firstOnByday.
+  const anchor = firstOnByday(
+    minIso > localIsoDate(new Date()) ? minIso : localIsoDate(new Date()),
+    pattern.byday,
+  );
+  if (anchor > termEnd) return ops;
   ops.push(markerOp(marker, {
     calendar: 'meeting',
     kind: 'meeting',
     title,
-    date: minIso > localIsoDate(new Date()) ? minIso : localIsoDate(new Date()),
+    date: anchor,
     time: pattern.start,
     end_time: pattern.end,
     all_day: false,
@@ -646,11 +675,15 @@ function opsForOfficeHours({ classSlug, courseCode, syllabusParsed, minIso, maxI
     // The prefix keys on the weekly slot, not on the date the recurrence starts:
     // a term that shifts by a day must update the event, not create a second one.
     const marker = `[csync:h|${classSlug}|${p.byday.join('')}@${p.start}|${hash}]`;
+    // Anchor on a day the pattern actually meets — see firstOnByday. A window
+    // the snap pushes past its own end has no occurrences left to show.
+    const anchor = firstOnByday(span.from, p.byday);
+    if (anchor > span.to) continue;
     ops.push(markerOp(marker, {
       calendar: KIND_CALENDAR.office_hours,
       kind: 'office_hours',
       title,
-      date: span.from,
+      date: anchor,
       time: p.start,
       end_time: p.end,
       all_day: false,

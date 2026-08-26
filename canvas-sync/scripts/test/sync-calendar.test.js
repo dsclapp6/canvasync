@@ -763,6 +763,11 @@ test('office hours are built from the syllabus, and refused rather than guessed'
   assert.equal(oh[0].calendar, 'meeting', 'a standing commitment in a room, not a deadline');
   // It ends when the class stops meeting, not 180 days out.
   assert.equal(oh[0].recurrence.until, isoDaysAhead(30));
+  // The anchor date must land on a day the pattern actually meets: clients
+  // render DTSTART itself as an occurrence, so an arbitrary window-open
+  // weekday paints a phantom office-hours block.
+  const anchorDay = new Date(oh[0].date + 'T12:00:00').getDay();
+  assert.ok([1, 3, 5].includes(anchorDay), `anchor ${oh[0].date} must be a MO/WE/FR`);
   // The professor's own words survive into the description, unreformatted.
   assert.match(oh[0].description, /Syllabus: M\/W\/F 11:30 – 1:30/);
 

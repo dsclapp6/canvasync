@@ -988,7 +988,10 @@ function evaluateStageState({ stage, staleness, logEntry, pipelineActive, livePr
 export async function indexProgress(root = dataRoot(), opts = {}) {
   const {
     pipelineStatus = null,
-    hostPid = process.pid,
+    // `bridgePid` is the name the bridge's route factory documents and sends;
+    // accept it as the alias it always meant to be, or an out-of-process
+    // mount mislabels the payload and the lock holder.
+    hostPid = opts.bridgePid ?? process.pid,
     scanProcesses = true,
     logBytes = DEFAULT_LOG_TAIL_BYTES,
     now = Date.now(),
@@ -1457,7 +1460,13 @@ async function buildClass(args) {
 
     let { state, basis, evidence } = evaluateStageState({
       stage, staleness, logEntry, pipelineActive, liveProc,
-      procScanAvailable: proc.available || pipelineAvailable,
+      // The ps scan ALONE proves absence. pipelineStatus is per-process
+      // memory that cannot see orphans of a restarted bridge (see the module
+      // header), so counting it as scan coverage let a dangling START read
+      // 'interrupted' — inviting a re-run and a second 20 GB model load —
+      // while buildJobs, keying the same decision on proc.available, said
+      // 'running-or-interrupted' in the same payload.
+      procScanAvailable: proc.available,
       sidecar, anchorPresent: anchorAt != null, anchorUnreadable,
     });
 
@@ -1476,6 +1485,11 @@ async function buildClass(args) {
 
     let queuedBasis = null;
     if (state === 'stale' && args.pipelineRunning && stage.counted !== false && !offInSettings) { state = 'queued'; queuedBasis = 'inferred'; }
+    // An off stage must never read stale either (same reason as queued: a
+    // promise no orchestrator will keep — the user re-enables nothing, waits,
+    // and the pipeline correctly never touches it). Its anchor exists; that
+    // is 'done', with the `stale` flag still carried for the detail view.
+    if (state === 'stale' && offInSettings) { state = 'done'; basis = 'off-in-settings'; }
 
     stages.push({
       key: stage.key, label: stage.label, script: stage.script, needsModel: stage.needsModel,

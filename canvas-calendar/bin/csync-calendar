@@ -49,7 +49,8 @@ Commands:
   dry-run [--class <slug>] Show what would change without writing.
   classes                  List synced classes visible to this tool.
   config                   Print current calendarId + timezone.
-  prune  [--dry-run]       Remove stale mapping entries (older than 30d).
+  prune  [--confirm]       DELETE Google events no sync has vouched for in 30d.
+                           Without --confirm, only lists what would go.
   reset  --confirm         Wipe tokens + mapping (keeps credentials).
 
 Data folder: ${calendarDir()}
@@ -146,9 +147,14 @@ async function reset() {
 }
 
 async function runPrune() {
-  const dryRun = flag('--dry-run');
+  // Prune deletes real Google Calendar events, not just mapping rows — the
+  // same bar as reset: destructive only with --confirm, a listing otherwise.
+  const dryRun = !flag('--confirm') || flag('--dry-run');
   const result = await prune({ dryRun });
   console.log(`${dryRun ? '[dry run] ' : ''}deleted=${result.deleted}`);
+  if (dryRun && result.deleted > 0) {
+    console.log('Nothing was deleted. Re-run with --confirm to delete these events from Google Calendar.');
+  }
 }
 
 main().catch((err) => {

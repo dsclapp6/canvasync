@@ -322,8 +322,12 @@ async function main() {
 
   printSummary(results);
 
-  const hasOrchestratorError = false;
-  process.exit(hasOrchestratorError ? 1 : 0);
+  // Exit code policy: partial failure is normal (one bad PDF must not turn a
+  // launchd job red), but EVERY class failing means the orchestration itself
+  // is broken — expired OAuth, missing model — and a wrapper that sees exit 0
+  // lets AI_CONTEXT quietly stay weeks stale.
+  const allFailed = results.length > 0 && results.every(r => r.outcome === 'error');
+  process.exit(allFailed ? 1 : 0);
 }
 
 function printSummary(results) {

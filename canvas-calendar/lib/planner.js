@@ -5,6 +5,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { claudeInvoke, extractJsonFromResponse } from './claude.js';
+// One rule governs every link handed to the user: for quiz-backed assignments
+// the raw html_url is the teacher view ("Access Denied" for students).
+import { canvasItemUrl } from '../../canvas-sync/canvas-links.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPT_PATH = join(__dirname, 'prompts', 'calendar-plan.md');
@@ -47,7 +50,7 @@ function slimAssignment(a) {
     due_at: a.due_at,
     points_possible: a.points_possible,
     submission_types: a.submission_types,
-    html_url: a.html_url,
+    html_url: canvasItemUrl(a) ?? a.html_url ?? null,
     description_text: stripHtml(a.description || '').slice(0, 2000),
     assignment_group: a.assignment_group?.name ?? null,
     group_weight: a.assignment_group?.group_weight ?? null,
@@ -105,28 +108,37 @@ export async function planEventsForClass({
   } catch (err) {
     throw new Error(`Planner returned invalid JSON: ${err.message}\nRaw head: ${raw.slice(0, 400)}`);
   }
-  return normalizePlan(parsed);
+  return normalizePlan(parsed, future);
 }
 
-function normalizePlan(p) {
+function normalizePlan(p, knownAssignments = []) {
   const events = Array.isArray(p.events) ? p.events : [];
   const skipped = Array.isArray(p.skipped) ? p.skipped : [];
+  // The corrected (student-facing) URL per assignment id. The model only ever
+  // COPIES a URL, so the event's link is looked up here, not trusted from the
+  // response — a checkpoint inherits its parent's.
+  const urlById = new Map(knownAssignments.map(a => [String(a.id), a.html_url ?? null]));
   return {
     events: events
       .filter(e => e && e.canvasAssignmentId && e.startISO && e.endISO && e.title)
-      .map(e => ({
-        canvasAssignmentId:       String(e.canvasAssignmentId),
-        kind:                     e.kind === 'checkpoint' ? 'checkpoint' : 'assignment',
-        parentCanvasAssignmentId: e.parentCanvasAssignmentId != null ? String(e.parentCanvasAssignmentId) : null,
-        checkpointIndex:          e.checkpointIndex != null ? Number(e.checkpointIndex) : null,
-        title:                    e.title,
-        startISO:                 e.startISO,
-        endISO:                   e.endISO,
-        description:              e.description ?? '',
-        reminders:                Array.isArray(e.reminders) ? e.reminders.filter(Number.isFinite) : [],
-        htmlUrl:                  e.htmlUrl ?? null,
-        courseCode:               e.courseCode ?? '',
-      })),
+      .map(e => {
+        const id = String(e.canvasAssignmentId);
+        const parentId = e.parentCanvasAssignmentId != null ? String(e.parentCanvasAssignmentId) : null;
+        const knownUrl = urlById.get(id) ?? (parentId ? urlById.get(parentId) : null);
+        return {
+          canvasAssignmentId:       id,
+          kind:                     e.kind === 'checkpoint' ? 'checkpoint' : 'assignment',
+          parentCanvasAssignmentId: parentId,
+          checkpointIndex:          e.checkpointIndex != null ? Number(e.checkpointIndex) : null,
+          title:                    e.title,
+          startISO:                 e.startISO,
+          endISO:                   e.endISO,
+          description:              e.description ?? '',
+          reminders:                Array.isArray(e.reminders) ? e.reminders.filter(Number.isFinite) : [],
+          htmlUrl:                  knownUrl ?? e.htmlUrl ?? null,
+          courseCode:               e.courseCode ?? '',
+        };
+      }),
     skipped,
   };
 }

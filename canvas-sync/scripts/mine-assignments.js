@@ -265,6 +265,13 @@ function validateMined(obj) {
       title: String(raw.title),
       kind: KINDS.has(raw.kind) ? raw.kind : (raw.canvas_assignment_id != null ? 'canvas' : 'implicit'),
       canvas_assignment_id: raw.canvas_assignment_id ?? null,
+      // The aggregate forward contract (canvas-tasks.js coveredCanvasIds):
+      // an item covering several Canvas rows lists them ALL, and every one is
+      // absorbed. The whitelist here used to strip these before they reached
+      // disk, making the documented contract unfulfillable.
+      canvas_assignment_ids: Array.isArray(raw.canvas_assignment_ids)
+        ? raw.canvas_assignment_ids.filter(v => v != null) : undefined,
+      covers: Array.isArray(raw.covers) ? raw.covers.filter(v => v != null) : undefined,
       category: CATEGORIES.has(raw.category) ? raw.category : 'other',
       due_date: typeof raw.due_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.due_date) ? raw.due_date : null,
       due_time: typeof raw.due_time === 'string' && /^\d{2}:\d{2}$/.test(raw.due_time) ? raw.due_time : null,

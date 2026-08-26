@@ -44,7 +44,9 @@ function dueParts(dueAt) {
 const FINAL_MODIFIES =
   'project|paper|presentation|talk|report|draft|case|essay|submission|deliverable'
   + '|assignment|portfolio|pitch|memo|reflection|survey|grade|grades|review|showcase';
-const EXAM_RE = new RegExp(`\\b(?:exam|midterm)\\b|\\bfinals?\\b(?!\\s+(?:${FINAL_MODIFIES})\\b)`, 'i');
+// Exported: class-chat's FACTS builder must apply the SAME reading of "final"
+// — a bare \bfinal\b there reported "Final Presentation" as the next exam.
+export const EXAM_RE = new RegExp(`\\b(?:exam|midterm)\\b|\\bfinals?\\b(?!\\s+(?:${FINAL_MODIFIES})\\b)`, 'i');
 const QUIZ_RE = /\bquiz\b/i;
 const READING_RE = /\b(read(ing)?s?|chapter|ch\.)\b/i;
 
@@ -164,8 +166,14 @@ export function tasksForClass({ mined, assignments }) {
   const items = [];
   for (const it of minedItems) {
     const ids = coveredCanvasIds(it);
-    const key = ids[0] ?? null;
-    const a = key ? byId.get(key) : null;
+    // Resolve against the first id Canvas still HAS, not blindly ids[0]: a
+    // mined item can carry a stale first id (deleted row) beside live ones,
+    // and resolving by ids[0] alone flipped the whole item to 'syllabus' with
+    // its mined date while the claim below swallowed the live dated rows —
+    // a graded Canvas deadline vanishing is exactly what invariant "Canvas is
+    // truth" forbids.
+    const key = ids.find(id => byId.has(id)) ?? ids[0] ?? null;
+    let a = key ? byId.get(key) : null;
 
     // An aggregate that names N deliverables but can only point at one Canvas
     // id, while Canvas holds that id as a dated row of its own, is a summary of
@@ -174,6 +182,35 @@ export function tasksForClass({ mined, assignments }) {
     // aggregate that claimed to cover them. An aggregate is only worth keeping
     // when Canvas has nothing dated to show.
     if (ids.length === 1 && aggregateCount(it.title) >= 2 && datedIds.has(key)) continue;
+
+    const tk = titleKey(it.title);
+
+    // No live id, but the item may still describe work Canvas HAS: mining
+    // wrote no id at all, or the claimed row was deleted and re-created under
+    // the same name. The union's dedupe rule is already the flattened title,
+    // so resolve by title before declaring the item AI-only — a matched row
+    // must supply the deadline and the links, not be suppressed by a
+    // link-less ghost stamped 'syllabus' (that stamp is a lie about real
+    // Canvas work, and the mined date overriding the live one is exactly
+    // what "Canvas is truth" forbids).
+    if (!a && tk) a = rows.find(r => r.due_at && titleKey(r.name) === tk) ?? null;
+
+    if (!a) {
+      // Mined an id Canvas no longer has (deleted, or assignments.json
+      // missing), and no live row shares the title. Whatever link mining
+      // stored is unverifiable, and an unverifiable Submit button is the
+      // denied-access bug the links work exists to remove. Claim only the
+      // dead ids (harmless — nothing live carries them).
+      //
+      // `origin` is the one provenance field the UI trusts: 'canvas' means a
+      // live Canvas row stands behind this item, 'syllabus' means the AI read
+      // it out of course materials and Canvas has nothing to open or submit.
+      // An item whose Canvas row vanished is 'syllabus' — claiming otherwise
+      // paints a Submit affordance on work Canvas cannot take.
+      for (const id of ids) claimedIds.add(id);
+      items.push({ ...it, submit_url: null, origin: 'syllabus' });
+      continue;
+    }
 
     // A mined item that will never produce a dated event must not silently
     // delete one. BUSI 380's re-mine turned its concept checks into a single
@@ -185,28 +222,16 @@ export function tasksForClass({ mined, assignments }) {
     const swallowsDated = Boolean(it.recurring) && ids.some(id => datedIds.has(id));
     if (!swallowsDated) {
       for (const id of ids) claimedIds.add(id);
-      const tk = titleKey(it.title);
       if (tk) claimedTitles.add(tk);
-    }
-
-    if (!a) {
-      // Mined an id Canvas no longer has (deleted, or assignments.json
-      // missing). Whatever link mining stored is unverifiable, and an
-      // unverifiable Submit button is the denied-access bug the links work
-      // exists to remove.
-      //
-      // `origin` is the one provenance field the UI trusts: 'canvas' means a
-      // live Canvas row stands behind this item, 'syllabus' means the AI read
-      // it out of course materials and Canvas has nothing to open or submit.
-      // An item whose Canvas row vanished is 'syllabus' — claiming otherwise
-      // paints a Submit affordance on work Canvas cannot take.
-      items.push({ ...it, submit_url: null, origin: 'syllabus' });
-      continue;
     }
 
     const merged = {
       ...it,
       origin: 'canvas',
+      // The RESOLVED row's id, not whatever stale id mining wrote: the
+      // assignment route follows this field to the Canvas row, and a dead id
+      // there loses the panel its Open/Submit links.
+      canvas_assignment_id: a.id,
       html_url: canvasItemUrl(a),
       submit_url: canvasSubmitUrl(a),
       // Canvas's own read of the title, kept beside the mined category so a

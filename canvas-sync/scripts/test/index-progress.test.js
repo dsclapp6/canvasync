@@ -756,6 +756,9 @@ test('a stage switched off in Settings is uncounted, never stale or queued', asy
   assert.equal(stageOf(c, 'mine').counted, false);
   assert.equal(stageOf(c, 'mine').notCountedReason, 'off-in-settings');
   assert.notEqual(stageOf(c, 'mine').state, 'queued', 'trigger.js skips this stage, so nothing is queued');
+  assert.notEqual(stageOf(c, 'mine').state, 'stale', 'stale is the same unkeepable promise as queued');
+  assert.equal(stageOf(c, 'mine').state, 'done', 'the anchor exists; off means nothing will refresh it');
+  assert.equal(stageOf(c, 'mine').stale, true, 'the raw staleness fact stays available to the detail view');
   // The denominator agrees: build (stale but on) still counts, mine does not.
   assert.ok(!c.overall.denominator.includes('mine'),
     'an off stage must leave the progress denominator');
