@@ -272,3 +272,55 @@ test('no .tmp files are left behind by concurrent writes', async () => {
   const left = (await fs.readdir(cal)).filter(n => n.includes('.tmp.'));
   assert.deepEqual(left, [], 'a per-call temp name, cleaned up on failure');
 });
+
+test('an unreadable store is moved aside, never overwritten', async () => {
+  // Reading as empty keeps the calendar working, but a mutation then rewrote
+  // the whole file from that empty read — one add replaced every real item,
+  // silently, on nothing worse than a torn write. The data is preserved under
+  // a name that says what it is, and the add still succeeds.
+  const cal = await tmpCal();
+  await fs.mkdir(cal, { recursive: true });
+  const file = path.join(cal, CUSTOM_ITEMS_FILE);
+  await fs.writeFile(file, '{"items":[{"id":"a","title":"Real thing"},{ TRUNCATED');
+
+  const item = await createCustomItem(cal, { title: 'New', date: '2026-09-14' });
+  assert.ok(item.id, 'the feature does not wedge');
+
+  const kept = (await fs.readdir(cal)).filter(n => n.includes('.unreadable-'));
+  assert.equal(kept.length, 1, 'exactly one preserved copy');
+  const preserved = await fs.readFile(path.join(cal, kept[0]), 'utf8');
+  assert.match(preserved, /Real thing/, 'the bytes are still on disk, recoverable');
+  assert.deepEqual((await readCustomItems(cal)).items.map(i => i.title), ['New']);
+});
+
+test('readCustomItems distinguishes absent from unreadable', async () => {
+  const cal = await tmpCal();
+  const missing = await readCustomItems(cal);
+  assert.deepEqual(missing.items, []);
+  assert.equal(missing.unreadable, false, 'nothing added yet is not a failure');
+
+  await fs.mkdir(cal, { recursive: true });
+  await fs.writeFile(path.join(cal, CUSTOM_ITEMS_FILE), 'not json at all');
+  const broken = await readCustomItems(cal);
+  assert.deepEqual(broken.items, [], 'still renders the calendar');
+  assert.equal(broken.unreadable, true, 'but writers must know');
+});
+
+test('re-filing an item under a class changes its marker, so the event retitles', () => {
+  // The marker hash is how the routine decides an event changed. Class is not
+  // in the marker prefix (unlike a due op's slug), so if it is not in the hash
+  // either, a re-filed item keeps its old event name forever.
+  const base = { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', title: 'Group dinner', date: '2026-09-14' };
+  const codeFor = slug => ({ 'busi-380-002': 'BUSI 380', 'econ-205-001': 'ECON 205' }[slug] ?? null);
+  const personal = customItemOp({ ...base, class: null }, { codeFor });
+  const busi = customItemOp({ ...base, class: 'busi-380-002' }, { codeFor });
+  const econ = customItemOp({ ...base, class: 'econ-205-001' }, { codeFor });
+
+  assert.equal(personal.title, 'Group dinner');
+  assert.equal(busi.title, 'BUSI 380 · Group dinner');
+  const markers = [personal.marker, busi.marker, econ.marker];
+  assert.equal(new Set(markers).size, 3, 'three different titles, three different markers');
+  // The identity half is stable — it is the same item, so it must update in
+  // place rather than turning into a second event.
+  assert.equal(new Set([personal.marker_prefix, busi.marker_prefix, econ.marker_prefix]).size, 1);
+});

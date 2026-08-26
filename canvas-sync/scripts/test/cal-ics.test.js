@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildIcs, opToVevent, escText, fold, icsDate, icsDateTime, nextDay, icsStamp, icsFilesFor,
+  buildIcs, opToVevent, escText, fold, icsDate, icsDateTime, nextDay, icsStamp, icsFilesFor, ICS_FILES,
 } from '../cal-ics.js';
 
 const STAMP = '20260824T120000Z';
@@ -245,4 +245,65 @@ test('a midnight deadline crosses into the previous day, never zero-length', () 
   const early = ev({ ...OP, time: '00:10' });
   assert.match(early, /DTSTART:20260913T235500/);
   assert.match(early, /DTEND:20260914T001000/);
+});
+
+// --- where op.time sits in the event --------------------------------------
+// A deadline is a moment you must be FINISHED by, so its block ends there.
+// Everything else timed BEGINS at its time. Applying the deadline rule to all
+// of them put lectures and hand-added appointments in the quarter hour BEFORE
+// themselves — and marked OPAQUE, so the user's free/busy said the wrong one.
+
+test('a lecture with no stated end starts at its time, it does not end there', () => {
+  const s = ev({ ...OP, kind: 'meeting', calendar: 'meeting', time: '11:30', end_time: null });
+  assert.match(s, /DTSTART:20260914T113000/);
+  assert.match(s, /DTEND:20260914T114500/);
+});
+
+test('a hand-added appointment starts at its time', () => {
+  const s = ev({ ...OP, kind: 'personal', calendar: 'custom', time: '14:00', end_time: null });
+  assert.match(s, /DTSTART:20260914T140000/);
+  assert.match(s, /DTEND:20260914T141500/);
+});
+
+test('a late appointment carries into the next day rather than collapsing', () => {
+  // addMinutes clamps at 23:59, which would make this zero-length — the same
+  // shape clients omit entirely.
+  const s = ev({ ...OP, kind: 'personal', calendar: 'custom', time: '23:59', end_time: null });
+  assert.match(s, /DTSTART:20260914T235900/);
+  assert.match(s, /DTEND:20260915T001400/);
+});
+
+test('the deadline shape is unchanged for due and checkpoint ops', () => {
+  assert.match(ev({ ...OP, calendar: 'due', time: '16:00' }), /DTSTART:20260914T154500/);
+  assert.match(ev({ ...OP, calendar: 'checkpoint', kind: 'checkpoint', time: '16:00' }), /DTSTART:20260914T154500/);
+});
+
+test('a deadline in the spring-forward gap keeps DTSTART before DTEND', () => {
+  // These times are FLOATING, so the arithmetic is wall-clock minutes. Routing
+  // it through a local Date normalised the non-existent 02:50 FORWARD to 03:50
+  // and emitted DTSTART after DTEND — an event no client can place.
+  for (const [time, wantStart] of [['03:05', '025000'], ['03:14', '025900'], ['03:15', '030000']]) {
+    const s = ev({ ...OP, calendar: 'due', date: '2027-03-14', time });
+    assert.match(s, new RegExp(`DTSTART:20270314T${wantStart}`), `due ${time}`);
+    const [, st] = /DTSTART:(\d{8}T\d{6})/.exec(s);
+    const [, en] = /DTEND:(\d{8}T\d{6})/.exec(s);
+    assert.ok(st < en, `DTSTART must precede DTEND for a ${time} deadline (got ${st} → ${en})`);
+  }
+});
+
+test('every calendar the writer produces is offerable as a subscription', () => {
+  // The bridge's /calendar/subscriptions list is derived from ICS_FILES for
+  // this reason: a hardcoded copy omitted personal.ics the day it was added,
+  // so the one calendar holding the user's own items had no URL to subscribe
+  // to. If a file is added here, it must reach the user.
+  const files = ICS_FILES.map(f => f.file);
+  assert.ok(files.includes('personal.ics'));
+  assert.equal(new Set(files).size, files.length, 'no duplicate file names');
+  assert.equal(ICS_FILES.filter(f => f.calendars === null).length, 1,
+    'exactly one everything-calendar');
+  // Every named calendar an op can carry must land in some file.
+  const covered = new Set(ICS_FILES.flatMap(f => f.calendars ?? []));
+  for (const cal of ['due', 'checkpoint', 'meeting', 'custom']) {
+    assert.ok(covered.has(cal), `${cal} ops have a file of their own`);
+  }
 });

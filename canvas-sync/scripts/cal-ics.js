@@ -96,20 +96,38 @@ function addMinutes(hhmm, mins) {
   return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
 }
 
-/**
- * The { date, time } 15 minutes before a deadline, crossing midnight when it
- * must. Clamping at 00:00 instead made a midnight deadline a zero-length
- * event (DTSTART === DTEND), which some clients omit entirely.
- */
-function before15(dateIso, hhmm) {
-  const [y, mo, d] = dateIso.split('-').map(Number);
-  const [h, m] = hhmm.split(':').map(Number);
-  const t = new Date(y, mo - 1, d, h, m - 15);
-  return {
-    date: `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`,
-    time: `${pad(t.getHours())}:${pad(t.getMinutes())}`,
-  };
+/** The day before `iso`. UTC-based like nextDay, so no zone can shift it. */
+export function prevDay(iso) {
+  if (!icsDate(iso)) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d - 1));
+  return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
 }
+
+/**
+ * Move a floating date-time by whole minutes, borrowing or carrying the day
+ * across midnight.
+ *
+ * Integer arithmetic on purpose. These times are FLOATING — the header says
+ * why — so a local `Date` has no business in the calculation, and using one
+ * put a real bug in the file: on the spring-forward day the wall clock 02:50
+ * does not exist, so `new Date(y, mo, d, 3, -10)` normalised it FORWARD to
+ * 03:50 and a 03:05 deadline emitted DTSTART after DTEND. Wall-clock minutes
+ * cannot skip an hour, because a floating time is not on a timeline.
+ */
+function shiftWallClock(dateIso, hhmm, deltaMinutes) {
+  const [h, m] = hhmm.split(':').map(Number);
+  let total = h * 60 + m + deltaMinutes;
+  let date = dateIso;
+  while (total < 0) { total += 1440; date = prevDay(date); }
+  while (total >= 1440) { total -= 1440; date = nextDay(date); }
+  return { date, time: `${pad(Math.floor(total / 60))}:${pad(total % 60)}` };
+}
+
+// A deadline is a moment you must be FINISHED by; everything else timed —
+// a lecture, office hours, an appointment the user typed — STARTS at its
+// time. Only the first shape earns the block that ends at the clock.
+const DEADLINE_CALENDARS = new Set(['due', 'checkpoint']);
 
 /**
  * One op as a VEVENT, or null when the op cannot be placed honestly.
@@ -151,14 +169,24 @@ export function opToVevent(op, { dtstamp }) {
       end = icsDateTime(date, op.end_time);
       if (!start) return null;
       if (!end || end <= start) end = icsDateTime(date, addMinutes(op.time, 15)) || start;
-    } else {
+    } else if (DEADLINE_CALENDARS.has(op.calendar)) {
       // A due time is a moment, not a span. The routine made these 15 minutes
       // long ending AT the deadline, so the block on the calendar is the time
       // you have left, not an hour after it has passed.
       end = icsDateTime(date, op.time);
       if (!end) return null;
-      const s = before15(date, op.time);
+      const s = shiftWallClock(date, op.time, -15);
       start = icsDateTime(s.date, s.time) || end;
+    } else {
+      // Not a deadline: op.time is when this BEGINS. Applying the rule above
+      // here put the block in the quarter hour before the thing — an 11:30
+      // lecture with no stated end read as busy 11:15–11:30 and free at
+      // 11:30, and a hand-added 2pm appointment sat at 1:45. Both are marked
+      // OPAQUE, so the wrong quarter hour is what the user's free/busy said.
+      start = icsDateTime(date, op.time);
+      if (!start) return null;
+      const e = shiftWallClock(date, op.time, 15);
+      end = icsDateTime(e.date, e.time) || start;
     }
     lines.push(`DTSTART:${start}`);
     lines.push(`DTEND:${end}`);

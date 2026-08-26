@@ -39,6 +39,7 @@ import {
   readCustomItems, createCustomItem, patchCustomItem, deleteCustomItem,
   customItemOp, CustomItemError, ID_RE as CUSTOM_ID_RE,
 } from '../custom-items.js';
+import { ICS_FILES } from '../scripts/cal-ics.js';
 import { indexProgressRouter } from './routes/index-progress.js';
 
 // From the manifest, never a copy: this is the number the UI footer and
@@ -771,17 +772,21 @@ export function buildApp(config) {
   dashRouter.get('/calendar/subscriptions', async (req, res) => {
     const calDir = path.join(syncHome(), 'calendar');
     const base = `http://127.0.0.1:${config.bridgePort ?? 3847}/ics/${icsToken}`;
-    // Every file icsFilesFor() writes gets a row. A calendar generated on disk
-    // and never offered here is one a subscriber cannot reach at all — which
-    // is what happened to personal.ics until this list was made to agree with
-    // the writer.
-    const files = [
-      { file: 'canvasync.ics', name: 'Everything' },
-      { file: 'deadlines.ics', name: 'Deadlines' },
-      { file: 'checkpoints.ics', name: 'Prep blocks' },
-      { file: 'classes.ics', name: 'Classes and office hours' },
-      { file: 'personal.ics', name: 'Added by you' },
-    ];
+    // Derived from the list that WRITES the files, never retyped: a calendar
+    // generated on disk and never offered here is one a subscriber cannot
+    // reach at all, which is what happened to personal.ics the day it was
+    // added. Friendly names for the ones we have opinions about; anything new
+    // inherits its writer's name rather than going missing.
+    const FRIENDLY = {
+      'canvasync.ics': 'Everything',
+      'deadlines.ics': 'Deadlines',
+      'checkpoints.ics': 'Prep blocks',
+      'classes.ics': 'Classes and office hours',
+      'personal.ics': 'Added by you',
+    };
+    const everythingFirst = [...ICS_FILES].sort((a, b) =>
+      (a.calendars === null ? 0 : 1) - (b.calendars === null ? 0 : 1));
+    const files = everythingFirst.map(({ file, name }) => ({ file, name: FRIENDLY[file] ?? name }));
     const out = await Promise.all(files.map(async (f) => {
       const p = path.join(calDir, f.file);
       let events = null;

@@ -37,17 +37,65 @@ function itemsPath(calDir) {
   return path.join(calDir, CUSTOM_ITEMS_FILE);
 }
 
+/**
+ * Read the store. Always answers — the calendar must render whatever happens
+ * here — but says WHICH kind of nothing it found.
+ *
+ * Absent means the user has added nothing. Unreadable does not: the file may
+ * hold fifty items this process merely failed to parse (a torn write, a
+ * permission change, a bad disk). Collapsing the two is what makes a read
+ * failure destructive, because every mutator writes the whole file back from
+ * what it read — one unparseable read and a single "add" replaced twelve real
+ * items with one, silently. Readers may ignore `unreadable`; writers must not.
+ */
 export async function readCustomItems(calDir) {
+  let raw;
   try {
-    const parsed = JSON.parse(await fs.readFile(itemsPath(calDir), 'utf8'));
+    raw = await fs.readFile(itemsPath(calDir), 'utf8');
+  } catch (err) {
+    // ENOENT is the only error that genuinely means "nothing added yet".
+    // EACCES/EIO/EMFILE are a file that exists and could not be read.
+    if (err?.code === 'ENOENT') return { version: 1, items: [], unreadable: false };
+    return { version: 1, items: [], unreadable: true, reason: err?.code ?? 'unreadable' };
+  }
+  try {
+    const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.items)) {
-      return { version: 1, items: [] };
+      return { version: 1, items: [], unreadable: true, reason: 'shape' };
     }
-    return { version: 1, items: parsed.items.filter(it => it && typeof it === 'object') };
+    return {
+      version: 1,
+      items: parsed.items.filter(it => it && typeof it === 'object'),
+      unreadable: false,
+    };
   } catch {
-    // Missing or corrupt reads as "the user has added nothing", which never
-    // fails the calendar.
-    return { version: 1, items: [] };
+    return { version: 1, items: [], unreadable: true, reason: 'parse' };
+  }
+}
+
+/**
+ * A mutation rewrites the whole file from what it just read, so an unreadable
+ * store would be overwritten by whatever the empty read produced — twelve real
+ * items replaced by one "add", silently, on a single EACCES or a torn write.
+ *
+ * Refusing outright would wedge the feature with no way out from the UI, which
+ * is why the store deliberately reads as empty rather than throwing. So do
+ * neither: move the unreadable file aside first. The user's data stays on disk
+ * under a name that says what it is, `items: []` becomes genuinely true, and
+ * the mutation proceeds. Only when it cannot be preserved does a write refuse.
+ */
+async function preserveUnreadable(state, calDir) {
+  if (!state.unreadable) return;
+  const file = itemsPath(calDir);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const kept = path.join(calDir, `${CUSTOM_ITEMS_FILE}.unreadable-${stamp}`);
+  try {
+    await fs.rename(file, kept);
+  } catch (err) {
+    throw new CustomItemError(
+      `${CUSTOM_ITEMS_FILE} could not be read (${state.reason}) and could not be moved aside `
+      + `(${err?.code ?? 'unknown'}) — refusing to overwrite it. Fix or move ${file} and try again.`,
+    );
   }
 }
 
@@ -209,6 +257,7 @@ export function createCustomItem(calDir, fields) {
 
 async function createCustomItemLocked(calDir, fields) {
   const state = await readCustomItems(calDir);
+  await preserveUnreadable(state, calDir);
   if (state.items.length >= MAX_ITEMS) {
     throw new CustomItemError(`too many custom items (max ${MAX_ITEMS})`);
   }
@@ -232,6 +281,7 @@ export function patchCustomItem(calDir, id, patch) {
 
 async function patchCustomItemLocked(calDir, id, patch) {
   const state = await readCustomItems(calDir);
+  await preserveUnreadable(state, calDir);
   const i = state.items.findIndex(it => it.id === id);
   if (i < 0) return null;
   const item = {
@@ -250,6 +300,7 @@ export function deleteCustomItem(calDir, id) {
 
 async function deleteCustomItemLocked(calDir, id) {
   const state = await readCustomItems(calDir);
+  await preserveUnreadable(state, calDir);
   const before = state.items.length;
   state.items = state.items.filter(it => it.id !== id);
   if (state.items.length === before) return false;
@@ -281,7 +332,14 @@ export function customItemOp(item, { codeFor = () => null } = {}) {
   if (item.description) descLines.push(item.description);
   descLines.push('Added by you in CANVASync.');
   const desc = descLines.join('\n');
-  const hash = shortHash(item.title, item.date, item.end_date, item.time, item.end_time, desc);
+  // Hash the EMITTED title, not the raw one. The hash is what tells the
+  // routine an event changed ("if the full marker matches exactly, skip"), so
+  // anything visible on the event must be in it — and `title` subsumes both
+  // item.class and the course code resolved from it. Hashing item.title alone
+  // meant re-filing an item under a different class produced a byte-identical
+  // marker, so the event kept its old name forever; the same defect was fixed
+  // once already for user checkpoints and their parent's due date.
+  const hash = shortHash(title, item.date, item.end_date, item.time, item.end_time, desc);
   const marker = `[csync:u|${item.id}|${hash}]`;
   return {
     marker,
