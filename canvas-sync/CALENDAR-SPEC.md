@@ -574,6 +574,40 @@ same reason every other calendar keeps an all-day row at the top.
 Suites at this note: `bridge/` **311 pass / 0 fail** (cal-grid +7,
 custom-items-route +10), `scripts/` **599 pass / 0 fail** (custom-items +15).
 
+**Reviewed adversarially straight afterwards** — four lenses over the diff, two
+independent skeptics per finding, default-to-refuted; 32 agents. Twelve
+findings survived, and the two that matter most are worth recording here
+because both are invisible to every count above:
+
+- **A drag could un-tick work.** A prep block's date lives in a LIST that
+  `patchTask` replaces wholesale, so moving one block sends every sibling
+  back — and the list was read from `CURRENT`, the snapshot taken when the
+  class was last opened. Ticking a prep block off *in the calendar* never
+  touches `CURRENT`, so tick-then-drag-a-sibling echoed the stale
+  `done: false` over the tick. The list is now re-read inside the queued
+  write. This is 2.9's failure mode reached through a §8 gesture, which is
+  why it is noted under both.
+- **A tick and a drag of the same task were not serialized** — they queued on
+  different keys while writing one JSON object. `taskWriteKey` now names the
+  FILE (`folder|id`), and `calDoneKey` keeps naming the tickable THING
+  (`folder|id|cp`), because a prep block is not its parent.
+
+Also fixed: a refused drag delivered its click, so trying to drag a lecture
+opened the lecture on top of the toast explaining why it would not move; a
+cancelled drag could leave a click-swallower armed forever (pointercancel is
+not a pointerup); `touch-action: none` made the month grid unscrollable by
+touch, now `pan-y` since every gesture here is horizontal; the assignment note
+debounce read the textarea when the timer fired rather than when the user
+typed, so switching assignments inside 600ms filed one page's text under the
+other's id; `renderCalendarOps` threw when items existed with no worklist yet;
+`personal.ics` was written but never offered to a subscriber; and editing an
+item belonging to an unsynced class silently re-filed it as Personal.
+
+Suites after the fixes: `bridge/` **311 pass / 0 fail**, `scripts/` **605 pass
+/ 0 fail** (the custom-items store gained concurrency tests in a parallel
+session's 1bc383d, which fixed the same lost-update race this review's data
+lens raised).
+
 ---
 
 ## Ledger
