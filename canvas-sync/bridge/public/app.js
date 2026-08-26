@@ -2985,6 +2985,29 @@ function calPointerMove(ev) {
   paintDragTargets(spanDates(next ?? op));
 }
 
+/**
+ * Eat the click the browser synthesises at the end of a drag.
+ *
+ * A pointer that goes down on a title, moves, and comes up still fires a click
+ * on that title — so without this, dropping an item where you started reading
+ * it also opens its page. Armed for exactly one click, and disarmed on the
+ * next tick so that a gesture which ends over nothing (an empty tile, off the
+ * grid) does not leave a trap for the user's next real click.
+ */
+function swallowNextClick({ afterPointerUp = false } = {}) {
+  const swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
+  window.addEventListener('click', swallow, { capture: true, once: true });
+  const disarm = () => setTimeout(
+    () => window.removeEventListener('click', swallow, { capture: true }), 0,
+  );
+  // Cancelling with Escape happens with the button still DOWN, so the click
+  // this is here to eat does not arrive until the user lets go — which may be
+  // seconds away. Disarming on the next tick would drop the trap before the
+  // click ever reached it.
+  if (afterPointerUp) window.addEventListener('pointerup', disarm, { once: true });
+  else disarm();
+}
+
 async function calPointerUp(ev) {
   const d = CAL_DRAG;
   if (!d || ev.pointerId !== d.pointerId) return;
@@ -2995,14 +3018,7 @@ async function calPointerUp(ev) {
   // title button and the Submit link all depend on that.
   if (!d.moved) { clearDragPaint(); return; }
 
-  // It WAS a drag, so swallow the click the browser is about to synthesise;
-  // otherwise letting go over a title opens the page you just dragged.
-  const swallow = (e) => { e.stopPropagation(); e.preventDefault(); };
-  window.addEventListener('click', swallow, { capture: true, once: true });
-  // If no click follows (dropping on empty space), the listener must not sit
-  // there waiting to eat the user's next real click.
-  setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
-
+  swallowNextClick();
   clearDragPaint();
   const day = d.target;
   if (!day) return;
@@ -3435,11 +3451,15 @@ function wireCalendarDrag() {
   box.addEventListener('pointerup', calPointerUp);
   box.addEventListener('pointercancel', () => { CAL_DRAG = null; clearDragPaint(); });
   // A drag abandoned with the keyboard leaves nothing painted and writes
-  // nothing — the same escape hatch the colour picker has.
+  // nothing — the same escape hatch the colour picker has. The button is
+  // usually still down, so the click that lands on release has to be eaten
+  // too: cancelling a drag over a title must not open that title.
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape' || !CAL_DRAG) return;
+    const wasDragging = CAL_DRAG.moved;
     CAL_DRAG = null;
     clearDragPaint();
+    if (wasDragging) swallowNextClick({ afterPointerUp: true });
   });
 }
 
