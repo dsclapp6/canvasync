@@ -10,3 +10,10 @@ logs/
 
 # Local Claude settings
 .claude/settings.local.json
+# Dev-server launch config — machine-local (ports, paths, commands).
+.claude/launch.json
+# Worktrees parallel agent sessions branch into: a second full copy of the
+# repo (2.8 MB, 156 files) living inside the repo. Nothing here is ever
+# committed from this side — the branch carries the work — but the directory
+# is untracked, so one `git add -A` would swallow the whole duplicate tree.
+.claude/worktrees/
