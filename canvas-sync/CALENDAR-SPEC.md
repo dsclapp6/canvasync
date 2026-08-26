@@ -433,8 +433,12 @@ typing…`, which asserts the copy AND the two rules behind it (never name an
 internal file, never claim a salvage that did not happen) — a looser
 assertion would have passed the very message that caused this.
 
-Suites at this note: `scripts/` **585 pass / 0 fail**, `bridge/` **292 pass /
-0 fail**.
+Suites at this note: `scripts/` **585 pass / 0 fail**, `bridge/` **291 pass /
+0 fail** — measured at `cc57f03`, which touches no `bridge/` file, so the
+number is unchanged from `c8df6cf`. (It read 292 here briefly; a suite count
+is one of this file's checkable numbers under rule 4, so it is worth being
+exact about. `npm test` in `canvas-sync/bridge` globs `test/*.test.js`, which
+counts any scratch file left in that directory.)
 
 ---
 
