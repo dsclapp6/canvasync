@@ -435,10 +435,31 @@ assertion would have passed the very message that caused this.
 
 Suites at this note: `scripts/` **585 pass / 0 fail**, `bridge/` **291 pass /
 0 fail** — measured at `cc57f03`, which touches no `bridge/` file, so the
-number is unchanged from `c8df6cf`. (It read 292 here briefly; a suite count
-is one of this file's checkable numbers under rule 4, so it is worth being
-exact about. `npm test` in `canvas-sync/bridge` globs `test/*.test.js`, which
-counts any scratch file left in that directory.)
+number is unchanged from `c8df6cf`.
+
+**Measure `bridge/` with `npm test`, not with a bare `node --test`** — the
+two always differ by exactly one, and the extra one is not a test. This line
+read 292 briefly and two sessions disagreed about it, so the cause is written
+down rather than the count: a suite count is one of rule 4's checkable
+numbers, and a right number with a wrong explanation attached still sends the
+next reader somewhere there is nothing to find.
+
+`npm test` runs `node --test test/*.test.js`. A bare `node --test` uses
+Node's own recursive discovery, which treats **every `.js` under a `test/`
+directory** as a test file — so it also loads `test/helpers/server-factory.js`,
+which defines no tests, and counts that file itself as one passing test. The
+gap is discovery, not content, so it holds at any count (291/292 at `cc57f03`,
+311/312 at `7ec8fef`) and is reproducible on a clean tree:
+
+```
+node --test --test-reporter=tap test/*.test.js   # what npm test runs
+node --test --test-reporter=tap                  # exactly one more
+comm -23 …   →   # Subtest: test/helpers/server-factory.js
+```
+
+So a count one higher than expected is **not** evidence of a stray scratch
+file in `bridge/test/`; looking for one finds nothing. `scripts/` has no
+`test/helpers/`, and both commands agree there (600 at `7ec8fef`).
 
 ## §8 — The calendar is something you can write on
 
