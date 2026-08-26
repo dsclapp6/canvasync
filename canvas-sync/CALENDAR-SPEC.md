@@ -325,7 +325,7 @@ the calendar."* And: *"i want you to remove per-class overrides."*
 | 6.4 | **No sequence of clicks can select nothing.** The 251→105 failure must be unreachable, not merely discouraged. | Exhaustive test over all 32 selections × 5 chips: every stored result has at least one kind true | x | x | x |
 | 6.5 | There is **no All button**. 6.3 is what it was for. | `[data-plan-all]` count === 0 | x | x | x |
 | 6.6 | **Per-class overrides are gone.** One selection governs the whole calendar. | `#cal-perclass` absent; `plan.classes` === `{}`; no `[data-plan-class]` | x | x | x |
-| 6.7 | The **meeting-times editor survives** the removal — it was the one control that panel was hiding, and two of six classes state no class time anywhere on disk. | `#cal-meettimes` lists all six classes, each with `set times` | x | x | x |
+| 6.7 | The **meeting-times editor survives** the removal — it was the one control that panel was hiding, and two of six classes state no class time anywhere on disk. | Superseded by §7.1 — the editor lives on each class's Overview tab AND in the calendar's `#cal-meettimes` list | x | x | x |
 | 6.8 | Nothing selected lights **every** chip, because that is what the calendar is doing. | `isSelected([], k)` is true for all five | x | x | x |
 | 6.9 | A kind that is off gets **no note**. A kind that is on and still produced nothing keeps its reason. | No `kind_notes` string matches `/switch is off/`; the Readings note survives | x | x | x |
 
@@ -356,6 +356,33 @@ states a fact about the data that nothing on the screen can otherwise give.
 now say nothing instead of restating a control the user can see; the per-class
 matrix (6 classes × 5 kinds = 30 buttons) is gone; the `All` button is gone. The
 Populate panel is five chips and a collapsed `Meeting times` list.
+
+## §7 — Class times: set, change, and undo
+
+Added 2026-08-25. The user's request: *"add ability to input/modify a class
+time if it is not existing. also incl. a revert option in case its accidentally
+changed or put in wrong."* The editor already lived on each class's Overview
+tab; 6.7's `#cal-meettimes` check described a calendar-side list that never
+actually existed until now, and nothing anywhere could undo a bad save.
+
+| # | Requirement | Check | Built | Live | User |
+| ---: | --- | --- | :---: | :---: | :---: |
+| 7.1 | The calendar carries a collapsed `Class times` list: every in-scope class, its current time and where it came from, and a `set times` (nothing known) or `change` (any time on record) control opening the same editor used on the Overview tab. | `#cal-meettimes` holds one `.meet-row` per class; a class with `has_time` shows `change`, one without shows `set times`; submitting the row's form POSTs `/api/class/:folder/meetings` | x | ~ | |
+| 7.2 | The list's summary states how many classes still need a time, so a collapsed disclosure never hides the actionable fact. | With one timeless class, `#cal-meettimes-summary` reads `Class times · 1 not set` | x | ~ | |
+| 7.3 | Every save or clear stashes what it replaced (`meeting_override.prev.json`), and an `undo` control appears wherever the editor does, saying what it lands on — `undo — back to TuTh 1:00-2:15 PM`, or `undo — back to the syllabus` when no override stood before. | `writeMeetingOverride`/`clearMeetingOverride` write `PREVIOUS_FILE`; `describeRevertTarget` unit-tested; `[data-meet-revert]` renders only when the server says `revert.available` | x | ~ | |
+| 7.4 | Undo is itself undoable: revert swaps states, so a second click is redo, and no click can strand the user. | `revertMeetingOverride` twice restores the newer override again (unit-tested); driven live: set → undo → undo returns the typed time and its calendar events | x | ~ | |
+| 7.5 | A revert lands on the calendar, not just in the file: the worklist rebuilds behind it exactly as it does behind a save. | POST `/api/class/:folder/meetings/revert` responds `rebuild_started: true`; driven live: undo removed the override's meetings from the grid within the poll window | x | ~ | |
+| 7.6 | A save that changes nothing does not eat the undo target, and a stash that no longer validates offers no undo at all. | Unit tests: identical re-save keeps the older stash; corrupt/day-less stash → `readMeetingRevert` null and the override left alone | x | | |
+
+**Driven 2026-08-25** in a real browser against a fixture data root (two
+classes: one syllabus-stated `MW 10:00-11:15`, one days-only `TuTh`): set times
+on the timeless class → `From your override — TuTh 10:50 AM-12:05 PM, McNair
+214`, two meetings on the grid; undo → back to `Days only (TuTh)… Set it
+yourself.`, meetings gone, link now offers redo; undo again → override and
+meetings back. `Live` is `~` not `x` because the drive used fixture classes,
+not the six real ones; `User` waits until this runs on the app-owned bridge.
+Suites at this note: `scripts/` **579 pass / 0 fail** (7 new revert tests),
+`bridge/` **285 pass / 0 fail**.
 
 ---
 

@@ -2900,6 +2900,9 @@ async function loadCalendar() {
   CAL_WORKLIST = worklist;
   seedCalDone();
   renderCalendarOps();
+  // The class-times list arrives behind the grid — the calendar is useful
+  // without it, so nothing waits on it.
+  loadCalClasses().then(renderMeetingTimes).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -2942,6 +2945,18 @@ function pollCalRebuild(remaining) {
 
 const MEET_DAYS = [['MO', 'M'], ['TU', 'Tu'], ['WE', 'W'], ['TH', 'Th'], ['FR', 'F'], ['SA', 'Sa'], ['SU', 'Su']];
 
+/** The set/change + undo controls every meeting-time surface shares. */
+function meetControlsHtml(c, open) {
+  const mt = c.meeting_times || {};
+  // "change" for any time already on record, whoever stated it — the editor
+  // opens prefilled either way; "set times" only when there is nothing yet.
+  const label = open ? 'cancel' : ((mt.source === 'override' || mt.has_time) ? 'change' : 'set times');
+  const undo = !open && mt.revert?.available
+    ? `<button type="button" class="linky meet-undo" data-meet-revert="${esc(c.folder)}">${esc(mt.revert.label || 'undo')}</button>`
+    : '';
+  return `<button type="button" class="linky" data-meet-edit="${esc(c.folder)}">${label}</button>${undo}`;
+}
+
 /** The meeting-times block for the class currently open, or '' when unknown. */
 function meetingTimesHtml() {
   const folder = CURRENT?.folder;
@@ -2954,9 +2969,38 @@ function meetingTimesHtml() {
     <section class="meet-block${mt.has_time ? '' : ' unset'}" id="meet-block">
       <h3>Meeting times</h3>
       <p class="meet-when">${esc(mt.summary || 'No class days or times found in the syllabus.')}</p>
-      <button type="button" class="linky" data-meet-edit="${esc(folder)}">${open ? 'cancel' : (mt.source === 'override' ? 'change' : 'set times')}</button>
+      <div class="meet-controls">${meetControlsHtml(c, open)}</div>
       ${open ? meetEditor(c) : ''}
     </section>`;
+}
+
+/**
+ * The calendar's class-times list: every class, its time, and the same editor
+ * — because the calendar is where a missing or wrong time is NOTICED, and
+ * noticing it must not mean going hunting for the class's Overview tab.
+ * CALENDAR-SPEC 6.7.
+ */
+function renderCalMeetTimes() {
+  const box = $('cal-meettimes');
+  if (!box) return;
+  const classes = CAL_CLASSES?.classes ?? [];
+  box.classList.toggle('hidden', !classes.length);
+  if (!classes.length) return;
+  const unset = classes.filter(c => !c.meeting_times?.has_time).length;
+  $('cal-meettimes-summary').textContent = unset ? `Class times · ${unset} not set` : 'Class times';
+  $('cal-meettimes-body').innerHTML = classes.map(c => {
+    const mt = c.meeting_times || {};
+    const open = MEET_EDIT === c.folder;
+    return `
+      <div class="meet-row${mt.has_time ? '' : ' unset'}">
+        <div class="meet-row-head">
+          <span class="meet-name">${esc(c.course_code || c.name)}</span>
+          <span class="meet-when">${esc(mt.summary || 'No class days or times found.')}</span>
+          ${meetControlsHtml(c, open)}
+        </div>
+        ${open ? meetEditor(c) : ''}
+      </div>`;
+  }).join('');
 }
 
 function meetEditor(c) {
@@ -2986,11 +3030,11 @@ function meetEditor(c) {
     </form>`;
 }
 
-/** Repaint just the meeting-times block, in place. */
+/** Repaint every meeting-times surface, in place. */
 function renderMeetingTimes() {
   const host = $('meet-host');
-  if (!host) return;
-  host.innerHTML = meetingTimesHtml();
+  if (host) host.innerHTML = meetingTimesHtml();
+  renderCalMeetTimes();
 }
 
 async function saveMeetEditor(form, folder) {
@@ -3017,9 +3061,7 @@ async function saveMeetEditor(form, folder) {
   pollCalRebuild(8);
 }
 
-function wireMeetingTimes() {
-  const host = $('meet-host');
-  if (!host) return;
+function wireMeetHost(host) {
   host.addEventListener('submit', (ev) => {
     const form = ev.target.closest('[data-meet-form]');
     if (!form) return;
@@ -3039,8 +3081,27 @@ function wireMeetingTimes() {
         .then(() => { MEET_EDIT = null; return loadCalClasses(); })
         .then(() => { renderMeetingTimes(); pollCalRebuild(8); })
         .catch(e => toast(e.message));
+      return;
+    }
+    const undo = ev.target.closest('[data-meet-revert]');
+    if (undo) {
+      // Disabled for the round-trip: a double-click would revert the revert.
+      undo.disabled = true;
+      api(`/api/class/${undo.dataset.meetRevert}/meetings/revert`, { method: 'POST' })
+        .then(() => { MEET_EDIT = null; return loadCalClasses(); })
+        .then(() => { renderMeetingTimes(); pollCalRebuild(8); })
+        .catch(e => toast(e.message));
     }
   });
+}
+
+function wireMeetingTimes() {
+  // The same controls live in two places — the class's Overview tab and the
+  // calendar's class-times list — and must behave identically in both.
+  for (const id of ['meet-host', 'cal-meettimes']) {
+    const host = $(id);
+    if (host) wireMeetHost(host);
+  }
 }
 
 // ---------------------------------------------------------------------------

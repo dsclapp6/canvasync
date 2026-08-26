@@ -17,7 +17,8 @@ import { join } from 'node:path';
 import { parseWeeklyPatterns } from '../cal-meetings.js';
 import {
   readMeetingOverride, writeMeetingOverride, clearMeetingOverride,
-  recoverMeetingTimes, describeMeetingSource, OVERRIDE_FILE,
+  readMeetingRevert, revertMeetingOverride, describeRevertTarget,
+  recoverMeetingTimes, describeMeetingSource, OVERRIDE_FILE, PREVIOUS_FILE,
 } from '../meeting-times.js';
 
 // Verbatim from "Marketing 380  Syllabus (Fall 2026) Aug 11.pdf.txt", lines
@@ -263,6 +264,100 @@ test('clearMeetingOverride removes the file once and then says so', async () => 
   assert.equal(await clearMeetingOverride(dir), true);
   assert.equal(await clearMeetingOverride(dir), false);
   assert.equal(await readMeetingOverride(dir), null);
+  await rm(dir, { recursive: true, force: true });
+});
+
+// --- Revert: the escape hatch for a time typed wrong ------------------------
+
+test('a mis-typed change reverts to the earlier override, and reverting again is redo', async () => {
+  const dir = await seedClass({});
+  await writeMeetingOverride(dir, { days: ['TU', 'TH'], start: '13:00', end: '14:15' });
+  await writeMeetingOverride(dir, { days: ['MO'], start: '09:00', end: '09:50' });
+
+  const stash = await readMeetingRevert(dir);
+  assert.deepEqual(stash.previous.days, ['TU', 'TH']);
+  assert.equal(describeRevertTarget(stash), 'undo — back to TuTh 1:00-2:15 PM');
+
+  assert.ok(await revertMeetingOverride(dir));
+  let stored = await readMeetingOverride(dir);
+  assert.deepEqual(stored.days, ['TU', 'TH']);
+  assert.equal(stored.start, '13:00');
+
+  // The revert swapped states, so a second revert restores the Monday time.
+  assert.ok(await revertMeetingOverride(dir));
+  stored = await readMeetingOverride(dir);
+  assert.deepEqual(stored.days, ['MO']);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('the first save reverts to no override at all, and the chain answers again', async () => {
+  const dir = await seedClass({
+    parsed: { course: { meeting_schedule: 'TR, 10:50 am - 12:05 pm' } },
+  });
+  await writeMeetingOverride(dir, { days: ['FR'], start: '08:00', end: '08:50' });
+  assert.equal((await recoverMeetingTimes(dir)).source, 'override');
+
+  const stash = await readMeetingRevert(dir);
+  assert.equal(stash.previous, null);
+  assert.equal(describeRevertTarget(stash), 'undo — back to the syllabus');
+
+  assert.ok(await revertMeetingOverride(dir));
+  assert.equal(await readMeetingOverride(dir), null);
+  assert.equal((await recoverMeetingTimes(dir)).source, 'syllabus-field');
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('a cleared override comes back with revert, original updatedAt and all', async () => {
+  const dir = await seedClass({});
+  await writeMeetingOverride(dir, { days: ['WE'], start: '15:00', end: '16:15', location: 'Sewall 301' });
+  const before = await readMeetingOverride(dir);
+  await clearMeetingOverride(dir);
+  assert.equal(await readMeetingOverride(dir), null);
+
+  assert.ok(await revertMeetingOverride(dir));
+  const restored = await readMeetingOverride(dir);
+  assert.deepEqual(restored, before);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('nothing to revert to means revert says so and touches nothing', async () => {
+  const dir = await seedClass({ override: { days: ['MO'], start: '09:00', end: '09:50' } });
+  assert.equal(await readMeetingRevert(dir), null);
+  assert.equal(await revertMeetingOverride(dir), null);
+  assert.deepEqual((await readMeetingOverride(dir)).days, ['MO']);
+  assert.equal(describeRevertTarget(null), null);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('a stash that cannot be trusted offers no revert', async () => {
+  for (const bad of ['not json{', JSON.stringify({ version: 1 }), JSON.stringify({ previous: { days: ['TBD'] } })]) {
+    const dir = await seedClass({ override: { days: ['MO'], start: '09:00', end: '09:50' } });
+    await writeFile(join(dir, PREVIOUS_FILE), bad);
+    assert.equal(await readMeetingRevert(dir), null, `stash ${bad} should be unusable`);
+    assert.equal(await revertMeetingOverride(dir), null);
+    // The override the stash knows nothing about is left alone.
+    assert.deepEqual((await readMeetingOverride(dir)).days, ['MO']);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('saving the same values again does not eat the revert target', async () => {
+  const dir = await seedClass({});
+  await writeMeetingOverride(dir, { days: ['TU', 'TH'], start: '13:00', end: '14:15' });
+  await writeMeetingOverride(dir, { days: ['MO'], start: '09:00', end: '09:50' });
+  // A second identical Save — a double-click, a nervous re-submit.
+  await writeMeetingOverride(dir, { days: ['MO'], start: '09:00', end: '09:50' });
+
+  const stash = await readMeetingRevert(dir);
+  assert.deepEqual(stash.previous.days, ['TU', 'TH'], 'undo must still reach the Tuesday time');
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('a days-only previous is labelled as such', async () => {
+  const dir = await seedClass({});
+  await writeMeetingOverride(dir, { days: ['TU', 'TH'] });
+  await writeMeetingOverride(dir, { days: ['MO'], start: '09:00', end: '09:50' });
+  assert.equal(describeRevertTarget(await readMeetingRevert(dir)), 'undo — back to TuTh (days only)');
   await rm(dir, { recursive: true, force: true });
 });
 

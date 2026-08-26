@@ -249,6 +249,14 @@
              Readings toggle and a class with no meetings both used to look
              identical to a sync that had failed. CALENDAR-SPEC 4.5, 4.6. -->
         <div id="cal-notes" class="cal-notes hidden"></div>
+        <!-- Every class's meeting time, set or fixable right here — the
+             calendar is where a wrong or missing time is noticed. Same editor
+             as each class's Overview tab; rows by renderCalMeetTimes(),
+             clicks by wireMeetingTimes(). CALENDAR-SPEC 6.7. -->
+        <details id="cal-meettimes" class="cal-meettimes hidden">
+          <summary id="cal-meettimes-summary">Class times</summary>
+          <div id="cal-meettimes-body"></div>
+        </details>
         <div id="cal-ops"></div>
       </section>
     </main>

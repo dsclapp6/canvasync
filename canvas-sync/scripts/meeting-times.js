@@ -50,6 +50,12 @@ import {
 
 export const OVERRIDE_FILE = 'meeting_override.json';
 
+// Whatever the last save or clear replaced, kept so one mis-typed time or one
+// stray click on "Use the syllabus instead" is a single revert away. Holds
+// exactly one state — the previous one — because the failure being cured is
+// "I just broke it", not "show me the history".
+export const PREVIOUS_FILE = 'meeting_override.prev.json';
+
 /** Every source recoverMeetingTimes can name, strongest first. */
 export const SOURCES = ['override', 'syllabus-field', 'syllabus-text', 'canvas', 'inferred', 'none'];
 
@@ -436,6 +442,80 @@ export async function readMeetingOverride(classDir) {
   return override;
 }
 
+async function writeJsonAtomic(file, value) {
+  const tmp = `${file}.tmp.${process.pid}`;
+  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  await fs.rename(tmp, file);
+}
+
+async function stashPrevious(classDir, previous, action) {
+  await writeJsonAtomic(path.join(classDir, PREVIOUS_FILE), {
+    version: 1,
+    action,
+    replacedAt: new Date().toISOString(),
+    previous,
+  });
+}
+
+/**
+ * What revert would restore, or null when there is nothing to go back to.
+ * `previous` is the validated earlier override, or null meaning "no override
+ * — back to whatever the syllabus and Canvas say". A stash whose override no
+ * longer validates is unusable and reads as no stash at all: restoring
+ * garbage is the accident this file exists to undo, not a way to perform it.
+ */
+export async function readMeetingRevert(classDir) {
+  const { value } = await readJson(path.join(classDir, PREVIOUS_FILE));
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  // The key has to be present: a stash that never says what came before must
+  // not read as "nothing did" — reverting on that would delete an override
+  // the stash knows nothing about.
+  if (!('previous' in value)) return null;
+  const meta = {
+    action: typeof value.action === 'string' ? value.action : null,
+    replacedAt: typeof value.replacedAt === 'string' ? value.replacedAt : null,
+  };
+  if (value.previous === null) return { ...meta, previous: null };
+  const { override } = validateOverride(value.previous);
+  return override ? { ...meta, previous: override } : null;
+}
+
+/**
+ * Swap the override with the stashed previous state. Returns what was
+ * restored ({ previous, action, replacedAt } as readMeetingRevert shapes it),
+ * or null when there is nothing usable to revert to. The state that was just
+ * replaced becomes the new stash, so a revert is itself revertible — a second
+ * revert is redo, and no click here can strand the user.
+ */
+export async function revertMeetingOverride(classDir) {
+  const stash = await readMeetingRevert(classDir);
+  if (!stash) return null;
+  const current = await readMeetingOverride(classDir);
+  if (stash.previous) {
+    // Restored verbatim, original updatedAt included — it is the record of
+    // when the user actually typed this, and reverting is not retyping.
+    await writeJsonAtomic(path.join(classDir, OVERRIDE_FILE), stash.previous);
+  } else {
+    try { await fs.unlink(path.join(classDir, OVERRIDE_FILE)); } catch { /* already absent */ }
+  }
+  await stashPrevious(classDir, current, 'revert');
+  return stash;
+}
+
+/**
+ * Short label for the revert control, or null when `stash` is null. Says what
+ * clicking it restores — an undo that does not say where it lands is the same
+ * gamble as the mistake it undoes.
+ */
+export function describeRevertTarget(stash) {
+  if (!stash) return null;
+  if (!stash.previous) return 'undo — back to the syllabus';
+  const p = patternsFromOverride(stash.previous)[0];
+  const days = formatDays(p.byday);
+  const range = formatRange(p.start, p.end);
+  return `undo — back to ${days}${range ? ` ${range}` : ' (days only)'}`;
+}
+
 /**
  * Merge `patch` into the saved override and write it back. An explicit null
  * clears a field, so { start: null, end: null } drops the time and keeps the
@@ -478,22 +558,32 @@ export async function writeMeetingOverride(classDir, patch = {}) {
     throw new TypeError(`writeMeetingOverride: no class directory at ${classDir}`);
   }
 
+  // Whatever stood before this save — an earlier override, or nothing —
+  // becomes the revert target. A save that changes no field keeps the old
+  // stash: pressing Save twice must not turn "undo" into a restatement of
+  // what is already there.
+  const unchanged = current && ['days', 'start', 'end', 'location', 'label', 'note']
+    .every(k => JSON.stringify(current[k] ?? null) === JSON.stringify(override[k] ?? null));
+  if (!unchanged) await stashPrevious(classDir, current, 'set');
+
   override.updatedAt = new Date().toISOString();
-  const file = path.join(classDir, OVERRIDE_FILE);
-  const tmp = `${file}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, `${JSON.stringify(override, null, 2)}\n`);
-  await fs.rename(tmp, file);
+  await writeJsonAtomic(path.join(classDir, OVERRIDE_FILE), override);
   return override;
 }
 
 /** Forget the override. True when a file was actually removed. */
 export async function clearMeetingOverride(classDir) {
+  // Stash what is being cleared first: "Use the syllabus instead" clicked by
+  // mistake must not eat a time the user typed. A file too corrupt to read
+  // back leaves no stash — reverting to it would restore nothing usable.
+  const current = await readMeetingOverride(classDir);
   try {
     await fs.unlink(path.join(classDir, OVERRIDE_FILE));
-    return true;
   } catch {
     return false;
   }
+  if (current) await stashPrevious(classDir, current, 'clear');
+  return true;
 }
 
 function patternsFromOverride(override) {

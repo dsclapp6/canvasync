@@ -30,10 +30,15 @@ import { modelLockStatus, anthropicKeyStatus } from '../scripts/_util.js';
 import { DEFAULT_PALETTE, COLORS_FILE, resolveColors, applyColorPatch } from '../class-colors.js';
 import { countMeetings } from '../scripts/cal-meetings.js';
 import { classGrades } from '../scripts/grades.js';
-import { recoverMeetingTimes, writeMeetingOverride, clearMeetingOverride, describeMeetingSource } from '../scripts/meeting-times.js';
+import {
+  recoverMeetingTimes, writeMeetingOverride, clearMeetingOverride,
+  revertMeetingOverride, readMeetingRevert, describeRevertTarget, describeMeetingSource,
+} from '../scripts/meeting-times.js';
 import { indexProgressRouter } from './routes/index-progress.js';
 
-const VERSION = '1.1.0';
+// Keep in step with bridge/package.json — this is the number the UI footer
+// and /api/status report, and it had drifted three releases behind.
+const VERSION = '1.5.0';
 // OPEN: BRIDGE_PORT=0 is used by tests for ephemeral port; production always uses 3847.
 const BIND_ADDR = '127.0.0.1';
 
@@ -1146,13 +1151,29 @@ export function buildApp(config) {
   // GET reports the recovery chain's answer and where it came from, so the UI
   // can distinguish "the syllabus says 10:50" from "nobody knows, type it in".
   // POST stores the user's own answer, which outranks every other source.
+  // POST …/meetings/revert swaps back to whatever the last save or clear
+  // replaced — the escape hatch for a time typed wrong or changed by accident.
+  //
+  // Every response carries `revert`: whether an undo exists and what it lands
+  // on, so the UI can offer it without a second request.
+  async function meetingRevertInfo(dir) {
+    const stash = await readMeetingRevert(dir).catch(() => null);
+    if (!stash) return { available: false };
+    return {
+      available: true,
+      action: stash.action,
+      replaced_at: stash.replacedAt,
+      label: describeRevertTarget(stash),
+    };
+  }
+
   dashRouter.get('/class/:folderName/meetings', async (req, res) => {
     const { folderName } = req.params;
     if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
     const dir = path.join(syncHome(), 'classes', folderName);
     try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
     const times = await recoverMeetingTimes(dir);
-    res.json({ ...times, summary: describeMeetingSource(times) });
+    res.json({ ...times, summary: describeMeetingSource(times), revert: await meetingRevertInfo(dir) });
   });
 
   dashRouter.post('/class/:folderName/meetings', async (req, res) => {
@@ -1171,7 +1192,21 @@ export function buildApp(config) {
     // The times only reach the calendar through the worklist, so rebuild it
     // here rather than making the client fake a plan change to trigger one.
     const rebuild_started = spawnWorklistRebuild();
-    res.json({ ok: true, ...times, summary: describeMeetingSource(times), rebuild_started });
+    res.json({ ok: true, ...times, summary: describeMeetingSource(times), revert: await meetingRevertInfo(dir), rebuild_started });
+  });
+
+  dashRouter.post('/class/:folderName/meetings/revert', async (req, res) => {
+    const { folderName } = req.params;
+    if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
+    const dir = path.join(syncHome(), 'classes', folderName);
+    try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
+    const reverted = await revertMeetingOverride(dir);
+    // Nothing stashed is a state the UI should never offer a button for, so
+    // reaching here means the two disagree — refresh, don't pretend.
+    if (!reverted) return res.status(409).json({ error: 'nothing to revert' });
+    const times = await recoverMeetingTimes(dir);
+    const rebuild_started = spawnWorklistRebuild();
+    res.json({ ok: true, ...times, summary: describeMeetingSource(times), revert: await meetingRevertInfo(dir), rebuild_started });
   });
 
   dashRouter.delete('/class/:folderName/meetings', async (req, res) => {
@@ -1182,7 +1217,7 @@ export function buildApp(config) {
     const removed = await clearMeetingOverride(dir);
     const times = await recoverMeetingTimes(dir);
     const rebuild_started = spawnWorklistRebuild();
-    res.json({ ok: true, removed, ...times, summary: describeMeetingSource(times), rebuild_started });
+    res.json({ ok: true, removed, ...times, summary: describeMeetingSource(times), revert: await meetingRevertInfo(dir), rebuild_started });
   });
 
   // --- Ask: question answering over one class, routed by the correlation graph
@@ -1375,6 +1410,7 @@ export function buildApp(config) {
           patterns: times?.patterns ?? [],
           summary: times ? describeMeetingSource(times) : null,
           warnings: times?.warnings ?? [],
+          revert: await meetingRevertInfo(dir),
         },
       };
     }));

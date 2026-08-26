@@ -1487,7 +1487,31 @@ table.files tr:hover td { background: var(--sunk); }
 }
 .meet-when { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--t-small); }
 .meet-block.unset .meet-when { color: var(--muted); font-style: italic; }
+.meet-controls { display: flex; gap: var(--s-4); align-items: baseline; flex-wrap: wrap; }
+.meet-undo { color: var(--muted); }
 .meet-actions { display: flex; gap: var(--s-4); margin-top: var(--s-3); align-items: center; flex-wrap: wrap; }
+
+/* The calendar's class-times list: the same editor, folded under the toolbar
+   so six rows never crowd the grid, with the summary saying when any class
+   still needs its time typed in. */
+.cal-meettimes {
+  margin: var(--s-3) 0 var(--s-5);
+  padding: 0 var(--s-2);
+  border-left: 2px solid var(--rule-2);
+}
+.cal-meettimes summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--t-small);
+  font-weight: var(--w-label);
+  padding: var(--s-1) var(--s-2);
+}
+.cal-meettimes summary:hover { color: var(--ink); }
+.meet-row { padding: var(--s-3) var(--s-2); border-bottom: 1px solid var(--rule); }
+.meet-row:last-child { border-bottom: 0; }
+.meet-row-head { display: flex; gap: var(--s-4); align-items: baseline; flex-wrap: wrap; }
+.meet-row .meet-name { font-size: var(--t-small); font-weight: var(--w-head); }
+.meet-row.unset .meet-when { color: var(--muted); font-style: italic; }
 .meet-editor {
   margin-top: var(--s-4);
   padding: var(--s-5);
