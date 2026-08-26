@@ -2072,21 +2072,86 @@ table.files tr:hover td { background: var(--sunk); }
 }
 
 /* --- Ask this class (the chat rail) ---------------------------------------
-   A rail, not a tab: it sits beside whatever tab is open so an answer can be
-   read next to the task it is about. Questions are set into the paper (sunk),
-   answers are ink on the panel with their sources listed under them — the
-   page reads as correspondence, not as a messenger app. */
+   A sidebar, not a tab: it sits beside whatever tab is open so an answer can
+   be read next to the task it is about. Collapsed it is a labelled spine on
+   the page's right edge — visible the whole time a class is open, so the panel
+   announces itself instead of hiding behind a button in the tab strip.
+   Questions are set into the paper (sunk), answers are ink on the panel with
+   their sources listed under them — the page reads as correspondence, not as
+   a messenger app. */
 #view-classes { position: relative; }
-#view-classes.chat-open { grid-template-columns: 320px minmax(0, 1fr) 340px; }
-.tabs .chat-toggle { margin-left: auto; }
+:root { --chat-spine: 44px; }
+/* The rail is part of the class page, so it takes a column only where a class
+   is open (.chat-avail) — never on the class home or the settings panels. */
+#view-classes.chat-avail { grid-template-columns: 320px minmax(0, 1fr) var(--chat-spine); }
+#view-classes.chat-avail.chat-open {
+  grid-template-columns: 320px minmax(0, 1fr) calc(var(--chat-spine) + 340px);
+}
 
 .chat-rail {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* The spine: the whole entry point, and the collapse control too. Vertical
+   because a 44px column has no room for a horizontal word, and a word beats
+   an icon here — "Ask this class" needs no learning. */
+.chat-spine {
+  flex: none;
+  width: var(--chat-spine);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-5) 0;
+  border: 0;
+  border-left: 1px solid var(--rule-2);
+  border-radius: 0;
+  background: var(--sunk);
+  color: var(--muted);
+  cursor: pointer;
+  box-shadow: none;
+  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.chat-spine:active { transform: none; }
+.chat-spine:hover { background: var(--panel); color: var(--ink); }
+.chat-spine:hover .chat-spine-mark { color: var(--accent); }
+.chat-spine-label {
+  writing-mode: vertical-rl;
+  font-family: var(--serif);
+  font-size: var(--t-small);
+  font-weight: var(--w-label);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 0;
+}
+/* The chevron points the way the panel will move, so the same target reads as
+   "pull out" closed and "push back" open. */
+.chat-spine-mark {
+  flex: none;
+  font-size: var(--t-title);
+  line-height: 1;
+  color: var(--edge);
+}
+.chat-spine-mark::before { content: '\2039'; }
+.chat-spine[aria-expanded="true"] { background: var(--panel); color: var(--ink); }
+.chat-spine[aria-expanded="true"] .chat-spine-mark::before { content: '\203A'; }
+
+.chat-panel {
+  flex: 1;
+  min-width: 0;
   border-left: 1px solid var(--rule-2);
   background: var(--panel);
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
+.chat-rail:not(.open) .chat-panel { display: none; }
+
 .chat-head {
   flex: none;
   display: flex;
@@ -2095,7 +2160,6 @@ table.files tr:hover td { background: var(--sunk); }
   padding: var(--s-5) var(--s-6);
   border-bottom: 1px solid var(--rule-2);
 }
-.chat-head .spacer { flex: 1; }
 .chat-class {
   font-family: var(--serif);
   font-size: var(--t-title);
@@ -2155,19 +2219,38 @@ table.files tr:hover td { background: var(--sunk); }
 }
 .chat-form input { flex: 1; min-width: 0; }
 
-/* Narrow shells: the rail floats over the page instead of crushing it. */
+/* Narrow shells: the spine keeps its column (it is 44px and always worth it),
+   and the PANEL floats over the page instead of crushing it. Ordered widest
+   to narrowest — the later block has to win. */
 @media (max-width: 1100px) {
-  #view-classes.chat-open { grid-template-columns: 320px minmax(0, 1fr); }
-  #view-classes.chat-open .chat-rail {
+  #view-classes.chat-avail.chat-open {
+    grid-template-columns: 320px minmax(0, 1fr) var(--chat-spine);
+  }
+  /* Anchored to the rail, whose box is exactly the rows the class page
+     occupies — anchoring to #view-classes stretched the panel over the class
+     list once the shell stacked. */
+  #view-classes.chat-avail.chat-open .chat-panel {
     position: absolute;
-    top: 0; right: 0; bottom: 0;
-    width: min(360px, 92vw);
+    top: 0; right: var(--chat-spine); bottom: 0;
+    width: min(340px, calc(100vw - var(--chat-spine) - 24px));
     box-shadow: var(--float);
     z-index: 4;
   }
 }
 @media (max-width: 900px) {
-  #view-classes.chat-open { grid-template-columns: 260px minmax(0, 1fr); }
+  #view-classes.chat-avail,
+  #view-classes.chat-avail.chat-open {
+    grid-template-columns: 260px minmax(0, 1fr) var(--chat-spine);
+  }
+}
+/* Stacked shell: the class list is a row of its own, so it spans both columns
+   and the spine stands beside the detail pane rather than beside the list. */
+@media (max-width: 760px) {
+  #view-classes.chat-avail,
+  #view-classes.chat-avail.chat-open {
+    grid-template-columns: minmax(0, 1fr) var(--chat-spine);
+  }
+  #view-classes.chat-avail .sidebar { grid-column: 1 / -1; }
 }
 
 /* The page itself never pans sideways; anything wider than the room scrolls

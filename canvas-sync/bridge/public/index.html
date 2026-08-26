@@ -178,9 +178,6 @@
             <button data-tab="grades" class="tab">Grades</button>
             <button data-tab="files" class="tab">Files</button>
             <button data-tab="pack" class="tab">Class Summarized</button>
-            <!-- Not a tab: the chat is a rail BESIDE whatever tab is open, so
-                 an answer can be read next to the task it is about. -->
-            <button type="button" id="chat-toggle" class="ghost-btn chat-toggle" aria-pressed="false">Ask</button>
           </div>
           <div id="tab-tasks" class="tab-panel"></div>
           <div id="tab-overview" class="tab-panel hidden">
@@ -198,19 +195,30 @@
       </section>
       <!-- Ask this class: one question, one lock-guarded model pass, sources
            cited. The engine is scripts/class-chat.js via POST /api/ask; this
-           rail only renders what it returns. Wired by wireChat(). -->
+           rail only renders what it returns. Wired by wireChat().
+
+           The spine is the whole entry point, and it is a sidebar rather than
+           a button in the tab strip because a labelled edge that is always
+           there reads as "there is a panel here" — an "Ask" button sitting
+           after five tabs read as a sixth tab nobody pressed. It is also the
+           collapse control: one target, one place, both directions. -->
       <aside id="chat-rail" class="chat-rail hidden" aria-label="Ask this class">
-        <header class="chat-head">
-          <span id="chat-class" class="chat-class"></span>
-          <span class="spacer"></span>
-          <button type="button" id="chat-close" class="linky">close</button>
-        </header>
-        <div id="chat-log" class="chat-log"></div>
-        <form id="chat-form" class="chat-form">
-          <input id="chat-input" type="text" maxlength="2000"
-                 placeholder="Which readings go with…" autocomplete="off" />
-          <button type="submit" id="chat-send" class="primary">Ask</button>
-        </form>
+        <button type="button" id="chat-toggle" class="chat-spine"
+                aria-expanded="false" aria-controls="chat-panel">
+          <span class="chat-spine-mark" aria-hidden="true"></span>
+          <span class="chat-spine-label">Ask this class</span>
+        </button>
+        <div id="chat-panel" class="chat-panel">
+          <header class="chat-head">
+            <span id="chat-class" class="chat-class"></span>
+          </header>
+          <div id="chat-log" class="chat-log"></div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" type="text" maxlength="2000"
+                   placeholder="Which readings go with…" autocomplete="off" />
+            <button type="submit" id="chat-send" class="primary">Ask</button>
+          </form>
+        </div>
       </aside>
     </main>
 

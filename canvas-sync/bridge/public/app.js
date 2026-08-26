@@ -74,6 +74,10 @@ const CLASSES_PANELS = ['detail', 'class-home', 'picker-panel', 'cleanup-panel',
 
 function showClassesPanel(id) {
   CLASSES_PANELS.forEach(p => $(p).classList.toggle('hidden', p !== id));
+  // The Ask rail is part of the class page, so it comes and goes with it.
+  // Hooked here rather than at each call site for the same reason the hidden
+  // toggles are: a future panel switch cannot forget to do it.
+  renderChat();
 }
 
 // Whatever just happened, leave the pane showing something: the open class if
@@ -4728,13 +4732,19 @@ function wireSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Ask this class — the chat rail.
+// Ask this class — the chat sidebar.
 //
 // The engine is scripts/class-chat.js behind POST /api/ask: correlation-graph
 // retrieval, FACTS computed in code, one lock-guarded local-model pass,
 // answers citing [S1]..[Sn]. This rail renders exactly what that returns and
 // invents nothing — the model plumbing, the busy states and the "nothing
 // found" sentinel all come from the server.
+//
+// The rail is a sidebar with two widths, not a panel behind a button: a
+// labelled spine holds the page's right edge for as long as a class is open,
+// and clicking it pops the panel out beside whatever tab is showing. It used
+// to be an "Ask" button parked after the five tabs, which read as a sixth tab
+// and was missed accordingly (2026-08-26).
 //
 // Transcripts live in memory per class folder and die with the page. The
 // bridge answers one question at a time (409 otherwise), so a single global
@@ -4798,16 +4808,32 @@ function chatEntryHtml(e, ei) {
   return html;
 }
 
+// Where the rail belongs: a class is open AND the pane is showing one of its
+// pages. Not the class home (there is no class to ask about) and not the
+// picker or cleanup panels (those are settings, not a class). Driving the rail
+// off this rather than off CURRENT alone is what keeps the spine from
+// advertising a panel that would open onto nothing.
+const CHAT_PANELS = ['detail', 'assignment-panel', 'file-panel'];
+function chatAvailable() {
+  return !!CURRENT && CHAT_PANELS.some(p => !$(p).classList.contains('hidden'));
+}
+
 function renderChat() {
-  $('view-classes').classList.toggle('chat-open', CHAT.open);
-  $('chat-rail').classList.toggle('hidden', !CHAT.open);
-  $('chat-toggle').setAttribute('aria-pressed', CHAT.open ? 'true' : 'false');
-  if (!CHAT.open) return;
-  $('chat-class').textContent = CURRENT
-    ? ($('detail-title').textContent || CURRENT.folder)
-    : 'Pick a class';
-  $('chat-input').disabled = !CURRENT || CHAT.inFlight;
-  $('chat-send').disabled = !CURRENT || CHAT.inFlight;
+  // CHAT.open is what the user last asked for; `open` is what that means here
+  // and now. Remembering the request while the rail is away means it comes
+  // back open on the next class page instead of needing a second click.
+  const avail = chatAvailable();
+  const open = avail && CHAT.open;
+  $('view-classes').classList.toggle('chat-avail', avail);
+  $('view-classes').classList.toggle('chat-open', open);
+  $('chat-rail').classList.toggle('hidden', !avail);
+  $('chat-rail').classList.toggle('open', open);
+  $('chat-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+  $('chat-toggle').title = open ? 'Collapse' : 'Ask about this class';
+  if (!open) return;
+  $('chat-class').textContent = $('detail-title').textContent || CURRENT.folder;
+  $('chat-input').disabled = CHAT.inFlight;
+  $('chat-send').disabled = CHAT.inFlight;
   const log = $('chat-log');
   const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   log.innerHTML = chatEntries().map((e, i) => chatEntryHtml(e, i)).join('');
@@ -4859,16 +4885,14 @@ async function askChat(question) {
 }
 
 function wireChat() {
+  // One control, both directions: the spine opens the panel and the spine
+  // closes it. A second "close" link inside the header put two targets a
+  // centimetre apart doing the same job.
   $('chat-toggle').addEventListener('click', () => {
     CHAT.open = !CHAT.open;
     localStorage.setItem('chatOpen', CHAT.open ? '1' : '0');
     renderChat();
     if (CHAT.open) $('chat-input').focus();
-  });
-  $('chat-close').addEventListener('click', () => {
-    CHAT.open = false;
-    localStorage.setItem('chatOpen', '0');
-    renderChat();
   });
   $('chat-form').addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -4889,7 +4913,9 @@ function wireChat() {
 }
 
 wireChat();
-// A rail left open last session opens with the page, not with the first class.
+// Paint once before boot(): with no class open yet this only hides the rail,
+// but it is what puts .chat-avail off the grid so the first frame is not a
+// 44px column of nothing.
 renderChat();
 
 boot();

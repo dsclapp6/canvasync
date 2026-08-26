@@ -1328,7 +1328,20 @@ export function buildApp(config) {
     try {
       chat = await loadChat();
     } catch (err) {
-      return res.status(503).json({ error: 'chat unavailable', detail: err.message });
+      // class-chat.js is imported lazily, so it is linked against whatever
+      // modules THIS process loaded at startup — and server.js imports
+      // canvas-tasks.js on line 28. A bridge left running across an edit that
+      // adds an export therefore fails to link the first time anyone asks a
+      // question, with a message ("does not provide an export named 'EXAM_RE'")
+      // that reads like a missing export rather than a stale process. Say the
+      // thing the user can act on.
+      const stale = err instanceof SyntaxError;
+      return res.status(503).json({
+        error: 'chat unavailable',
+        detail: stale
+          ? `${err.message} — this bridge has been running since before that file changed. Quit CANVASync and open it again.`
+          : err.message,
+      });
     }
 
     const home = syncHome();
