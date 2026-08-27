@@ -1747,20 +1747,44 @@ table.files tr:hover td { background: var(--sunk); }
   white-space: pre-wrap;
 }
 
-/* --- Rendered markdown ---------------------------------------------------- */
-.md-body { max-width: 72ch; }
-.md-body h1, .md-body h2, .md-body h3 { font-family: var(--serif); font-weight: var(--w-head); line-height: 1.25; }
-.md-body h1 { font-size: var(--t-page); margin: var(--s-6) 0 var(--s-4); }
-.md-body h2 { font-size: var(--t-head); margin: var(--s-6) 0 var(--s-3); }
-.md-body h3 { font-size: var(--t-title); margin: var(--s-5) 0 var(--s-2); }
-.md-body p, .md-body ul { margin-bottom: var(--s-4); }
-.md-body li { margin-left: var(--s-6); margin-bottom: var(--s-1); }
-.md-body em { font-style: italic; }
-.md-body hr { border: none; border-top: 1px solid var(--rule-2); margin: var(--s-6) 0; }
-.md-body a, .assignment-desc a { color: var(--accent); text-decoration: none; }
-.md-body a:hover, .assignment-desc a:hover { text-decoration: underline; text-underline-offset: 2px; }
-.md-body table { border-collapse: collapse; margin: var(--s-4) 0; }
-.md-body th {
+/* --- Rendered course content ---------------------------------------------
+   Canvas HTML, Markdown, and extracted PDF/deck text share one reading
+   surface. The source keeps its hierarchy; the app supplies typography. */
+.md-body, .content-prose { max-width: 76ch; font-size: var(--t-small); line-height: 1.72; overflow-wrap: anywhere; }
+.md-body > :first-child, .content-prose > :first-child { margin-top: 0; }
+.md-body > :last-child, .content-prose > :last-child { margin-bottom: 0; }
+.md-body h1, .md-body h2, .md-body h3,
+.content-prose h1, .content-prose h2, .content-prose h3, .content-prose h4 {
+  font-family: var(--serif); font-weight: var(--w-head); line-height: 1.25;
+  text-transform: none; letter-spacing: 0; color: var(--ink);
+}
+.md-body h1, .content-prose h1 { font-size: var(--t-page); margin: var(--s-7) 0 var(--s-4); }
+.md-body h2, .content-prose h2 { font-size: var(--t-head); margin: var(--s-7) 0 var(--s-3); }
+.md-body h3, .content-prose h3 { font-size: var(--t-title); margin: var(--s-6) 0 var(--s-2); }
+.content-prose h4 { font-size: var(--t-small); margin: var(--s-5) 0 var(--s-2); }
+.md-body p, .md-body ul, .md-body ol,
+.content-prose p, .content-prose ul, .content-prose ol { margin-bottom: var(--s-4); }
+.md-body ul, .content-prose ul { list-style: disc; padding-left: var(--s-7); }
+.md-body ol, .content-prose ol { list-style: decimal; padding-left: var(--s-7); }
+.md-body li, .content-prose li { margin: var(--s-1) 0; padding: 0; border: 0; }
+.md-body em, .content-prose em { font-style: italic; }
+.md-body strong, .content-prose strong { font-weight: var(--w-head); }
+.md-body hr, .content-prose hr { border: none; border-top: 1px solid var(--rule-2); margin: var(--s-7) 0; }
+.md-body a, .content-prose a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.md-body a:hover, .content-prose a:hover { color: var(--accent-2); }
+.md-body blockquote, .content-prose blockquote {
+  border-left: 3px solid var(--rule-2); color: var(--muted); margin: var(--s-5) 0;
+  padding: var(--s-2) 0 var(--s-2) var(--s-5);
+}
+.md-body code, .content-prose code { font-family: var(--mono); font-size: .9em; background: var(--sunk); padding: 1px 4px; border-radius: 3px; }
+.md-body pre, .content-prose pre {
+  max-width: 100%; overflow-x: auto; margin: var(--s-5) 0; padding: var(--s-5);
+  border: 1px solid var(--rule); border-radius: var(--r-1); background: var(--sunk);
+  font: var(--t-legend)/1.6 var(--mono); white-space: pre-wrap;
+}
+.md-body pre code, .content-prose pre code { padding: 0; background: none; }
+.md-body table, .content-prose table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: var(--s-5) 0; }
+.md-body th, .content-prose th {
   text-align: left;
   font-family: var(--sans);
   font-size: var(--t-legend);
@@ -1772,7 +1796,7 @@ table.files tr:hover td { background: var(--sunk); }
   border: 1px solid var(--rule);
   padding: var(--s-2) var(--s-4);
 }
-.md-body td { border: 1px solid var(--rule); padding: var(--s-2) var(--s-4); }
+.md-body td, .content-prose td { border: 1px solid var(--rule); padding: var(--s-2) var(--s-4); vertical-align: top; }
 
 /* --- Assignment + file panels --------------------------------------------- */
 .back-link { margin-bottom: var(--s-3); display: inline-block; }
@@ -1811,28 +1835,30 @@ table.files tr:hover td { background: var(--sunk); }
   color: var(--muted);
   margin: var(--s-6) 0 var(--s-3);
 }
-#assignment-body ul, #file-body ul { list-style: none; }
-#assignment-body li, #file-body li { padding: var(--s-2) 0; border-bottom: 1px solid var(--rule); }
-.assignment-desc { max-width: 68ch; }
+#assignment-body > ul, #file-body > ul { list-style: none; }
+#assignment-body > ul > li, #file-body > ul > li { padding: var(--s-2) 0; border-bottom: 1px solid var(--rule); }
+.assignment-desc {
+  max-width: 72ch; background: var(--panel); border: 1px solid var(--rule);
+  border-radius: var(--r-1); box-shadow: var(--sit);
+  padding: clamp(var(--s-5), 3vw, var(--s-8));
+}
 .assignment-desc img { max-width: 100%; height: auto; border-radius: var(--r-1); }
 .assignment-desc table { border-collapse: collapse; margin: var(--s-4) 0; max-width: 100%; }
 .assignment-desc td, .assignment-desc th { border: 1px solid var(--rule); padding: var(--s-2) var(--s-4); }
 .assignment-files { margin-top: var(--s-5); }
 
-.file-text {
-  font-family: var(--mono);
-  font-size: var(--t-legend);
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.file-prose {
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: var(--r-1);
-  padding: var(--s-6);
-  max-width: 90ch;
+  padding: clamp(var(--s-5), 3vw, var(--s-8));
+  box-shadow: var(--sit);
 }
+.file-prose .source-points { columns: 2 18rem; column-gap: var(--s-8); }
+.file-prose .source-points li { break-inside: avoid; }
+.file-prose .source-reference { font-size: var(--t-legend); color: var(--muted); }
+.compact-prose { margin-bottom: var(--s-5); }
 .file-view-img { max-width: 100%; height: auto; border: 1px solid var(--rule); border-radius: var(--r-1); }
-.file-md { max-width: 72ch; }
 
 /* --- Notices + toast ------------------------------------------------------ */
 .notice {

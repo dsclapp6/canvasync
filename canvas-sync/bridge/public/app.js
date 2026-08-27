@@ -18,6 +18,7 @@ import { nextSelection, isSelected, pruneSelection } from './cal-plan.js';
 import {
   fileName, groupFilesBySource, originDetail, originHeading, primaryOrigin,
 } from './file-plan.js';
+import { renderMarkdown, renderReadableText } from './content-format.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_APP = !!window.canvasync;
@@ -117,74 +118,15 @@ function fmtDateTime(iso) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Tiny markdown renderer (headings, bold/italic, code, lists, tables, links, hr)
-// ---------------------------------------------------------------------------
-
 function esc(s) {
-  // Escapes the full set, including both quote characters. The quotes matter:
-  // inlineMd drops URLs into href="…", so an unescaped " in a synced Canvas
-  // link (e.g. [x](https://evil"onmouseover="…)) would break out of the
-  // attribute. Every innerHTML sink in this file routes through esc().
+  // Escapes the full set, including both quote characters. Every innerHTML
+  // sink assembled in this file routes untrusted values through esc().
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
-}
-
-function inlineMd(s) {
-  return esc(s)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
-    .replace(/_([^_]+)_/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-}
-
-function renderMd(md) {
-  // An HTML comment in the source is a note to whoever edits the file, not to
-  // whoever reads it. ROUTINE.md opens with six lines of one ("Source of truth:
-  // …, do NOT edit the data-root copy"), and because every line here is escaped
-  // before it is emitted, all six were printed on the calendar page verbatim,
-  // angle brackets and all.
-  const lines = String(md || '').replace(/<!--[\s\S]*?-->/g, '').split('\n');
-  const out = [];
-  let inList = false, inTable = false;
-  const closeAll = () => {
-    if (inList) { out.push('</ul>'); inList = false; }
-    if (inTable) { out.push('</table>'); inTable = false; }
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd();
-    if (/^#{1,4}\s/.test(line)) {
-      closeAll();
-      const level = line.match(/^#+/)[0].length;
-      out.push(`<h${level}>${inlineMd(line.replace(/^#+\s*/, ''))}</h${level}>`);
-    } else if (/^---+$/.test(line)) {
-      closeAll(); out.push('<hr/>');
-    } else if (/^\|/.test(line)) {
-      if (/^\|[\s|:-]+\|$/.test(line)) continue; // separator row
-      if (!inTable) { closeAll(); out.push('<table>'); inTable = true; }
-      // A row directly above a separator row is the header — emit <th> so
-      // markdown tables get the mono/uppercase header treatment.
-      const isHeader = /^\|[\s|:-]+\|$/.test((lines[i + 1] || '').trimEnd());
-      const tag = isHeader ? 'th' : 'td';
-      const cells = line.split('|').slice(1, -1).map(c => inlineMd(c.trim()));
-      out.push('<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>');
-    } else if (/^[-*]\s/.test(line)) {
-      if (inTable) { out.push('</table>'); inTable = false; }
-      if (!inList) { out.push('<ul>'); inList = true; }
-      out.push(`<li>${inlineMd(line.replace(/^[-*]\s/, ''))}</li>`);
-    } else if (line === '') {
-      closeAll();
-    } else {
-      closeAll(); out.push(`<p>${inlineMd(line)}</p>`);
-    }
-  }
-  closeAll();
-  return out.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -1204,16 +1146,22 @@ async function runCleanup() {
 function sanitizeCanvasHtml(html) {
   const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
   doc.querySelectorAll('script, style, iframe, object, embed, form, link, meta').forEach(n => n.remove());
+  doc.querySelectorAll('[hidden], [aria-hidden="true"], [style]').forEach((n) => {
+    if (n.hasAttribute('hidden') || n.getAttribute('aria-hidden') === 'true'
+      || /(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(n.getAttribute('style') || '')) n.remove();
+  });
   doc.querySelectorAll('*').forEach((n) => {
     for (const attr of [...n.attributes]) {
       const name = attr.name.toLowerCase();
-      if (name.startsWith('on')) n.removeAttribute(attr.name);
+      if (name.startsWith('on') || name === 'style' || name === 'class' || name === 'id'
+        || name.startsWith('data-')) n.removeAttribute(attr.name);
       if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(attr.value)) {
         n.removeAttribute(attr.name);
       }
     }
     if (n.tagName === 'A') { n.setAttribute('target', '_blank'); n.setAttribute('rel', 'noopener noreferrer'); }
   });
+  doc.querySelectorAll('i').forEach(n => { if (!n.textContent.trim() && !n.querySelector('img')) n.remove(); });
   return doc.body.innerHTML;
 }
 
@@ -1295,13 +1243,13 @@ function renderAssignment() {
     parts.push(`<div class="notice">Locked on Canvas${a.lock_explanation ? ` — ${esc(a.lock_explanation)}` : ''}</div>`);
   }
   if (a.description_html) {
-    parts.push(`<div class="md-body assignment-desc">${sanitizeCanvasHtml(a.description_html)}</div>`);
+    parts.push(`<article class="content-prose assignment-desc">${sanitizeCanvasHtml(a.description_html)}</article>`);
   } else if (!aiAdded) {
     parts.push('<p class="muted">Canvas has no description for this assignment.</p>');
   }
 
   if (a.mined?.description) {
-    parts.push(`<h3>What this is</h3><p>${esc(a.mined.description)}</p>`);
+    parts.push(`<h3>What this is</h3><div class="content-prose compact-prose">${renderMarkdown(a.mined.description)}</div>`);
   }
   const mats = (a.mined?.related_materials || [])
     .map((material, index) => ({ ...material, index }))
@@ -1470,7 +1418,7 @@ async function renderFileView() {
       $('file-open').classList.toggle('hidden', !file.canvasUrl);
       if (page.updated_at) $('file-sub').textContent = `Canvas page  ·  updated ${page.updated_at.slice(0, 10)}`;
       body.innerHTML = page.body_html
-        ? `<div class="md-body assignment-desc">${sanitizeCanvasHtml(page.body_html)}</div>`
+        ? `<article class="content-prose assignment-desc">${sanitizeCanvasHtml(page.body_html)}</article>`
         : '<p class="muted">This Canvas page has no body.</p>';
       return;
     }
@@ -1488,9 +1436,7 @@ async function renderFileView() {
 
     if (TEXT_EXT.has(ext)) {
       const text = await (await api(fileUrl(folder, file.localPath))).text();
-      body.innerHTML = (ext === '.md' || ext === '.markdown')
-        ? `<div class="md-body file-md">${renderMd(text)}</div>`
-        : `<div class="file-text">${esc(text)}</div>`;
+      body.innerHTML = `<article class="content-prose file-prose">${renderReadableText(text, ext)}</article>`;
       return;
     }
 
@@ -1500,8 +1446,8 @@ async function renderFileView() {
     const text = await (await api(fileUrl(folder, rel))).text();
     const label = ext === '.pdf' ? 'PDF' : ext === '.pptx' ? 'slide deck' : ext.replace('.', '').toUpperCase() || 'file';
     body.innerHTML =
-      `<div class="notice">Text extracted from the ${esc(label)} — no layout, images or formatting.</div>
-       <div class="file-text">${esc(text)}</div>`;
+      `<div class="notice">Readable text extracted from the ${esc(label)} — images and the original page layout are omitted.</div>
+       <article class="content-prose file-prose extracted-prose">${renderReadableText(text, ext)}</article>`;
   } catch (err) {
     if (isPage) {
       body.innerHTML = `<div class="notice alarm">Could not load this Canvas page.</div>
@@ -1610,7 +1556,7 @@ async function openClass(folder) {
   renderTasks();
   renderGrades();
   $('overview-md').innerHTML = CURRENT.context_md
-    ? renderMd(CURRENT.context_md)
+    ? renderMarkdown(CURRENT.context_md)
     : '<p class="muted">Context not built yet — run a sync, then Rebuild summaries.</p>';
   renderFiles();
   renderPack();
