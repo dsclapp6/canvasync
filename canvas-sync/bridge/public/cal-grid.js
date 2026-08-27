@@ -477,3 +477,33 @@ export function layoutDay(ops) {
   flush();
   return { allDay, timed };
 }
+
+/**
+ * Pull exact-slot pileups out of a laid-out day.
+ *
+ * Two overlapping appointments can still be read side by side. Three or more
+ * things with the exact same start and end cannot: at the week grid's minimum
+ * width, their checkboxes alone consume the lanes. The renderer presents each
+ * such group as one expandable stack at the shared time.
+ *
+ * `rest` deliberately contains the laid-out records, not just their ops. A
+ * caller that removed a dense group should lay those remaining ops out again,
+ * because their old lane counts included the records that are now in a stack.
+ */
+export function partitionDenseSlots(timed, minimum = 3) {
+  const threshold = Number.isInteger(minimum) && minimum > 1 ? minimum : 3;
+  const bySlot = new Map();
+  for (const item of timed || []) {
+    const key = `${item.startMin}|${item.endMin}`;
+    if (!bySlot.has(key)) bySlot.set(key, []);
+    bySlot.get(key).push(item);
+  }
+  const groups = [];
+  const dense = new Set();
+  for (const items of bySlot.values()) {
+    if (items.length < threshold) continue;
+    groups.push(items);
+    for (const item of items) dense.add(item);
+  }
+  return { groups, rest: (timed || []).filter(item => !dense.has(item)) };
+}

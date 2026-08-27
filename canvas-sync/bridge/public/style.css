@@ -2578,6 +2578,79 @@ body { overflow-x: hidden; }
 .cal-chip.placed[style*="height:18px"] .chip-title,
 .cal-chip.placed[style*="height:2"] .chip-title { -webkit-line-clamp: 1; }
 
+/* Three or more items at one exact time become one expandable stack. Six
+   checkbox/title/submit grids cannot fit into six lanes without turning into
+   the row of loose controls this replaces. The closed summary keeps the true
+   clock position; the open paper floats above the grid with ordinary chips. */
+.cal-collision {
+  position: absolute;
+  z-index: 4;
+  min-width: 0;
+}
+.cal-collision-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  height: 100%;
+  min-height: 22px;
+  overflow: hidden;
+  padding: 0 var(--s-2);
+  list-style: none;
+  cursor: pointer;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--rule-2);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-1);
+  box-shadow: var(--sit);
+  font: var(--t-legend)/1.3 var(--sans);
+}
+.cal-collision-summary:hover { border-color: var(--edge); border-left-color: var(--accent); }
+.cal-collision-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cal-collision-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--s-2);
+  border-radius: 999px;
+  color: var(--on-accent);
+  background: var(--accent);
+  font-family: var(--mono);
+  font-weight: var(--w-bold);
+  font-variant-numeric: tabular-nums;
+}
+.cal-collision-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cal-collision-caret { margin-left: auto; color: var(--muted); transition: transform var(--fast) var(--ease); }
+.cal-collision.open { z-index: 12; }
+.cal-collision.open .cal-collision-caret { transform: rotate(180deg); }
+.cal-collision-list {
+  position: fixed;
+  z-index: 13;
+  inset: auto;
+  top: var(--collision-top, 8px);
+  left: var(--collision-left, 8px);
+  flex-direction: column;
+  gap: var(--s-2);
+  width: clamp(250px, 28vw, 360px);
+  max-height: min(480px, 70vh);
+  overflow: auto;
+  padding: var(--s-3);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-2);
+  box-shadow: var(--float);
+  margin: 0;
+}
+.cal-collision-list:not(:popover-open) { display: none; }
+.cal-collision-list:popover-open { display: flex; }
+.cal-collision-list::backdrop { background: transparent; }
+.cal-collision-list .cal-chip { flex: none; width: 100%; }
+.cal-daycol:has(.cal-collision.open) { position: relative; z-index: 8; }
+.cal-slots:has(.cal-collision.open) { z-index: 8; }
+
 .cal-daycol.past .cal-slots { background: var(--ground); }
 
 /* The item page's one meta line and its topic — the whole of what used to be

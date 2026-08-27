@@ -762,6 +762,7 @@ on.
 | 9.9 | **Its information is editable there.** A lecture's days, start, end and room are fields on the page, and saving them writes the class's own override. | Set 13:00/14:15/Virani 182 on a BUSI 380 lecture and Save: `/api/class/…/meetings` reports `source: override`, and the rebuilt worklist carries the time on that class's sessions | x | x | |
 | 9.10 | Saving a note must not silently stamp a times override the user never touched. | `meetTimesChanged` compares against the stored pattern; a Save that only edited the note sends no meetings POST | x | x | |
 | 9.11 | Office hours say nothing they cannot do. They have no override store, so their page shows their facts and a note, and offers no time fields at all rather than dead ones. | An office-hours op's page renders no `[name=start]` | x | x | |
+| 9.12 | **An exact-time pileup stays usable.** Two overlapping items remain side by side; three or more occupying the exact same slot become one count-and-time stack. Opening it reveals every ordinary full-width chip with its checkbox, title, Submit link and drag behaviour intact. | `partitionDenseSlots` unit-tests the 2/3 boundary; the real seven BUSI 380 deadlines at Tue Sep 1 2:30 PM render as `7 due · 2:30p`, then expand to 7 chips / 7 checkboxes / 7 title buttons | x | x | |
 
 **Driven 2026-08-26**, real browser, fixture bridge on the six real classes
 (354 ops), real pointer input for the gestures:
@@ -776,6 +777,14 @@ drag Tue→Thu        moved to 2026-08-27, kept 13:00–14:00, dialog did NOT op
 click the same chip  opens its editor with every field prefilled
 overflow            12/12 at 375 / 768 / 1280 across all three views + dialog
 ```
+
+**9.12 driven on the reported collision, 2026-08-26.** The live Fall fixture
+contains exact-slot groups of 7, 4, 3, 8, 3 and 6 items. In the affected Aug
+31–Sep 6 timed week, Tuesday now carries one `7 due · 2:30p` stack beside the
+2:30 lecture instead of seven sub-20px lanes. Opening it produced 7 full-width
+chips, 7 checkboxes and 7 title buttons; the browser console remained clean.
+The top-layer paper remained wholly visible outside the clock's scroll clipping.
+The two-item overlap path is unchanged and still unit-tested as two 50% lanes.
 
 **9.9 end to end, on the exact page in the report.** BUSI 380's syllabus names
 the days and never states an hour, which is why its sessions were all-day

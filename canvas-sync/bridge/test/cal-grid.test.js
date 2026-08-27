@@ -12,7 +12,7 @@ import {
   initialAnchor, relPhrase, dueTier, WEEKDAY_HEADS,
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   MAX_SPAN_DAYS,
-  minutesOf, opSlot, timeWindow, hourMarks, layoutDay, DEFAULT_SLOT_MIN,
+  minutesOf, opSlot, timeWindow, hourMarks, layoutDay, partitionDenseSlots, DEFAULT_SLOT_MIN,
 } from '../public/cal-grid.js';
 
 // --- ISO in, ISO out, always local --------------------------------------
@@ -498,4 +498,28 @@ test('a lane is reused once its earlier item has finished', () => {
   assert.equal(by.b.lane, 1);
   assert.equal(by.c.lane, 1);
   assert.equal(by.a.lanes, 2);
+});
+
+test('three or more items in the exact same slot become one dense group', () => {
+  const laid = layoutDay([
+    { id: 'a', time: '23:44', end_time: '23:59' },
+    { id: 'b', time: '23:44', end_time: '23:59' },
+    { id: 'c', time: '23:44', end_time: '23:59' },
+    { id: 'earlier', time: '20:00', end_time: '21:00' },
+  ]);
+  const { groups, rest } = partitionDenseSlots(laid.timed);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].map(item => item.op.id), ['a', 'b', 'c']);
+  assert.deepEqual(rest.map(item => item.op.id), ['earlier']);
+});
+
+test('two simultaneous items keep the ordinary side-by-side layout', () => {
+  const laid = layoutDay([
+    { id: 'a', time: '09:00', end_time: '10:00' },
+    { id: 'b', time: '09:00', end_time: '10:00' },
+  ]);
+  const { groups, rest } = partitionDenseSlots(laid.timed);
+  assert.equal(groups.length, 0);
+  assert.equal(rest.length, 2);
+  assert.deepEqual(rest.map(item => item.lanes), [2, 2]);
 });

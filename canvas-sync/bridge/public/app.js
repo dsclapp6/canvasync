@@ -13,6 +13,7 @@ import {
   todayIso, weekDays, weekLabel, WEEKDAY_HEADS,
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   timeWindow, hourMarks, layoutDay,
+  partitionDenseSlots,
 } from './cal-grid.js';
 import { nextSelection, isSelected, pruneSelection } from './cal-plan.js';
 import {
@@ -433,6 +434,48 @@ function wireNav() {
     localStorage.setItem('calTimes', CAL_TIMES ? '1' : '0');
     renderCalendarOps();
   });
+
+  // A collision list has to escape the clock's scroll/containment boundary or
+  // its first rows get clipped. A native popover supplies that top layer; we
+  // place it beside the summary from the space ACTUALLY on screen, since the
+  // time of day is no guide after the user scrolls the grid.
+  $('cal-ops').addEventListener('click', (ev) => {
+    const trigger = ev.target.closest('[data-cal-collision-open]');
+    if (!trigger) return;
+    const stack = trigger.closest('.cal-collision');
+    const list = stack?.querySelector('.cal-collision-list');
+    if (!list) return;
+    if (list.matches(':popover-open')) {
+      list.hidePopover();
+      return;
+    }
+    list.showPopover();
+    const anchor = trigger.getBoundingClientRect();
+    const paper = list.getBoundingClientRect();
+    const gap = 4;
+    const edge = 8;
+    const opensUp = anchor.top - edge > window.innerHeight - anchor.bottom - edge;
+    const top = opensUp
+      ? Math.max(edge, anchor.top - gap - paper.height)
+      : Math.min(window.innerHeight - edge - paper.height, anchor.bottom + gap);
+    const left = Math.min(
+      Math.max(edge, anchor.left),
+      Math.max(edge, window.innerWidth - edge - paper.width),
+    );
+    list.style.setProperty('--collision-top', `${top}px`);
+    list.style.setProperty('--collision-left', `${left}px`);
+    stack.classList.toggle('opens-up', opensUp);
+  });
+
+  $('cal-ops').addEventListener('toggle', (ev) => {
+    const list = ev.target.closest?.('.cal-collision-list[popover]');
+    if (!list) return;
+    const stack = list.closest('.cal-collision');
+    const trigger = stack?.querySelector('[data-cal-collision-open]');
+    const open = list.matches(':popover-open');
+    stack?.classList.toggle('open', open);
+    trigger?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }, true);
 
   // Bring finished work back so it can be un-finished. CALENDAR-SPEC 2.5.
   $('cal-showdone').addEventListener('click', () => {
@@ -2691,6 +2734,33 @@ function calChip(op, iso = null, { style = '', timed = false } = {}) {
     </div>`;
 }
 
+/**
+ * Three or more items in one exact clock slot cannot remain readable lanes.
+ * Keep their shared position on the clock, then open them as ordinary full-
+ * width chips so every checkbox, title, Submit link, and drag target survives.
+ */
+function calCollisionStack(group, iso, { style = '' } = {}) {
+  const ops = group.map(item => item.op);
+  const count = ops.length;
+  const allDue = ops.every(op => op.calendar === 'due');
+  const sharedTime = ops.every(op => op.time === ops[0].time) && ops[0].time
+    ? fmtTimeChip(ops[0].time)
+    : '';
+  const label = `${count} ${allDue ? 'due' : 'items'}${sharedTime ? ` · ${sharedTime}` : ''}`;
+  return `
+    <div class="cal-collision" style="${style}" title="${esc(label)}">
+      <button type="button" class="cal-collision-summary" data-cal-collision-open
+              aria-expanded="false">
+        <span class="cal-collision-count">${count}</span>
+        <span class="cal-collision-label">${esc(allDue ? 'due' : 'items')}${sharedTime ? ` · ${esc(sharedTime)}` : ''}</span>
+        <span class="cal-collision-caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div class="cal-collision-list" popover aria-label="${esc(label)}">
+        ${ops.map(op => calChip(op, iso)).join('')}
+      </div>
+    </div>`;
+}
+
 // Stable grouping that preserves the worklist's existing order within a bucket.
 function groupBy(items, keyFn) {
   const out = new Map();
@@ -2875,7 +2945,31 @@ function renderCalendarWeekTimed(ops) {
   const cols = days.map((iso, i) => {
     const { allDay, timed } = laid[i];
     const past = iso < today;
-    const blocks = timed.map(({ op, startMin, endMin, lane, lanes }) => {
+    const partitioned = partitionDenseSlots(timed);
+    let ordinary = timed;
+    let stacks = [];
+
+    if (partitioned.groups.length) {
+      // Replace every dense group with one representative, then recompute the
+      // lanes. A long lecture that overlaps the pile still gets its own lane;
+      // unrelated items return to full width instead of inheriting the six
+      // lanes that existed before the pile was collapsed.
+      const representatives = partitioned.groups.map((group, groupIndex) => ({
+        ...group[0].op,
+        _denseSlot: groupIndex,
+      }));
+      const relaid = layoutDay([
+        ...partitioned.rest.map(item => item.op),
+        ...representatives,
+      ]).timed;
+      ordinary = relaid.filter(item => item.op._denseSlot == null);
+      stacks = relaid.filter(item => item.op._denseSlot != null).map((item) => ({
+        ...item,
+        group: partitioned.groups[item.op._denseSlot],
+      }));
+    }
+
+    const blocks = ordinary.map(({ op, startMin, endMin, lane, lanes }) => {
       const top = y(startMin);
       // Never shorter than something a finger and an eye can find, even for a
       // deadline, which is a moment rather than a span.
@@ -2884,6 +2978,14 @@ function renderCalendarWeekTimed(ops) {
       return calChip(op, iso, {
         style: `top:${top}px;height:${h}px;left:${(lane * w).toFixed(3)}%;width:${w.toFixed(3)}%`,
         timed: true,
+      });
+    }).join('');
+    const collisionStacks = stacks.map(({ group, startMin, endMin, lane, lanes }) => {
+      const top = y(startMin);
+      const h = Math.max(y(endMin) - top, 22);
+      const w = 100 / lanes;
+      return calCollisionStack(group, iso, {
+        style: `top:${top}px;height:${h}px;left:${(lane * w).toFixed(3)}%;width:${w.toFixed(3)}%`,
       });
     }).join('');
     return `
@@ -2895,7 +2997,7 @@ function renderCalendarWeekTimed(ops) {
         <div class="cal-allday" style="height:${bandPx}px">${allDay.map(o => calChip(o, iso)).join('')}</div>
         <div class="cal-slots" style="height:${height}px" data-cal-newday="${esc(iso)}"
              title="Drag to add an item">
-          ${rules}${nowMark(iso)}${blocks}
+          ${rules}${nowMark(iso)}${blocks}${collisionStacks}
         </div>
       </section>`;
   }).join('');
@@ -2994,7 +3096,10 @@ function calPointerDown(ev) {
 
   const grip = ev.target.closest('[data-cal-grip]');
   const chip = ev.target.closest('[data-cal-drag]');
-  const blank = ev.target.closest('[data-cal-newday]');
+  // A collision stack floats inside the clock's blank add-target. Its own
+  // summary and scroll surface must not start drawing a new calendar item;
+  // chips inside it still retain their normal drag targets.
+  const blank = ev.target.closest('.cal-collision') ? null : ev.target.closest('[data-cal-newday]');
 
   if (grip && chip) {
     CAL_DRAG = {
