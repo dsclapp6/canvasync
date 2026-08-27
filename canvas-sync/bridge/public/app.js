@@ -2803,20 +2803,24 @@ function calOpRow(op, { showClass = false } = {}) {
   const when = calWhenLabel(op);
   const title = showClass ? op.title : stripClassPrefix(op.title, op.class || '');
   const pts = calPoints(op.description);
+  const kindLabel = calKindLabel(op.kind);
+  const subcategory = !m.isMeeting && !m.isCustom && op.category && op.category !== 'other'
+    && String(op.category).toLocaleLowerCase() !== String(op.kind).toLocaleLowerCase()
+    ? op.category : '';
   return `
     <div class="cal-row${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}"
          data-class-slug="${esc(op.class || '')}"
+         data-kind="${esc(op.kind || 'other')}"
          style="--class-color:${classColor(op.class)}">
       ${calCheckHtml(op, m, title)}
       <span class="cal-when">${esc(when)}</span>
       <span class="cal-title">${calTitleHtml(op, m, title)}</span>
       <span class="cal-tags">
+        <span class="cal-kind category-label">${esc(kindLabel)}</span>
         ${op.location ? `<span class="cal-loc">${esc(op.location)}</span>` : ''}
         ${op.recurrence ? `<span class="cal-loc">weekly ${esc(op.recurrence.byday.join(''))}</span>` : ''}
-        ${!m.isMeeting && !m.isCustom && op.category && op.category !== 'other' ? `<span class="cal-cat ${esc(op.category)}">${esc(op.category)}</span>` : ''}
+        ${subcategory ? `<span class="cal-cat ${esc(subcategory)}">${esc(subcategory)}</span>` : ''}
         ${pts ? `<span class="cal-pts">${esc(pts)} pts</span>` : ''}
-        ${op.calendar === 'checkpoint' ? '<span class="cal-kind checkpoint">checkpoint</span>' : ''}
-        ${m.isCustom ? '<span class="cal-kind personal">added by you</span>' : ''}
         ${m.note && !m.isCustom ? '<span class="cal-kind note" title="You wrote a note on this">note</span>' : ''}
         ${calSubmitHtml(m)}
       </span>
@@ -2870,9 +2874,11 @@ function calChip(op, iso = null, { style = '', timed = false } = {}) {
   return `
     <div class="cal-chip${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}${spanCls}${timed ? ' placed' : ''}"
          data-class-slug="${esc(op.class || '')}"
+         data-kind="${esc(op.kind || 'other')}"
          style="--class-color:${classColor(op.class)}${style ? `;${style}` : ''}"
          title="${esc(calDisplayName(op.class))} — ${esc(op.title)}"${calDragAttrs(op, m, iso)}>
       ${lead ? calCheckHtml(op, m, title) : ''}
+      ${lead ? `<span class="chip-kind" title="${esc(calKindLabel(op.kind))}">${esc(calKindShort(op.kind))}</span>` : ''}
       ${lead && when ? `<span class="chip-when">${esc(when)}</span>` : ''}
       <span class="chip-title">${lead ? calTitleHtml(op, m, title) : '<span class="chip-cont" aria-hidden="true">&nbsp;</span>'}</span>
       ${lead ? calSubmitHtml(m, { dense: true }) : ''}
@@ -2892,9 +2898,10 @@ function calCollisionStack(group, iso, { style = '' } = {}) {
   const sharedTime = ops.every(op => op.time === ops[0].time) && ops[0].time
     ? fmtTimeChip(ops[0].time)
     : '';
+  const sharedKind = ops.every(op => op.kind === ops[0].kind) ? ops[0].kind : 'mixed';
   const label = `${count} ${allDue ? 'due' : 'items'}${sharedTime ? ` · ${sharedTime}` : ''}`;
   return `
-    <div class="cal-collision" style="${style}" title="${esc(label)}">
+    <div class="cal-collision" data-kind="${esc(sharedKind || 'other')}" style="${style}" title="${esc(label)}">
       <button type="button" class="cal-collision-summary" data-cal-collision-open
               aria-expanded="false">
         <span class="cal-collision-count">${count}</span>
@@ -4007,6 +4014,20 @@ function calKindList() {
 
 function calKindLabel(kind) {
   return CAL_WORKLIST?.kind_labels?.[kind] ?? kind;
+}
+
+// Dense grid chips need a category cue that survives a narrow month cell.
+// These are deliberately short, while their title exposes the full label.
+function calKindShort(kind) {
+  return ({
+    meeting: 'CLASS',
+    office_hours: 'OH',
+    homework: 'HW',
+    reading: 'READ',
+    exam: 'EXAM',
+    checkpoint: 'STEP',
+    personal: 'YOU',
+  })[kind] ?? String(kind || 'ITEM').slice(0, 5).toUpperCase();
 }
 
 /**

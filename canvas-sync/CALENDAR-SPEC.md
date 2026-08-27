@@ -35,6 +35,7 @@ Suites at that moment: `scripts/` **445 pass / 0 fail**, `bridge/` **261 pass / 
 | 2026-08-24 (later) | "meetings are not going in correctly. they should show class days, times, and location. Should be titled '[LOC] - [CLASS] - [PROF]', eg. 'Virani 182 - BUSI380 - VanHorn' as pulled from the syllabus." |
 | 2026-08-24 (latest) | "the calendar doesnt look at all as its supposed to. I told you to give me different view options; stacked vertically like it is now, side by side week view, monthly tiled view. Also need to have the check boxes. Stop shortcutting… Calendar items still not even clickable." |
 | 2026-08-25 (later) | "for all dated items, include the number of days/weeks until its due, not just the date. I have a hard time tracking how impending stuff is by date. And add some sort of emphasis, maybe color coding? g/y/r system or something. or some sort of bold emphasis or something depending on how soon? pick whatever is the cleanest and communicates status most effectively" |
+| 2026-08-27 | "can you add more emphasis visually on all the different categories of items in the calendar?" |
 
 Also standing, from the UI direction given 2026-08-24 13:08Z: **"simplify,
 minimalistic, small features, soft colors, functional"** — and the cream palette
@@ -155,6 +156,7 @@ from a month-view chip: same result. Covered by tests in
 | 3.9 | Keyboard reachable: every checkbox, title button and view control is tabbable. | No `tabindex="-1"` or `disabled` on an interactive calendar control | x | ~ | x |
 | 3.10 | Empty states say which filter emptied the view. | Select a class + a kind it has none of: the message names that cause and the way out | x | x | x |
 | 3.11 | **Every dated item states its distance and grades it by urgency** ("include the number of days/weeks until its due… g/y/r system or something… pick whatever is the cleanest", 2026-08-25). One vocabulary (`relPhrase`: days inside two weeks, weeks beyond) and one ladder (`dueTier` → `.due-rel`: muted → amber `soon` ≤7d → brick `now` ≤1d → bold brick `overdue`) across the task list, checkpoints, home Coming up, the assignment page, and List-view day headings. Done items are never loud; day headings only grade when the day holds unfinished non-meeting work; past days are history, not alarms. | `relPhrase`/`dueTier` unit-tested in `cal-grid.test.js`; every `.cal-day-head` carries a `.cal-day-rel`; 0 tiered rels under `.cal-day.past`, `.task.is-done`, `.cp-row.done`; a meetings-only day inside the week has no tier; `--warn` ≥4.5:1 on ground/panel/sunk | x | x | x |
+| 3.12 | Category is visually distinct from class ownership in every view: class colour stays on the item edge, while kind colour appears on filters, list rows, grid chips, and dense collision stacks. | A reading and homework item from the same class share a class-colour edge but have different kind bands/labels in List, Week and Month | x | x | x |
 
 **Measured 2026-08-24.** 6 classes, **6 distinct colours** (`#3E6B8A #7A5C3E
 #4E7A5B #8A4F5C #5C5A8A #8A7136`). Filtering to Meetings left 0 non-meeting items in all three. Today

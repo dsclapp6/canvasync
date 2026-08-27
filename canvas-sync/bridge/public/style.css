@@ -3004,6 +3004,103 @@ table.files tr:last-child td { border-bottom: 0; }
 .cal-meettimes { border: 1px solid var(--rule); border-radius: 7px; padding: 0 8px; background: #FAFBF9; }
 .cal-meettimes summary { padding: 7px 4px; }
 
+/* Calendar category language ---------------------------------------------
+ * Class colour answers "which course?" on the left edge. These quieter,
+ * independent hues answer "what kind of item?" everywhere the item appears.
+ */
+[data-kind="meeting"], .filter-chip[data-kind-filter="meeting"] {
+  --kind-color: #526B78;
+  --kind-soft: color-mix(in srgb, #526B78 10%, var(--panel));
+}
+[data-kind="office_hours"], .filter-chip[data-kind-filter="office_hours"] {
+  --kind-color: #75617C;
+  --kind-soft: color-mix(in srgb, #75617C 10%, var(--panel));
+}
+[data-kind="homework"], .filter-chip[data-kind-filter="homework"] {
+  --kind-color: #8A5B18;
+  --kind-soft: color-mix(in srgb, #8A5B18 10%, var(--panel));
+}
+[data-kind="reading"], .filter-chip[data-kind-filter="reading"] {
+  --kind-color: #2F6B5B;
+  --kind-soft: color-mix(in srgb, #2F6B5B 10%, var(--panel));
+}
+[data-kind="exam"], .filter-chip[data-kind-filter="exam"] {
+  --kind-color: #963F34;
+  --kind-soft: color-mix(in srgb, #963F34 10%, var(--panel));
+}
+[data-kind="checkpoint"], .filter-chip[data-kind-filter="checkpoint"] {
+  --kind-color: #78682A;
+  --kind-soft: color-mix(in srgb, #78682A 11%, var(--panel));
+}
+[data-kind="personal"], .filter-chip[data-kind-filter="personal"] {
+  --kind-color: #545C88;
+  --kind-soft: color-mix(in srgb, #545C88 10%, var(--panel));
+}
+[data-kind="mixed"], [data-kind="other"] {
+  --kind-color: var(--edge);
+  --kind-soft: var(--sunk);
+}
+
+.filter-chip[data-kind-filter]::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--kind-color, var(--edge));
+}
+.filter-chip[data-kind-filter].on {
+  color: var(--kind-color, var(--accent-2));
+  background: var(--kind-soft, var(--panel));
+  border-color: color-mix(in srgb, var(--kind-color, var(--accent)) 68%, var(--rule));
+}
+.filter-chip[data-kind-filter].on:hover {
+  color: var(--kind-color, var(--accent-2));
+  background: color-mix(in srgb, var(--kind-color, var(--accent)) 15%, var(--panel));
+}
+.filter-chip[data-kind-filter].on .chip-count { color: var(--kind-color, var(--accent-2)); }
+
+.cal-row[data-kind] {
+  padding-left: 9px;
+  border-left: 3px solid var(--kind-color, var(--edge));
+  background: linear-gradient(90deg, var(--kind-soft, var(--panel)), transparent 120px);
+}
+.cal-row[data-kind] .cal-check,
+.cal-chip[data-kind] .cal-check { accent-color: var(--kind-color, var(--accent)); }
+.cal-kind.category-label {
+  color: var(--kind-color, var(--ink));
+  background: var(--kind-soft, var(--panel));
+  border-color: color-mix(in srgb, var(--kind-color, var(--edge)) 55%, var(--rule));
+  font-family: var(--sans);
+  font-weight: 680;
+  text-transform: none;
+}
+
+.cal-chip[data-kind] {
+  grid-template-columns: 12px auto auto minmax(0, 1fr) auto;
+  border-top: 2px solid var(--kind-color, var(--edge));
+  background: linear-gradient(180deg, var(--kind-soft, var(--panel)), var(--panel) 78%);
+}
+.cal-chip[data-kind].meeting { background: var(--kind-soft, var(--ground)); }
+.chip-kind {
+  align-self: start;
+  margin-top: 1px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #FFFFFF;
+  background: var(--kind-color, var(--edge));
+  font: 700 8px/1.35 var(--sans);
+  letter-spacing: .035em;
+  white-space: nowrap;
+}
+.cal-chip.is-done .chip-kind {
+  color: var(--muted);
+  background: var(--sunk);
+}
+.cal-allday .chip-kind { margin-top: 0; padding-block: 0; }
+.cal-collision[data-kind] .cal-collision-summary { border-left-color: var(--kind-color, var(--accent)); }
+.cal-collision[data-kind] .cal-collision-count { background: var(--kind-color, var(--accent)); }
+
 /* Ask this class is a compact utility drawer, not a permanent vertical rail. */
 .chat-rail {
   position: absolute;
