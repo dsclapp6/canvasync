@@ -19,7 +19,7 @@
     2. The whole point of this page is to be trustworthy when the rest of the
        system is mid-flight. It has to survive a redesign untouched.
 
-  The palette echoes style.css's cream tokens by VALUE, not by import, so the
+  The palette echoes style.css's neutral tokens by VALUE, not by import, so the
   page looks like it belongs without depending on a file it does not own. The
   font is the system stack rather than IBM Plex: index.html pulls Plex from
   fonts.googleapis.com, and a status page must not go dark because a font CDN
@@ -37,35 +37,29 @@
    Echoed from bridge/public/style.css so the two pages read as one product.
    Three neutrals, two hairlines, two ink weights, and exactly two meaningful
    hues (accent, alarm). Everything else that is coloured is a class colour,
-   and a class colour only ever appears as a 6px dot or a 3px rule — never as
-   a wash behind a row. On cream, a saturated fill is very loud. */
+   and a class colour only ever appears as a small ownership mark. */
 :root {
-  /* Warm-print tokens, echoed by VALUE from style.css (see the note above —
-     this page owns its palette so it cannot be broken by a redesign in
-     flight). The serif is the system's: a status page must not go dark
-     because a font CDN is unreachable, and Georgia carries the same voice. */
-  --ground:  #F3EDDF;
-  --panel:   #FFFDF7;
-  --sunk:    #EBE3D2;
-  --rule:    #E2D8C6;
-  --rule-2:  #CBBEA6;
-  --edge:    #847A66;
-  --ink:     #211E18;
-  --muted:   #6A6152;
-  --accent:    #1D4E6F;
-  --accent-2:  #16405C;
-  --on-accent: #FFFDF7;
-  --alarm:     #96382C;
-  --on-alarm:  #FFFDF7;
-  --fill:    #33302A;
-  --on-fill: #F3EDDF;
+  --ground:  #F4F5F2;
+  --panel:   #FFFFFF;
+  --sunk:    #ECEFEB;
+  --rule:    #DFE3DE;
+  --rule-2:  #C9CFC8;
+  --edge:    #7B857C;
+  --ink:     #1E2521;
+  --muted:   #626C64;
+  --accent:    #315E50;
+  --accent-2:  #24483D;
+  --on-accent: #FFFFFF;
+  --alarm:     #963F34;
+  --on-alarm:  #FFFFFF;
+  --fill:    #29322D;
+  --on-fill: #FFFFFF;
 
   --sit:   0 1px 0 rgba(43, 36, 24, 0.08);
   --raise: 0 1px 2px rgba(43, 36, 24, 0.10), 0 2px 8px rgba(43, 36, 24, 0.06);
   --r-1: 4px;
   --r-2: 8px;
 
-  --serif: ui-serif, Georgia, "Times New Roman", serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -77,16 +71,6 @@ body {
   background: var(--ground);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
-}
-/* The same paper grain as the dashboard, inlined — this file imports nothing. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-  pointer-events: none;
-  opacity: 0.025;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 ::selection { background: var(--accent); color: var(--on-accent); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -107,23 +91,24 @@ body::after {
 .spacer { flex: 1; }
 .hidden { display: none; }
 
-.wrap { max-width: 900px; margin: 0 auto; padding: 24px 20px 48px; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 0 24px 48px; }
 
 /* --- Masthead ------------------------------------------------------------ */
 .masthead {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 0; border-bottom: 1px solid var(--rule-2); margin-bottom: 20px;
-  background: var(--ground);
+  min-height: 58px; padding: 10px 0; border-bottom: 1px solid var(--rule); margin-bottom: 24px;
+  background: color-mix(in srgb, var(--ground) 94%, transparent);
+  backdrop-filter: blur(14px);
 }
-.masthead h1 { font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em; }
+.masthead h1 { font-size: 18px; font-weight: 700; letter-spacing: -.015em; }
 .masthead .home-link {
   display: inline-flex; align-items: center; min-height: 32px; padding: 5px 10px;
-  color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent-2);
-  border-radius: var(--r-1); box-shadow: var(--sit); font-size: 12px; font-weight: 700;
+  color: var(--accent-2); background: var(--panel); border: 1px solid var(--rule-2);
+  border-radius: 7px; box-shadow: none; font-size: 12px; font-weight: 650;
   text-decoration: none;
 }
-.masthead .home-link:hover { background: var(--accent-2); }
+.masthead .home-link:hover { background: var(--sunk); border-color: var(--accent); }
 .masthead .home-link:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--rule-2); flex: none; }
 .pulse.live { background: var(--accent); }
@@ -171,16 +156,16 @@ body::after {
 
 /* --- Selective pipeline controls ----------------------------------------- */
 .pipeline-actions {
-  background: var(--panel); border: 1px solid var(--rule-2); border-radius: var(--r-2);
-  box-shadow: var(--sit); padding: 12px 14px; margin-bottom: 22px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 10px;
+  box-shadow: none; padding: 16px; margin-bottom: 24px;
 }
 .pipeline-actions h2 { font: 700 12px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .pipeline-actions p { color: var(--muted); font-size: 12px; margin-top: 3px; }
 .action-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .action-grid button {
-  font: 600 12px var(--sans); color: var(--ink); background: var(--ground);
-  border: 1px solid var(--edge); border-radius: var(--r-1); padding: 6px 10px;
-  box-shadow: var(--sit); cursor: pointer;
+  font: 600 12px var(--sans); color: var(--ink); background: var(--panel);
+  border: 1px solid var(--rule-2); border-radius: 7px; padding: 7px 11px;
+  box-shadow: none; cursor: pointer;
 }
 .action-grid button:hover:not(:disabled) { background: var(--sunk); border-color: var(--accent); }
 .action-grid button:disabled { cursor: default; opacity: .45; box-shadow: none; }
@@ -200,11 +185,13 @@ body::after {
    padding-inline-start even with the markers off, which indented every
    class row 40px past the CLASSES rule above it. */
 .classes { list-style: none; padding-left: 0; }
-.cls { border-bottom: 1px solid var(--rule); }
+.cls { border-bottom: 1px solid var(--rule); background: var(--panel); }
+.cls:first-child { border-radius: 9px 9px 0 0; }
+.cls:last-child { border-radius: 0 0 9px 9px; }
 .cls-head {
   display: grid; width: 100%; align-items: center; gap: 10px;
   grid-template-columns: 6px 9ch 1fr 5ch 10ch 2ch;
-  padding: 7px 2px; background: none; border: 0; cursor: pointer;
+  padding: 10px 12px; background: none; border: 0; cursor: pointer;
   font: 13px var(--sans); color: inherit; text-align: left;
 }
 .cls-head { border-radius: var(--r-1); transition: background-color 130ms ease-out; }
@@ -238,7 +225,7 @@ body::after {
 .meter.unknown > i { background: var(--sunk); }
 
 /* --- Expanded detail ------------------------------------------------------ */
-.cls-body { padding: 2px 0 12px 16px; }
+.cls-body { padding: 2px 12px 14px 31px; }
 .stage {
   display: grid; grid-template-columns: 14ch 12ch 1fr; gap: 10px;
   font-family: var(--mono); font-size: 12px; padding: 2px 0; color: var(--muted);

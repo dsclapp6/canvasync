@@ -68,6 +68,14 @@ function navTo(view) {
   if (btn && !btn.classList.contains('active')) btn.click();
 }
 
+function showClassDashboard() {
+  navTo('classes');
+  document.querySelectorAll('#class-list li').forEach(li => li.classList.remove('active'));
+  showClassesPanel('class-home');
+  const detail = document.querySelector('#view-classes > .detail');
+  if (detail) detail.scrollTop = 0;
+}
+
 // The Classes view is a sidebar plus exactly one right-hand panel. Every route
 // out of it has to leave one of them showing, and one route did not: opening an
 // assignment from the Calendar and pressing Back hid the assignment page and
@@ -287,6 +295,9 @@ function renderPipelineButton(pipeline) {
 // ---------------------------------------------------------------------------
 
 function wireNav() {
+  $('home-btn').addEventListener('click', showClassDashboard);
+  $('detail-home').addEventListener('click', showClassDashboard);
+
   document.querySelectorAll('.nav-btn').forEach(btn => {
     // The Status link is a plain anchor styled as a nav button — no
     // data-view. Binding the view-switcher to it hid every view and then
@@ -481,6 +492,15 @@ function wireNav() {
   $('cal-showdone').addEventListener('click', () => {
     CAL_SHOW_DONE = !CAL_SHOW_DONE;
     localStorage.setItem('calShowDone', CAL_SHOW_DONE ? '1' : '0');
+    renderCalendarOps();
+  });
+
+  // The list is for planning forward. Old lectures and office hours are useful
+  // history, but putting them above today's work makes every visit begin with
+  // scrolling. Overdue work stays visible; only past schedule blocks fold away.
+  $('cal-showpast').addEventListener('click', () => {
+    CAL_SHOW_PAST = !CAL_SHOW_PAST;
+    localStorage.setItem('calShowPast', CAL_SHOW_PAST ? '1' : '0');
     renderCalendarOps();
   });
 
@@ -1553,7 +1573,12 @@ async function openClass(folder) {
   const seq = ++OPEN_CLASS_SEQ;
   const data = await apiJson(`/api/class/${folder}`);
   if (seq !== OPEN_CLASS_SEQ) return;
+  const changedClass = CURRENT?.folder !== folder;
   CURRENT = data;
+  if (changedClass) {
+    TASK_QUERY = '';
+    FILE_QUERY = '';
+  }
   showClassesPanel('detail');
 
   const meta = CURRENT.metadata || {};
@@ -1599,7 +1624,7 @@ async function openClass(folder) {
   renderTasks();
   renderGrades();
   $('overview-md').innerHTML = CURRENT.context_md
-    ? renderMarkdown(CURRENT.context_md)
+    ? renderMarkdown(courseOverviewMarkdown(CURRENT.context_md))
     : '<p class="muted">Context not built yet — run a sync, then Rebuild summaries.</p>';
   renderFiles();
   renderPack();
@@ -1611,6 +1636,17 @@ async function openClass(folder) {
     .then(renderMeetingTimes).catch(() => {});
   // The chat rail follows the class: its header and transcript swap here.
   renderChat();
+}
+
+// Overview is the class at a glance. The generated context file also contains
+// the complete task database, modules, files, announcements and discussions;
+// rendering that entire upload bundle here duplicated three other tabs and
+// turned a two-minute orientation into a many-screen document.
+function courseOverviewMarkdown(markdown) {
+  let out = String(markdown || '').replace(/^# .+\n+/, '');
+  const taskList = out.search(/^## Complete task list\b/m);
+  if (taskList >= 0) out = out.slice(0, taskList);
+  return out.trim();
 }
 
 // All date math is LOCAL time — a UTC slice would put late-evening deadlines
@@ -1786,85 +1822,139 @@ function renderTaskEditor(it) {
     </div>`;
 }
 
+let TASK_SCOPE = ['focus', 'term', 'done'].includes(localStorage.getItem('taskScope'))
+  ? localStorage.getItem('taskScope') : 'focus';
+let TASK_QUERY = '';
+
+function taskCardHtml(it) {
+  const st = taskState(it.id);
+  const eff = effectiveDue(it);
+  const due = fmtDue(it, eff);
+  const mats = (it.related_materials || [])
+    .map((material, index) => ({ ...material, index }))
+    .filter(material => material.source)
+    .slice(0, 4)
+    .map(m => `<li><button type="button" class="linky material-link" data-task-material="${m.index}">${esc(m.file)}</button>${m.why ? ` \u2014 ${esc(m.why)}` : ''}</li>`).join('');
+  const cps = st.checkpoints ?? [];
+  const cpsDone = cps.filter(c => c.done).length;
+  const aiAdded = it.origin ? it.origin === 'syllabus' : it.kind === 'implicit';
+  const classes = ['task'];
+  if (aiAdded) classes.push('ai-added');
+  if (st.done) classes.push('is-done');
+  if (st.flag) classes.push(`flag-${esc(st.flag)}`);
+  return `
+    <article class="${classes.join(' ')}" data-task="${esc(it.id)}">
+      <div class="task-top">
+        <input type="checkbox" class="task-check" data-done${st.done ? ' checked' : ''}
+               aria-label="Mark ${esc(it.title)} complete">
+        <button type="button" class="task-title linky-title" data-open-assignment="${esc(it.canvas_assignment_id ?? it.id)}">${esc(it.title)}</button>
+        <span class="task-due">${due}</span>
+      </div>
+      <div class="task-badges">
+        <span class="badge">${esc(it.category || 'other')}</span>
+        ${aiAdded ? '<span class="badge ai-added" title="Added from the syllabus — not a Canvas assignment, nothing to submit on Canvas">syllabus</span>' : ''}
+        ${it.points_possible != null ? `<span class="badge">${esc(it.points_possible)} pts</span>` : ''}
+        ${it.due_confidence && it.due_confidence !== 'high' ? `<span class="badge implicit">${esc(it.due_confidence)} confidence date</span>` : ''}
+        ${eff.moved ? '<span class="badge moved">moved</span>' : ''}
+        ${cps.length ? `<span class="badge">${cpsDone}/${cps.length} checkpoints</span>` : ''}
+        ${st.note ? '<span class="badge">note</span>' : ''}
+      </div>
+      ${it.description ? `<div class="task-desc">${esc(it.description)}</div>` : ''}
+      ${mats ? `<div class="task-materials">Relevant materials<ul>${mats}</ul></div>` : ''}
+      <button type="button" class="linky task-toggle" data-toggle>Edit</button>
+      <div class="task-editor-slot hidden"></div>
+    </article>`;
+}
+
+function applyTaskQuery() {
+  const root = $('tab-tasks');
+  const q = TASK_QUERY.trim().toLocaleLowerCase();
+  let visible = 0;
+  root.querySelectorAll('.task-group').forEach(group => {
+    let groupVisible = 0;
+    group.querySelectorAll('.task').forEach(task => {
+      const match = !q || task.textContent.toLocaleLowerCase().includes(q);
+      task.classList.toggle('search-hidden', !match);
+      if (match) { visible += 1; groupVisible += 1; }
+    });
+    group.classList.toggle('search-hidden', groupVisible === 0);
+    const groupCount = group.querySelector('[data-task-group-count]');
+    if (groupCount) groupCount.textContent = q ? groupVisible : groupCount.dataset.taskGroupCount;
+  });
+  const count = $('task-search-count');
+  if (count) count.textContent = q ? `${visible} match${visible === 1 ? '' : 'es'}` : '';
+  const empty = $('task-search-empty');
+  if (empty) empty.classList.toggle('hidden', !q || visible > 0);
+}
+
 function renderTasks() {
   const el = $('tab-tasks');
   const items = CURRENT.mined?.items || [];
   if (!items.length) {
-    el.innerHTML = '<p class="muted">Nothing to do here yet — Canvas lists no dated assignments for this class, '
-      + 'and nothing has been found in its files. Run Rebuild summaries to search the slides and syllabus.</p>';
+    el.innerHTML = '<div class="empty-state"><b>No tasks yet</b><span>Canvas lists no dated assignments, and the synced files have not yielded any work.</span></div>';
     return;
   }
-  // Canvas-only means nobody has read this class's files yet, so the list is
-  // whatever Canvas happens to publish. Say so — a short list reads as "not
-  // much due" when it actually means "not looked at properly".
-  const banner = CURRENT.mined?.source === 'canvas'
-    ? '<p class="muted task-source-note">Straight from Canvas — the slides and syllabus have not been read yet.</p>'
-    : '';
   const today = localTodayIso();
-  const groups = { Upcoming: [], Recurring: [], 'No date found': [], Done: [], Past: [] };
+  const focusEnd = addDays(today, 14);
+  const groups = { Upcoming: [], Recurring: [], 'Needs a date': [], Completed: [], Overdue: [] };
   for (const it of items) {
     const eff = effectiveDue(it);
-    // Done is its own bucket rather than a strikethrough in place: a finished
-    // assignment is not "upcoming", and leaving it in the upcoming count made
-    // the number useless as a measure of what is left.
-    if (taskState(it.id).done) groups.Done.push(it);
+    if (taskState(it.id).done) groups.Completed.push(it);
     else if (it.recurring) groups.Recurring.push(it);
-    else if (!eff.date) groups['No date found'].push(it);
+    else if (!eff.date) groups['Needs a date'].push(it);
     else if (eff.date >= today) groups.Upcoming.push(it);
-    else groups.Past.push(it);
+    else groups.Overdue.push(it);
   }
   const dateOf = (it) => effectiveDue(it).date ?? '';
   groups.Upcoming.sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
-  groups.Past.sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
+  groups.Overdue.sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
 
-  const html = [banner];
+  const activeCount = items.length - groups.Completed.length;
+  const laterCount = groups.Upcoming.filter(it => dateOf(it) > focusEnd).length;
+  const scoped = {};
   for (const [label, group] of Object.entries(groups)) {
+    if (TASK_SCOPE === 'done') scoped[label] = label === 'Completed' ? group : [];
+    else if (label === 'Completed') scoped[label] = [];
+    else if (TASK_SCOPE === 'focus' && label === 'Upcoming') scoped[label] = group.filter(it => dateOf(it) <= focusEnd);
+    else scoped[label] = group;
+  }
+
+  const sourceNote = CURRENT.mined?.source === 'canvas'
+    ? '<p class="notice compact-notice">Showing Canvas assignments only. Rebuild the index to inspect the syllabus and files too.</p>'
+    : '';
+  const scopeNote = TASK_SCOPE === 'focus'
+    ? `Due through ${esc(fmtShortDate(focusEnd))}${laterCount ? ` · <button type="button" class="linky" data-task-more>${laterCount} later task${laterCount === 1 ? '' : 's'}</button>` : ''}`
+    : TASK_SCOPE === 'term'
+      ? `${activeCount} open task${activeCount === 1 ? '' : 's'} across the term`
+      : `${groups.Completed.length} completed task${groups.Completed.length === 1 ? '' : 's'}`;
+
+  const html = [`
+    <div class="task-toolbar">
+      <div>
+        <div class="seg" role="group" aria-label="Task range">
+          ${[['focus', 'Next 2 weeks'], ['term', 'Full term'], ['done', 'Completed']].map(([key, label]) =>
+            `<button type="button" class="seg-btn${TASK_SCOPE === key ? ' active' : ''}" data-task-scope="${key}">${label}</button>`).join('')}
+        </div>
+        <div class="task-scope-note">${scopeNote}</div>
+      </div>
+      <label class="search-control">
+        <span class="sr-only">Search tasks</span>
+        <input id="task-search" data-task-search type="search" value="${esc(TASK_QUERY)}" placeholder="Search tasks" autocomplete="off" />
+        <span id="task-search-count" class="search-count"></span>
+      </label>
+    </div>
+    ${sourceNote}
+    <div id="task-search-empty" class="empty-state hidden"><b>No matching tasks</b><span>Try a different title, category, or material.</span></div>`];
+
+  for (const [label, group] of Object.entries(scoped)) {
     if (!group.length) continue;
-    html.push(`<div class="task-group-title">${label} (${group.length})</div>`);
-    for (const it of group) {
-      const st = taskState(it.id);
-      const eff = effectiveDue(it);
-      const due = fmtDue(it, eff);
-      const mats = (it.related_materials || [])
-        .map((material, index) => ({ ...material, index }))
-        .filter(material => material.source)
-        .slice(0, 4)
-        .map(m => `<li><button type="button" class="linky material-link" data-task-material="${m.index}">${esc(m.file)}</button>${m.why ? ` \u2014 ${esc(m.why)}` : ''}</li>`).join('');
-      const cps = st.checkpoints ?? [];
-      const cpsDone = cps.filter(c => c.done).length;
-      // AI-added: mined from the syllabus, no Canvas row behind it. `origin`
-      // is the authoritative field; `kind` covers a mined file written before
-      // origin existed.
-      const aiAdded = it.origin ? it.origin === 'syllabus' : it.kind === 'implicit';
-      const classes = ['task'];
-      if (aiAdded) classes.push('ai-added');
-      if (st.done) classes.push('is-done');
-      if (st.flag) classes.push(`flag-${esc(st.flag)}`);
-      html.push(`
-        <div class="${classes.join(' ')}" data-task="${esc(it.id)}">
-          <div class="task-top">
-            <input type="checkbox" class="task-check" data-done${st.done ? ' checked' : ''}
-                   aria-label="Mark ${esc(it.title)} complete">
-            <button type="button" class="task-title linky-title" data-open-assignment="${esc(it.canvas_assignment_id ?? it.id)}">${esc(it.title)}</button>
-            <span class="task-due">${due}</span>
-          </div>
-          <div class="task-badges">
-            <span class="badge">${esc(it.category || 'other')}</span>
-            ${aiAdded ? '<span class="badge ai-added" title="Added by AI from the syllabus \u2014 not a Canvas assignment, nothing to submit on Canvas">AI-added \u00b7 not on Canvas</span>' : ''}
-            ${it.points_possible != null ? `<span class="badge">${esc(it.points_possible)} pts</span>` : ''}
-            ${it.due_confidence && it.due_confidence !== 'high' ? `<span class="badge implicit">${esc(it.due_confidence)} confidence date</span>` : ''}
-            ${eff.moved ? '<span class="badge moved">moved</span>' : ''}
-            ${cps.length ? `<span class="badge">${cpsDone}/${cps.length} checkpoints</span>` : ''}
-            ${st.note ? '<span class="badge">note</span>' : ''}
-          </div>
-          ${it.description ? `<div class="task-desc">${esc(it.description)}</div>` : ''}
-          ${mats ? `<div class="task-materials">Most relevant materials:<ul>${mats}</ul></div>` : ''}
-          <button type="button" class="linky task-toggle" data-toggle>Edit</button>
-          <div class="task-editor-slot hidden"></div>
-        </div>`);
-    }
+    html.push(`<section class="task-group"><h3 class="task-group-title"><span>${label}</span><span data-task-group-count="${group.length}">${group.length}</span></h3>${group.map(taskCardHtml).join('')}</section>`);
+  }
+  if (!Object.values(scoped).some(group => group.length)) {
+    html.push(`<div class="empty-state"><b>${TASK_SCOPE === 'done' ? 'Nothing completed yet' : 'Nothing due in the next two weeks'}</b><span>${TASK_SCOPE === 'focus' && laterCount ? 'Your later work is still available under Full term.' : ''}</span></div>`);
   }
   el.innerHTML = html.join('');
+  applyTaskQuery();
 }
 
 // One delegated listener for the whole task list. Re-rendering on every edit
@@ -1881,6 +1971,20 @@ function wireTasks() {
 
   root.addEventListener('click', async (ev) => {
     const el = ev.target;
+
+    if (el.matches('[data-task-scope]')) {
+      TASK_SCOPE = el.dataset.taskScope;
+      localStorage.setItem('taskScope', TASK_SCOPE);
+      renderTasks();
+      return;
+    }
+    if (el.matches('[data-task-more]')) {
+      TASK_SCOPE = 'term';
+      localStorage.setItem('taskScope', TASK_SCOPE);
+      renderTasks();
+      return;
+    }
+
     const id = idOf(el);
     if (!id) return;
     const task = taskEl(el);
@@ -1971,6 +2075,23 @@ function wireTasks() {
 
   root.addEventListener('input', (ev) => {
     const el = ev.target;
+    if (el.matches('[data-task-search]')) {
+      TASK_QUERY = el.value;
+      // Searching should search the class, not only the two-week slice that is
+      // currently rendered. Move to the term view once the user types; the
+      // visible scope control makes that expansion explicit.
+      if (TASK_QUERY.trim() && TASK_SCOPE === 'focus') {
+        TASK_SCOPE = 'term';
+        localStorage.setItem('taskScope', TASK_SCOPE);
+        renderTasks();
+        const input = $('task-search');
+        input?.focus();
+        input?.setSelectionRange(input.value.length, input.value.length);
+        return;
+      }
+      applyTaskQuery();
+      return;
+    }
     const id = idOf(el);
     if (!id || !el.matches('[data-note]')) return;
     clearTimeout(noteTimers.get(id));
@@ -1984,6 +2105,7 @@ function wireTasks() {
 // for assignments, quizzes, pages, etc., while the course's individual modules
 // remain separate sections. The exact item stays beneath each file name.
 let FILE_SORT = localStorage.getItem('fileSort') || 'source';
+let FILE_QUERY = '';
 
 // ---------------------------------------------------------------------------
 // Grades tab
@@ -2083,17 +2205,29 @@ function renderFiles() {
   // how the student ends up reading last month's dates.
   const files = (CURRENT.files_index || []).filter(f => f && !f.duplicateOf && f.supersededBy == null);
   if (!files.length) {
-    el.innerHTML = '<p class="muted">No files downloaded for this class.</p>';
+    el.innerHTML = '<div class="empty-state"><b>No downloaded files</b><span>Files will appear here after the next Canvas sync.</span></div>';
     return;
   }
 
+  const query = FILE_QUERY.trim().toLocaleLowerCase();
+  const shownFiles = query
+    ? files.filter(f => [fileName(f), originDetail(f), originHeading(primaryOrigin(f)), f.extractionStatus]
+      .some(value => String(value || '').toLocaleLowerCase().includes(query)))
+    : files;
+
   const toolbar = `<div class="files-toolbar">
-    <span class="muted">${files.length} file${files.length > 1 ? 's' : ''}</span>
-    <div class="seg seg-sm" role="group" aria-label="Sort files">
-      ${[['source', 'Source'], ['name', 'Name'], ['date', 'Newest']].map(([k, lbl]) =>
-        `<button type="button" class="seg-btn${FILE_SORT === k ? ' active' : ''}" data-fsort="${k}">${lbl}</button>`,
-      ).join('')}
+    <div>
+      <b>${shownFiles.length}</b> <span class="muted">of ${files.length} file${files.length === 1 ? '' : 's'}</span>
+      <div class="seg seg-sm" role="group" aria-label="Sort files">
+        ${[['source', 'Source'], ['name', 'Name'], ['date', 'Newest']].map(([k, lbl]) =>
+          `<button type="button" class="seg-btn${FILE_SORT === k ? ' active' : ''}" data-fsort="${k}">${lbl}</button>`,
+        ).join('')}
+      </div>
     </div>
+    <label class="search-control">
+      <span class="sr-only">Search files</span>
+      <input id="file-search" type="search" value="${esc(FILE_QUERY)}" placeholder="Search files" autocomplete="off" />
+    </label>
   </div>`;
 
   // Index by position in `files` so the click handlers stay O(1) regardless of
@@ -2118,14 +2252,16 @@ function renderFiles() {
   const head = '<tr><th>File</th><th>Updated</th><th>Text</th><th></th></tr>';
 
   let body;
-  if (FILE_SORT === 'source') {
-    body = groupFilesBySource(files).map(g => `
-      <div class="file-group">
-        <h4 class="file-group-head">${esc(g.heading)} <span class="muted">${g.files.length}</span></h4>
-        <table class="files">${head}${g.files.map(row).join('')}</table>
-      </div>`).join('');
+  if (!shownFiles.length) {
+    body = '<div class="empty-state"><b>No matching files</b><span>Try a file name, source, or type.</span></div>';
+  } else if (FILE_SORT === 'source') {
+    body = groupFilesBySource(shownFiles).map(g => `
+      <details class="file-group"${query || shownFiles.length <= 12 ? ' open' : ''}>
+        <summary class="file-group-head"><span>${esc(g.heading)}</span><span>${g.files.length}</span></summary>
+        <div class="file-group-body"><table class="files">${head}${g.files.map(row).join('')}</table></div>
+      </details>`).join('');
   } else {
-    const sorted = files.slice().sort(FILE_SORT === 'name'
+    const sorted = shownFiles.slice().sort(FILE_SORT === 'name'
       ? (a, b) => fileName(a).localeCompare(fileName(b))
       : (a, b) => String(b.canvasUpdatedAt || '').localeCompare(String(a.canvasUpdatedAt || '')));
     body = `<table class="files">${head}${sorted.map(row).join('')}</table>`;
@@ -2137,6 +2273,15 @@ function renderFiles() {
     localStorage.setItem('fileSort', FILE_SORT);
     renderFiles();
   }));
+  $('file-search')?.addEventListener('input', (ev) => {
+    FILE_QUERY = ev.target.value;
+    renderFiles();
+    const input = $('file-search');
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  });
   el.querySelectorAll('[data-view-file]').forEach(btn => btn.addEventListener('click', () => {
     openFile(CURRENT.folder, files[Number(btn.dataset.viewFile)], 'detail');
   }));
@@ -2292,6 +2437,7 @@ let CAL_ANCHOR = null;
 // let you un-finish it disappears with it. This brings those rows back, struck
 // through and still tickable. CALENDAR-SPEC 2.5.
 let CAL_SHOW_DONE = localStorage.getItem('calShowDone') === '1';
+let CAL_SHOW_PAST = localStorage.getItem('calShowPast') === '1';
 // Whether Week view is drawn against a clock: hour lines across the seven
 // columns, every timed item placed and sized by its own hours. Week only —
 // a month tile is too small to hold a scale, and the list is not a grid.
@@ -4287,7 +4433,13 @@ function renderCalendarOps() {
   // covers homework, readings and exams, and a filter that cannot tell them
   // apart is three chips pretending to be one.
   const byKind = all.filter(o => isSelected(CAL_KIND_SEL, o.kind));
-  const ops = byKind.filter(o => isSelected(classSel, opClassSlug(o)));
+  const selectedOps = byKind.filter(o => isSelected(classSel, opClassSlug(o)));
+  const hiddenPast = CAL_VIEW === 'list' && !CAL_SHOW_PAST
+    ? selectedOps.filter(o => daysUntil(o.date) < 0 && (o.kind === 'meeting' || o.kind === 'office_hours')).length
+    : 0;
+  const ops = hiddenPast
+    ? selectedOps.filter(o => !(daysUntil(o.date) < 0 && (o.kind === 'meeting' || o.kind === 'office_hours')))
+    : selectedOps;
 
   renderCalKinds(all);
   renderClassChips();
@@ -4306,9 +4458,12 @@ function renderCalendarOps() {
   // `.window` off a null worklist threw and emptied the whole calendar.
   const w = CAL_WORKLIST?.window || {};
   const classCount = new Set(ops.map(o => o.class)).size;
-  const range = w.from && w.to ? `${fmtDayLabel(w.from)} – ${fmtDayLabel(w.to)} · ` : '';
+  const firstVisible = ops.map(o => o.date).filter(Boolean).sort()[0];
+  const lastVisible = ops.map(o => o.date).filter(Boolean).sort().at(-1);
+  const range = firstVisible && lastVisible ? `${fmtDayLabel(firstVisible)} – ${fmtDayLabel(lastVisible)} · `
+    : (w.from && w.to ? `${fmtDayLabel(w.from)} – ${fmtDayLabel(w.to)} · ` : '');
   const hiddenNote = byKind.length - ops.length > 0
-    ? ` · ${byKind.length - ops.length} hidden`
+    ? ` · ${byKind.length - ops.length} hidden${hiddenPast ? ` (${hiddenPast} past schedule)` : ''}`
     : '';
   $('cal-summary').textContent =
     `${range}${ops.length} item${ops.length === 1 ? '' : 's'} across ${classCount} class${classCount === 1 ? '' : 'es'}${hiddenNote}`;
@@ -4368,6 +4523,13 @@ function syncCalControls(doneCount) {
     showDone.textContent = CAL_SHOW_DONE
       ? `Hide ${doneCount} completed`
       : `Show ${doneCount} completed`;
+  }
+  const showPast = $('cal-showpast');
+  if (showPast) {
+    showPast.classList.toggle('hidden', CAL_VIEW !== 'list');
+    showPast.classList.toggle('active', CAL_SHOW_PAST);
+    showPast.setAttribute('aria-pressed', CAL_SHOW_PAST ? 'true' : 'false');
+    showPast.textContent = CAL_SHOW_PAST ? 'Hide past schedule' : 'Show past schedule';
   }
 }
 

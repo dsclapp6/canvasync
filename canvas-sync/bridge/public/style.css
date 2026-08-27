@@ -1,84 +1,40 @@
 /* CANVASync dashboard — served by the bridge at /app.
  *
- * WARM PRINT. The app is a paper instrument: a term's worth of work laid out
- * like a well-set notebook, not a SaaS dashboard. Rebuilt 2026-08-25 from
- * research the user asked for; the synthesis, so the next rewrite argues with
- * reasons and not with taste:
- *
- *   1. TYPE CARRIES THE HIERARCHY. Three voices with strict jobs — Plex Serif
- *      speaks (titles, the things with names), Plex Sans works (controls,
- *      labels, prose), Plex Mono counts (dates, times, ids, anything read in a
- *      column, always tabular). Sizes sit on one scale with real steps between
- *      levels; body is 14/1.55 and labels letterspace at +6% per Butterick
- *      (caps need air; lowercase never gets tracked).
- *
- *   2. MATERIAL, NOT DECORATION. The ground is paper with actual grain (2.5%
- *      noise — felt, not seen). Depth exists only where the interface is
- *      genuinely layered: popovers, toasts and drag-worthy things get a warm
- *      ink-tinted shadow; a card gets a hairline and one pixel of sit. Flat
- *      everywhere was why this read generic — depth that maps to structure is
- *      information, depth that decorates is noise.
- *
- *   3. AFFORDANCE IS HONEST. A button looks pressable (edge + letterpress
- *      shadow, and it physically presses on :active). A link underlines on
- *      hover. A checkbox is drawn, and ticking it feels like ticking it. Flat
- *      design's real failure was controls indistinguishable from labels.
- *
- *   4. COLOUR IS INFORMATION — unchanged law. Petrol = the action or the
- *      focus, brick = overdue/destructive/urgent, amber = a deadline inside
- *      the week (the urgency ladder's middle rung — see .due-rel), a class
- *      colour identifies a class (as a dot, a rule, an edge — never a wash).
- *      Everything else is paper and ink. States are said in INK WEIGHT,
- *      never opacity (spec 3.6).
- *
- *   5. SOFT GEOMETRY. Corners round at 4/8/12px — enough to read humane,
- *      never bubbly. Grids and tables stay ruled and square inside rounded
- *      frames, like tables printed on a page.
- *
- *   6. THE CALENDAR IS A ROOM, NOT A COLUMN. Week and Month fill the whole
- *      viewport — the toolbar is the only chrome, the grid flexes into every
- *      remaining pixel, and nothing is ellipsized to death inside a 96px
- *      column (titles clamp at two lines and columns get real width). The
- *      List keeps a readable measure, because lists are read, not surveyed.
- *
- * Contrast is computed, not eyeballed — floors: text 4.5:1, control edges
- * 3:1 (WCAG 1.4.11). Measured on these exact tokens:
- *   ink 14.2:1 ground · 16.3:1 panel      muted 5.2 / 6.0 / 4.8 (ground/panel/sunk)
- *   accent 7.6:1 ground · on-accent 8.7:1  alarm 6.2:1 · on-alarm 7.1:1
- *   warn 6.1:1 ground · 7.1 panel · 5.6 sunk
- *   fill 11.3:1 · edge 4.2 panel / 3.6 ground / 3.3 sunk · palette worst 4.6:1
+ * A compact, native-feeling workspace: neutral surfaces, a restrained forest
+ * accent, clear hierarchy, and dense information that reveals detail on
+ * demand. Class colours identify ownership; alarm colours indicate urgency.
  */
 
 :root {
   /* Paper. */
-  --ground:  #F3EDDF;   /* the page */
-  --panel:   #FFFDF7;   /* raised surfaces — cards, rails, grids */
-  --sunk:    #EBE3D2;   /* set into the page — inputs, code, table heads */
-  --rule:    #E2D8C6;   /* hairlines between rows */
-  --rule-2:  #CBBEA6;   /* structural rules — section edges, grid frames */
-  --edge:    #847A66;   /* the boundary of a control (3.3:1 floor holds) */
+  --ground:  #F4F5F2;
+  --panel:   #FFFFFF;
+  --sunk:    #ECEFEB;
+  --rule:    #DFE3DE;
+  --rule-2:  #C9CFC8;
+  --edge:    #7B857C;
 
   /* Ink. */
-  --ink:     #211E18;
-  --muted:   #6A6152;
+  --ink:     #1E2521;
+  --muted:   #626C64;
 
   /* The two meaningful hues. */
-  --accent:    #1D4E6F;  /* petrol — the action, the focus, today AS A PLACE
+  --accent:    #315E50;  /* forest — the action, the focus, today AS A PLACE
                             (the grid column, the month tile). Today as a due
                             DISTANCE ("today", "tomorrow") is the urgency
                             ladder's top rung and speaks brick — see .due-rel. */
-  --accent-2:  #16405C;  /* petrol, pressed */
-  --on-accent: #FFFDF7;
-  --alarm:     #96382C;  /* brick — overdue, destructive, failed */
-  --on-alarm:  #FFFDF7;
-  --warn:      #7A4E12;  /* amber — a deadline inside the week (.due-rel.soon) */
-  --fill:      #33302A;  /* dark stamp for multi-select "on" */
-  --on-fill:   #F3EDDF;
+  --accent-2:  #24483D;
+  --on-accent: #FFFFFF;
+  --alarm:     #963F34;
+  --on-alarm:  #FFFFFF;
+  --warn:      #8A5B18;
+  --fill:      #29322D;
+  --on-fill:   #FFFFFF;
 
   /* Depth — warm, ink-tinted. Never gray-blue on cream. */
-  --sit:    0 1px 0 rgba(43, 36, 24, 0.08);                       /* letterpress */
-  --raise:  0 1px 2px rgba(43, 36, 24, 0.10), 0 2px 8px rgba(43, 36, 24, 0.06);
-  --float:  0 2px 4px rgba(43, 36, 24, 0.12), 0 12px 32px rgba(43, 36, 24, 0.14);
+  --sit:    0 1px 1px rgba(25, 34, 29, 0.05);
+  --raise:  0 1px 2px rgba(25, 34, 29, 0.08), 0 6px 18px rgba(25, 34, 29, 0.05);
+  --float:  0 4px 12px rgba(25, 34, 29, 0.12), 0 20px 48px rgba(25, 34, 29, 0.15);
 
   /* Shape. */
   --r-1: 4px;    /* controls, chips, small marks */
@@ -86,9 +42,9 @@
   --r-3: 12px;   /* standalone panels — the auth card */
 
   /* Voice. */
-  --serif: "IBM Plex Serif", ui-serif, Georgia, "Times New Roman", serif;
-  --sans:  "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --mono:  "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: ui-serif, Georgia, "Times New Roman", serif;
+  --sans:  -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono:  ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Scale. Six sizes with real steps; the floor is Canvas's own 12px. */
   --t-legend: 12px;   /* labels, counts, metadata */
@@ -144,7 +100,7 @@ body::after {
   inset: 0;
   z-index: 999;
   pointer-events: none;
-  opacity: 0.025;
+  opacity: 0;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -2668,4 +2624,459 @@ body { overflow-x: hidden; }
 #cal-item-form .item-hint .linky { font-size: inherit; }
 @media (max-width: 480px) {
   .item-row.three { grid-template-columns: 1fr; }
+}
+
+/* -------------------------------------------------------------------------
+   PRODUCT UI PASS
+
+   The dashboard is deliberately quiet and native-looking: neutral surfaces,
+   one restrained action colour, compact controls, and hierarchy carried by
+   spacing instead of decorative type or heavy fills. The calendar still owns
+   the full window; reading views keep a comfortable measure.
+   ------------------------------------------------------------------------- */
+
+body { letter-spacing: -0.005em; }
+
+button,
+.btn-link {
+  border-color: var(--rule-2);
+  border-radius: 7px;
+  box-shadow: none;
+  background: var(--panel);
+}
+button:hover,
+.btn-link:hover { border-color: var(--edge); background: #FAFBF9; }
+button.primary,
+.btn-link.primary { box-shadow: 0 1px 1px rgba(25, 34, 29, .12); }
+
+input, select, textarea {
+  background: var(--panel);
+  border-color: var(--rule-2);
+  border-radius: 7px;
+}
+input:hover, select:hover, textarea:hover { border-color: var(--edge); }
+
+/* Global navigation ------------------------------------------------------ */
+.topbar {
+  min-height: 58px;
+  padding: 0 20px;
+  gap: 22px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border-bottom: 1px solid var(--rule);
+  box-shadow: 0 1px 0 rgba(25, 34, 29, .02);
+  backdrop-filter: blur(16px);
+}
+.brand {
+  min-width: 150px;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 6px;
+  color: var(--ink);
+  font: 700 18px/1 var(--serif);
+  justify-content: flex-start;
+}
+.brand:hover { background: transparent; color: var(--accent-2); }
+.brand:active { transform: none; }
+.brand::before { background-color: var(--panel); }
+.topnav { gap: 4px; }
+.nav-btn {
+  padding: 7px 11px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.nav-btn.active { background: var(--sunk); }
+.nav-btn.active::after { display: none; }
+#run-pipeline-btn { font-size: 13px; padding: 7px 12px; }
+
+/* App frame and class navigation ---------------------------------------- */
+#view-classes,
+#view-classes.chat-avail,
+#view-classes.chat-avail.chat-open {
+  grid-template-columns: 280px minmax(0, 1fr) !important;
+}
+.sidebar {
+  padding: 16px 12px;
+  border-right-color: var(--rule);
+  background: #FAFBF9;
+}
+.sidebar-head,
+.rail-head {
+  padding: 4px 8px 12px;
+  color: var(--muted);
+  letter-spacing: .08em;
+}
+#class-list { gap: 3px; }
+#class-list li {
+  min-height: 66px;
+  padding: 10px 10px 10px 13px;
+  border: 0;
+  border-left: 3px solid var(--class-color, transparent);
+  border-radius: 7px;
+}
+#class-list li:hover { background: var(--sunk); }
+#class-list li.active {
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--rule), 0 1px 2px rgba(25, 34, 29, .04);
+}
+.cl-code { font-size: 13px; }
+.cl-meta { font-family: var(--sans); font-size: 12px; }
+.sidebar-foot { margin-top: 14px; padding: 14px 8px 4px; }
+.detail { padding: 30px clamp(24px, 3.4vw, 48px) 56px; }
+#class-home, #detail { max-width: 1180px; margin: 0 auto; }
+#assignment-panel, #file-panel { max-width: 940px; margin: 0 auto; }
+.detail-head { margin-bottom: 20px; }
+.detail-head h2,
+.home-head h2,
+.single > h2 {
+  font-family: var(--sans);
+  font-weight: 720;
+  letter-spacing: -.025em;
+}
+.detail-head h2 { font-size: 28px; }
+.home-head { align-items: flex-end; margin-bottom: 22px; }
+.home-head h2 { font-size: 28px; }
+.home-stats { font-family: var(--sans); font-size: 12px; padding-bottom: 2px; }
+.back-link { color: var(--accent); font-size: 12px; margin-bottom: 5px; }
+.grade-chip { border-radius: 999px; background: var(--panel); }
+
+.tabs {
+  gap: 4px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 22px;
+}
+.tab {
+  padding: 8px 11px 10px;
+  border-radius: 7px 7px 0 0;
+  font-size: 13px;
+}
+.tab:hover { background: var(--sunk); border-bottom-color: transparent; }
+.tab.active { color: var(--accent-2); border-bottom-color: var(--accent); }
+
+/* Dashboard -------------------------------------------------------------- */
+.home-cards { grid-template-columns: repeat(3, minmax(210px, 1fr)); gap: 12px; }
+.home-card {
+  min-height: 132px;
+  padding: 16px;
+  gap: 4px;
+  border: 1px solid var(--rule);
+  border-top: 3px solid var(--class-color, var(--rule-2));
+  border-radius: 10px;
+  box-shadow: 0 1px 1px rgba(25, 34, 29, .03);
+}
+.home-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--rule-2);
+  box-shadow: 0 8px 24px rgba(25, 34, 29, .08);
+}
+.hc-code { font-size: 14px; }
+.hc-grade { margin-top: auto; }
+.hc-meta { font-family: var(--sans); }
+.home-upcoming {
+  margin-top: 28px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.home-upcoming h3 {
+  padding: 11px 14px;
+  margin: 0;
+  border-bottom: 1px solid var(--rule);
+  background: #FAFBF9;
+}
+.hu-row { padding: 9px 14px; border-radius: 0; }
+.hu-row:last-child { border-bottom: 0; }
+.hu-day, .hu-rel { font-family: var(--sans); min-width: 9.5ch; }
+
+/* Task focus ------------------------------------------------------------- */
+.task-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #FAFBF9;
+}
+.task-scope-note { min-height: 18px; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.search-control { position: relative; display: block; min-width: min(250px, 100%); }
+.search-control input { width: 100%; min-height: 34px; padding-right: 72px; }
+.search-count {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 11px;
+  pointer-events: none;
+}
+.task-group {
+  margin: 0 0 18px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.task-group-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--rule);
+  background: #FAFBF9;
+}
+.task-group-title span:last-child {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--panel);
+  font-size: 11px;
+}
+.task {
+  padding: 13px 14px 12px;
+  border-bottom: 1px solid var(--rule);
+  border-left-width: 3px;
+}
+.task:last-child { border-bottom: 0; }
+.task:hover { background: #FBFCFA; }
+.task-top { align-items: flex-start; }
+.task-title { font-size: 14px; line-height: 1.4; }
+.task-due { font-family: var(--sans); font-size: 12px; }
+.task-badges { margin-left: 20px; }
+.badge { font-family: var(--sans); border-color: var(--rule-2); background: #FAFBF9; }
+.task-desc, .task-materials, .task-toggle { margin-left: 20px; }
+.task-materials { margin-top: 7px; }
+.task-materials > ul { margin-top: 2px; }
+.task-editor { border-radius: 7px; }
+.search-hidden { display: none !important; }
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  padding: 22px;
+  border: 1px dashed var(--rule-2);
+  border-radius: 10px;
+  color: var(--muted);
+  background: #FAFBF9;
+}
+.empty-state b { color: var(--ink); font-weight: 650; }
+.compact-notice { margin-bottom: 14px; }
+
+/* Files ------------------------------------------------------------------ */
+.files-toolbar {
+  align-items: flex-end;
+  padding: 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #FAFBF9;
+}
+.files-toolbar > div:first-child { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.files-toolbar .seg { margin-left: 6px; }
+.file-group {
+  margin-bottom: 8px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.file-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border: 0;
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink);
+  background: #FAFBF9;
+}
+.file-group-head::-webkit-details-marker { display: none; }
+.file-group-head::before { content: "›"; margin-right: 8px; color: var(--muted); transition: transform var(--fast) var(--ease); }
+.file-group[open] > .file-group-head::before { transform: rotate(90deg); }
+.file-group-head span:first-child { flex: 1; }
+.file-group-head span:last-child {
+  min-width: 24px;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  text-align: center;
+  font-size: 11px;
+}
+.file-group-body { border-top: 1px solid var(--rule); }
+table.files td { height: 44px; padding: 7px 12px; }
+table.files tr:last-child td { border-bottom: 0; }
+.file-name { font-weight: 560; }
+
+/* Reading surfaces ------------------------------------------------------- */
+.md-body, .content-prose { font-size: 15px; line-height: 1.68; }
+.md-body h1, .md-body h2, .md-body h3,
+.content-prose h1, .content-prose h2, .content-prose h3, .content-prose h4 {
+  font-family: var(--sans);
+  letter-spacing: -.015em;
+}
+.md-body h1, .content-prose h1 { font-size: 25px; }
+.md-body h2, .content-prose h2 { font-size: 19px; }
+.md-body h3, .content-prose h3 { font-size: 16px; }
+.assignment-desc, .file-prose, .extracted-prose {
+  padding: 24px clamp(20px, 4vw, 42px);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.note-block { padding: 16px; border: 1px solid var(--rule); border-radius: 10px; background: #FAFBF9; }
+
+/* Settings --------------------------------------------------------------- */
+#view-settings .single { width: 100%; max-width: 1120px; margin: 0 auto; padding-top: 32px; }
+.page-intro { max-width: 66ch; margin: -2px 0 22px; color: var(--muted); }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.settings-grid .card { height: 100%; margin: 0; }
+.card {
+  padding: 18px;
+  border-color: var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 1px 1px rgba(25, 34, 29, .025);
+}
+.card h3 { color: var(--ink); font-size: 13px; letter-spacing: .02em; text-transform: none; }
+.settings-savebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 2px 0 8px;
+}
+.settings-disclosure { margin: 0 0 12px; }
+.settings-disclosure > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 14px;
+  font-weight: 650;
+}
+.settings-disclosure > summary::-webkit-details-marker { display: none; }
+.settings-disclosure > summary::before { content: "›"; display: inline-block; width: 18px; color: var(--muted); transition: transform var(--fast) var(--ease); }
+.settings-disclosure[open] > summary::before { transform: rotate(90deg); }
+.settings-disclosure[open] > summary { margin-bottom: 14px; }
+.form-row { align-items: flex-start; }
+.form-row label { padding-top: 7px; }
+
+/* Calendar --------------------------------------------------------------- */
+#view-calendar .single { padding: 18px 20px 0; }
+#view-calendar .single > h2 { font-family: var(--sans); font-weight: 720; letter-spacing: -.02em; }
+.cal-toolbar { gap: 8px; padding-bottom: 12px; border-bottom-color: var(--rule); }
+.cal-bar { gap: 10px; }
+.cal-summary { font-family: var(--sans); font-size: 12px; }
+.cal-controls { gap: 6px; }
+.seg { border-color: var(--rule-2); border-radius: 7px; box-shadow: none; }
+.seg-btn { font-family: var(--sans); padding: 6px 10px; }
+.seg-btn.active { background: var(--fill); }
+.filter-chip {
+  font-family: var(--sans);
+  border-color: var(--rule-2);
+  background: var(--panel);
+  padding: 5px 9px;
+}
+.filter-chip.on {
+  color: var(--accent-2);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 65%, var(--rule));
+  font-weight: 620;
+}
+.filter-chip.on:hover { color: var(--accent-2); background: color-mix(in srgb, var(--accent) 15%, var(--panel)); }
+.filter-chip.on .chip-count { color: var(--accent-2); }
+.class-chip { border-color: var(--rule-2); background: var(--panel); }
+.class-chip .chip-name { font-family: var(--sans); }
+.class-chip.off .chip-name { text-decoration: none; }
+.cal-month { font-family: var(--sans); font-style: normal; font-weight: 650; }
+.cal-day-head { background: var(--ground); }
+.cal-gridwrap, .cal-monthgrid { border-color: var(--rule-2); border-radius: 10px; background: var(--panel); }
+.cal-chip { border-radius: 6px; box-shadow: 0 1px 1px rgba(25, 34, 29, .04); }
+.cal-meettimes { border: 1px solid var(--rule); border-radius: 7px; padding: 0 8px; background: #FAFBF9; }
+.cal-meettimes summary { padding: 7px 4px; }
+
+/* Ask this class is a compact utility drawer, not a permanent vertical rail. */
+.chat-rail {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 8px;
+  width: auto;
+  height: auto;
+  pointer-events: none;
+}
+.chat-spine {
+  width: auto;
+  min-height: 38px;
+  flex-direction: row;
+  gap: 7px;
+  padding: 8px 13px;
+  border: 1px solid var(--rule-2);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 6px 20px rgba(25, 34, 29, .12);
+  pointer-events: auto;
+}
+.chat-spine:hover { background: #FAFBF9; }
+.chat-spine-label { writing-mode: horizontal-tb; font-family: var(--sans); font-size: 13px; letter-spacing: 0; }
+.chat-spine-mark { font-size: 14px; color: var(--accent); }
+.chat-spine-mark::before { content: "?"; font-weight: 700; }
+.chat-spine[aria-expanded="true"] .chat-spine-mark::before { content: "×"; font-size: 17px; }
+.chat-panel {
+  flex: none;
+  width: min(370px, calc(100vw - 40px));
+  height: min(520px, calc(100vh - 130px));
+  overflow: hidden;
+  border: 1px solid var(--rule-2);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--float);
+  pointer-events: auto;
+}
+.chat-head { padding: 13px 15px; }
+.chat-class { font-family: var(--sans); font-size: 14px; }
+
+@media (max-width: 980px) {
+  .home-cards { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
+  .settings-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 900px) {
+  #view-classes,
+  #view-classes.chat-avail,
+  #view-classes.chat-avail.chat-open { grid-template-columns: 250px minmax(0, 1fr) !important; }
+  .detail { padding: 24px; }
+}
+
+@media (max-width: 760px) {
+  .topbar { padding: 8px 12px; gap: 10px; }
+  .brand { min-width: 0; }
+  .topnav { order: 3; flex-basis: 100%; overflow-x: auto; }
+  #view-classes,
+  #view-classes.chat-avail,
+  #view-classes.chat-avail.chat-open {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: minmax(0, auto) minmax(0, 1fr);
+  }
+  .sidebar { max-height: 30vh; }
+  .home-cards { grid-template-columns: 1fr; }
+  .task-toolbar { flex-direction: column; }
+  .search-control { width: 100%; }
+  .task-top { flex-wrap: wrap; }
+  .task-due { width: 100%; padding-left: 20px; }
+  .settings-grid { grid-template-columns: 1fr; }
 }

@@ -4,9 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CANVASync</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,500;0,600;0,700;1,400;1,600&display=swap" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -28,10 +25,10 @@
 
   <div id="shell" class="shell hidden">
     <nav class="topbar">
-      <div class="brand">
+      <button type="button" id="home-btn" class="brand" aria-label="Go to class dashboard">
         CANVASync
         <span id="bridge-dot" class="dot" title="Bridge status"></span>
-      </div>
+      </button>
       <div class="topnav">
         <button data-view="classes" class="nav-btn active">Classes</button>
         <button data-view="calendar" class="nav-btn">Calendar</button>
@@ -168,6 +165,7 @@
         <div id="detail" class="hidden">
           <header class="detail-head">
             <div>
+              <button type="button" id="detail-home" class="linky back-link">&larr; All classes</button>
               <h2 id="detail-title"></h2>
               <div id="detail-sub" class="muted"></div>
             </div>
@@ -259,6 +257,7 @@
               <!-- Week only: lay the seven columns against a clock. -->
               <button type="button" id="cal-times" class="ghost-btn hidden" aria-pressed="false"
                       title="Show the week against a clock">Times</button>
+              <button type="button" id="cal-showpast" class="ghost-btn hidden" aria-pressed="false">Show past schedule</button>
               <button type="button" id="cal-showdone" class="ghost-btn hidden" aria-pressed="false">Show completed</button>
             </div>
           </div>
@@ -307,109 +306,112 @@
     <main id="view-settings" class="view hidden">
       <section class="single">
         <h2>Settings</h2>
+        <p class="page-intro">Control what gets indexed, which model does the work, and how the results reach your calendar.</p>
 
-        <div class="card" id="app-only-card">
-          <h3>Bridge</h3>
-          <div id="bridge-info" class="muted"></div>
-          <div class="row-actions">
-            <button id="bridge-restart-btn" class="app-only hidden">Restart bridge</button>
-            <button id="pair-btn">Pair a Chrome extension</button>
+        <div class="settings-grid">
+          <div class="card" id="app-only-card">
+            <h3>Bridge</h3>
+            <div id="bridge-info" class="muted"></div>
+            <div class="row-actions">
+              <button id="bridge-restart-btn" class="app-only hidden">Restart bridge</button>
+              <button id="pair-btn">Pair a Chrome extension</button>
+            </div>
+            <div id="pair-result" class="pair-result hidden"></div>
           </div>
-          <div id="pair-result" class="pair-result hidden"></div>
+
+          <!-- Every pipeline function, individually toggleable. A switch off
+               means trigger.js skips that stage entirely (CSYNC_STAGE_*), and
+               the Status page reports it as off rather than as eternally stale.
+               Wired in loadSettings() / the save handler. -->
+          <div class="card">
+            <h3>Functions</h3>
+            <div class="fn-row">
+              <label for="fn-parse">Parse syllabus</label>
+              <label class="switch"><input type="checkbox" id="fn-parse" data-fn="CSYNC_STAGE_PARSE" /><span class="knob"></span></label>
+            </div>
+            <div class="fn-row">
+              <label for="fn-extract">Extract file text</label>
+              <label class="switch"><input type="checkbox" id="fn-extract" data-fn="CSYNC_STAGE_EXTRACT" /><span class="knob"></span></label>
+            </div>
+            <div class="fn-row">
+              <label for="fn-mine">Mine assignments <span class="fn-tag">AI</span></label>
+              <label class="switch"><input type="checkbox" id="fn-mine" data-fn="CSYNC_STAGE_MINE" /><span class="knob"></span></label>
+            </div>
+            <div class="fn-row">
+              <label for="fn-context">Build class summary <span class="fn-tag">AI</span></label>
+              <label class="switch"><input type="checkbox" id="fn-context" data-fn="CSYNC_STAGE_CONTEXT" /><span class="knob"></span></label>
+            </div>
+            <div class="fn-row">
+              <label for="fn-calendar">Calendar worklist</label>
+              <label class="switch"><input type="checkbox" id="fn-calendar" data-fn="CSYNC_STAGE_CALENDAR" /><span class="knob"></span></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Anthropic API key</h3>
+            <div id="ai-key-state" class="muted mono"></div>
+            <div class="form-row">
+              <label for="ai-key-input">API key</label>
+              <input id="ai-key-input" type="password" autocomplete="off" spellcheck="false"
+                     placeholder="sk-ant-…" />
+            </div>
+            <div class="row-actions">
+              <button id="ai-key-save">Save key</button>
+              <button id="ai-key-remove" class="danger hidden">Remove</button>
+              <span id="ai-key-msg" class="muted"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>AI backend</h3>
+            <div class="form-row">
+              <label for="set-backend">Backend</label>
+              <select id="set-backend">
+                <option value="">auto — claude CLI, local fallback</option>
+                <option value="claude">claude CLI only</option>
+                <option value="local">local model only</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="set-claude-model">Claude model</label>
+              <input id="set-claude-model" placeholder="claude-opus-5" />
+            </div>
+            <div class="form-row">
+              <label for="set-local-model">Local model</label>
+              <input id="set-local-model" placeholder="mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit" />
+            </div>
+            <div class="form-row">
+              <label for="set-local-python">Local python</label>
+              <input id="set-local-python" placeholder="~/mlx-env/bin/python" />
+            </div>
+            <div class="row-actions app-only hidden">
+              <button id="model-check-btn">Check local model</button>
+              <button id="model-download-btn" class="hidden">Download local model</button>
+              <span id="model-status" class="muted"></span>
+            </div>
+          </div>
         </div>
 
-        <!-- Every pipeline function, individually toggleable. A switch off
-             means trigger.js skips that stage entirely (CSYNC_STAGE_*), and
-             the Status page reports it as off rather than as eternally stale.
-             Wired in loadSettings() / the save handler. -->
-        <div class="card">
-          <h3>Functions</h3>
-          <div class="fn-row">
-            <label for="fn-parse">Parse syllabus</label>
-            <label class="switch"><input type="checkbox" id="fn-parse" data-fn="CSYNC_STAGE_PARSE" /><span class="knob"></span></label>
-          </div>
-          <div class="fn-row">
-            <label for="fn-extract">Extract file text</label>
-            <label class="switch"><input type="checkbox" id="fn-extract" data-fn="CSYNC_STAGE_EXTRACT" /><span class="knob"></span></label>
-          </div>
-          <div class="fn-row">
-            <label for="fn-mine">Mine assignments <span class="fn-tag">AI</span></label>
-            <label class="switch"><input type="checkbox" id="fn-mine" data-fn="CSYNC_STAGE_MINE" /><span class="knob"></span></label>
-          </div>
-          <div class="fn-row">
-            <label for="fn-context">Build class summary <span class="fn-tag">AI</span></label>
-            <label class="switch"><input type="checkbox" id="fn-context" data-fn="CSYNC_STAGE_CONTEXT" /><span class="knob"></span></label>
-          </div>
-          <div class="fn-row">
-            <label for="fn-calendar">Calendar worklist</label>
-            <label class="switch"><input type="checkbox" id="fn-calendar" data-fn="CSYNC_STAGE_CALENDAR" /><span class="knob"></span></label>
-          </div>
-        </div>
-
-        <div class="card">
-          <h3>Anthropic API key</h3>
-          <div id="ai-key-state" class="muted mono"></div>
-          <div class="form-row">
-            <label for="ai-key-input">API key</label>
-            <input id="ai-key-input" type="password" autocomplete="off" spellcheck="false"
-                   placeholder="sk-ant-…" />
-          </div>
-          <div class="row-actions">
-            <button id="ai-key-save">Save key</button>
-            <button id="ai-key-remove" class="danger hidden">Remove</button>
-            <span id="ai-key-msg" class="muted"></span>
-          </div>
-        </div>
-
-        <div class="card">
-          <h3>AI backend</h3>
-          <div class="form-row">
-            <label>Backend</label>
-            <select id="set-backend">
-              <option value="">auto — claude CLI, local fallback</option>
-              <option value="claude">claude CLI only</option>
-              <option value="local">local model only</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label>Claude model</label>
-            <input id="set-claude-model" placeholder="claude-opus-5" />
-          </div>
-          <div class="form-row">
-            <label>Local model</label>
-            <input id="set-local-model" placeholder="mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit" />
-          </div>
-          <div class="form-row">
-            <label>Local python</label>
-            <input id="set-local-python" placeholder="~/mlx-env/bin/python" />
-          </div>
-          <div class="row-actions app-only hidden">
-            <button id="model-check-btn">Check local model</button>
-            <button id="model-download-btn" class="hidden">Download local model</button>
-            <span id="model-status" class="muted"></span>
-          </div>
+        <div class="settings-savebar">
+          <button id="settings-save-btn" class="primary">Save settings</button>
+          <span id="settings-confirm" class="muted hidden">Saved. Applies on the next pipeline pass.</span>
         </div>
 
         <!-- The calendars. Subscribe once in any calendar app and it refreshes
              itself; every sync rewrites the files. Rendered by
              renderSubscriptions(). -->
-        <div class="card">
-          <h3>Calendar subscriptions</h3>
+        <details class="card settings-disclosure">
+          <summary>Calendar subscriptions</summary>
           <div id="subs-list"></div>
-        </div>
+        </details>
 
-        <div class="row-actions">
-          <button id="settings-save-btn" class="primary">Save settings</button>
-          <span id="settings-confirm" class="muted hidden">Saved. Applies on the next pipeline pass.</span>
-        </div>
-
-        <div class="card">
-          <h3>Activity</h3>
+        <details class="card settings-disclosure">
+          <summary>Activity log</summary>
           <div class="row-actions">
             <button id="log-refresh-btn">Refresh</button>
           </div>
           <pre id="log-lines" class="log-box"></pre>
-        </div>
+        </details>
 
       </section>
     </main>
