@@ -417,3 +417,10 @@ test('progress.html must stay self-contained so a font CDN or an app.js rewrite 
   assert.ok(!/@import/i.test(body), 'no CSS may be pulled in from elsewhere');
   assert.ok(!/url\(\s*(?!DATA_ELIDED\))/i.test(scanned), 'url() may only carry an inline data: URI');
 });
+
+test('the standalone Status page always exposes a prominent route home', async () => {
+  const html = await fs.readFile(PAGE, 'utf8');
+  assert.match(html, /<a\s+class="home-link"\s+href="\/app\/"[^>]*>[^<]*CANVASync home<\/a>/i);
+  assert.match(html, /\.masthead\s*\{[^}]*position:\s*sticky/s,
+    'the home route must remain visible when the user scrolls through class status');
+});

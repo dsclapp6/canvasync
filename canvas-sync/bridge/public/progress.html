@@ -111,11 +111,20 @@ body::after {
 
 /* --- Masthead ------------------------------------------------------------ */
 .masthead {
-  display: flex; align-items: baseline; gap: 10px;
-  padding-bottom: 10px; border-bottom: 1px solid var(--rule-2); margin-bottom: 20px;
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--rule-2); margin-bottom: 20px;
+  background: var(--ground);
 }
 .masthead h1 { font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .01em; }
-.masthead a { color: var(--accent); font-size: 12px; }
+.masthead .home-link {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 5px 10px;
+  color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent-2);
+  border-radius: var(--r-1); box-shadow: var(--sit); font-size: 12px; font-weight: 700;
+  text-decoration: none;
+}
+.masthead .home-link:hover { background: var(--accent-2); }
+.masthead .home-link:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--rule-2); flex: none; }
 .pulse.live { background: var(--accent); }
 #poll-note { font-family: var(--mono); font-size: 12px; color: var(--muted); }
@@ -267,7 +276,7 @@ body::after {
     <span class="pulse" id="pulse"></span>
     <span class="mono muted" id="poll-note"></span>
     <span class="spacer"></span>
-    <a href="/app/">Back to dashboard</a>
+    <a class="home-link" href="/app/" aria-label="Back to CANVASync home">&larr; CANVASync home</a>
   </header>
 
   <!-- Rendered before the first response lands, and replaced by an honest
