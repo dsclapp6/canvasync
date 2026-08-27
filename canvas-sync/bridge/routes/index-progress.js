@@ -105,9 +105,9 @@ function pipelineBlock(pipelineStatus) {
     activeCount: active.length,
     queuedCount: st?.queuedCount ?? 0,
     maxConcurrent: st?.maxConcurrent ?? null,
-    // pipelineStatus() does not return the cancel flag. null means "not
-    // reported", which is not the same claim as false.
     cancelRequested: typeof st?.cancelRequested === 'boolean' ? st.cancelRequested : null,
+    mode: st?.mode ?? null,
+    requestedStages: Array.isArray(st?.requestedStages) ? st.requestedStages : [],
     // Display strings, `<folder> · <script.js>` (trigger.js:236-243). Kept even
     // though they carry no pid: they are the only live signal that exists today,
     // and /api/ask/status already made the mistake of dropping the one field

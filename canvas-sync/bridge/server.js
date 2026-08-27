@@ -16,7 +16,10 @@ import {
   isValidFolderName,
   measureClass,
 } from './storage.js';
-import { runIfNeeded, pipelineStatus, cancelPipeline } from './trigger.js';
+import {
+  runIfNeeded, runSelectedStages, pipelineStatus, pipelineStageAvailability,
+  cancelPipeline, PIPELINE_STAGE_KEYS,
+} from './trigger.js';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, readEnrolledCourses, isInScope, SCOPE_FILE, CLASS_DIR_RE } from '../scope.js';
 import { readUserState, patchTask, UserStateError } from './user-state.js';
@@ -1864,16 +1867,45 @@ export function buildApp(config) {
     res.json({ ok: true, settings: { env } });
   });
 
-  // POST /api/pipeline/run — re-run the local pipeline (parse/extract/mine/
-  // context/calendar) over what's already on disk. Does NOT scrape Canvas —
-  // that's the extension's job.
-  dashRouter.post('/pipeline/run', disabledCheck, (req, res) => {
+  // POST /api/pipeline/run — with no body, run the ordinary stale-only pass.
+  // With {stages:[...]}, force only those stages across in-scope classes.
+  // This never scrapes Canvas; the extension owns the source-data sync.
+  dashRouter.post('/pipeline/run', disabledCheck, async (req, res) => {
     const st = pipelineStatus();
     if (st.running) {
       return res.status(409).json({ error: 'pipeline already running', pipeline: st });
     }
-    runIfNeeded();
-    res.json({ ok: true, started: true });
+
+    const supplied = req.body?.stages;
+    if (supplied !== undefined) {
+      if (!Array.isArray(supplied) || supplied.length === 0 || supplied.some(s => typeof s !== 'string')) {
+        return res.status(400).json({ error: 'stages must be a non-empty array of stage keys' });
+      }
+      const stages = [...new Set(supplied)];
+      const invalid = stages.filter(s => !PIPELINE_STAGE_KEYS.includes(s));
+      if (invalid.length) {
+        return res.status(400).json({
+          error: `unknown pipeline stage${invalid.length === 1 ? '' : 's'}: ${invalid.join(', ')}`,
+          allowed: PIPELINE_STAGE_KEYS,
+        });
+      }
+      const enabled = await pipelineStageAvailability();
+      const disabled = stages.filter(s => enabled[s] === false);
+      if (disabled.length) {
+        return res.status(409).json({
+          error: `${disabled.join(', ')} ${disabled.length === 1 ? 'is' : 'are'} switched off in Settings`,
+          disabled,
+        });
+      }
+      const result = runSelectedStages(stages, { refreshCalendar: enabled.calendar !== false });
+      if (!result.started) {
+        return res.status(409).json({ error: 'pipeline already running', pipeline: pipelineStatus() });
+      }
+      return res.json({ ok: true, ...result });
+    }
+
+    const result = runIfNeeded();
+    res.json({ ok: true, ...result });
   });
 
   // POST /api/pipeline/cancel — stop a running pipeline pass: live jobs get

@@ -34,7 +34,7 @@ import { indexProgress, STAGES } from '../../scripts/index-progress.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PAGE = path.join(HERE, '..', 'public', 'progress.html');
 
-const REGIONS = ['banner', 'topline', 'classes', 'global', 'foot', 'pulse', 'poll-note'];
+const REGIONS = ['banner', 'topline', 'pipeline-actions', 'classes', 'global', 'foot', 'pulse', 'poll-note'];
 
 function stubNode(id) {
   return {
@@ -219,21 +219,21 @@ test('the reason a stage is stale must reach the screen, not stop at the payload
   // The page compresses "A (<iso>) is newer than B (<iso>)" to "A > B" (escaped
   // to &gt;). What is pinned is that the two filenames — the whole of the
   // evidence — survive the compression, not the connecting phrase.
-  // NOTE: not asserted against `graph` specifically. That stage is ALSO
-  // counted:false, and "not counted" wins the why cell; the reason under test
-  // reaches the screen via the counted stale stages.
   assert.ok(/[\w./-]+\.(?:json|txt|md) &gt; [\w./-]+/.test(html),
     'the staleness reason was computed and shipped but never displayed');
 });
 
-test('a stage the bridge will never spawn must say so where the state is shown', async () => {
+test('the remaining unwired pack stage must say so where the state is shown', async () => {
   const p = await realPayload();
+  const cls = p.classes.find((c) => c.folder === '93903-x-101-001');
+  const pack = cls.stages.find((s) => s.key === 'pack2');
+  assert.equal(pack.state, 'not-wired');
   const page = await renderReal(p);
   page.expandAll();
   const html = page.markup();
   assert.ok(html.includes('not counted'),
-    'a cli-only stage rendered as ordinary work the user can wait for');
-  assert.ok(html.includes('cli only'),
+    'an unwired stage rendered as ordinary work the user can wait for');
+  assert.ok(html.includes('not wired'),
     'the reason a stage is uncounted must reach the screen');
 });
 

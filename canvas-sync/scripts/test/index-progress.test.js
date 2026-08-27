@@ -185,12 +185,13 @@ test('a class holding only metadata.json must report the context stage not-start
   assert.equal(stageOf(c, 'extract').state, 'n-a', 'no files_index.json');
   assert.equal(stageOf(c, 'index').state, 'not-started', 'metadata can supply the term year once a reading source arrives');
   assert.equal(stageOf(c, 'mine').state, 'n-a', 'metadata.json is deliberately not a mining source');
+  assert.equal(stageOf(c, 'graph').state, 'not-started', 'metadata is enough to seed the relationship graph');
   assert.equal(stageOf(c, 'build').state, 'not-started');
   assert.equal(stageOf(c, 'build').stale, true, 'a source exists and the anchor does not');
-  assert.equal(c.overall.total, 2);
+  assert.equal(c.overall.total, 3);
   assert.equal(c.overall.done, 0);
   assert.equal(c.overall.percent, 0);
-  assert.match(c.overall.denominator, /2 counted stage\(s\): index, build/);
+  assert.match(c.overall.denominator, /3 counted stage\(s\): index, graph, build/);
 });
 
 test('a fully indexed class reports every counted stage done, and says which stages it refused to count', async () => {
@@ -202,18 +203,17 @@ test('a fully indexed class reports every counted stage done, and says which sta
   for (const key of ['parse', 'extract', 'index', 'mine', 'build']) {
     assert.equal(stageOf(c, key).state, 'done', `${key}: ${stageOf(c, key).evidence}`);
   }
-  assert.equal(c.overall.done, 5);
-  assert.equal(c.overall.total, 5);
+  assert.equal(c.overall.done, 6);
+  assert.equal(c.overall.total, 6);
   assert.equal(c.overall.percent, 100);
-  assert.match(c.overall.denominator, /5 counted stage\(s\): parse, extract, index, mine, build/,
+  assert.match(c.overall.denominator, /6 counted stage\(s\): parse, extract, index, mine, graph, build/,
     'the denominator must appear next to the percentage, always');
 
-  // graph and pack2 exist on disk / in the stage list but are excluded, with a
-  // reason, because no button the user can press ever runs them.
-  assert.equal(stageOf(c, 'graph').counted, false);
-  assert.equal(stageOf(c, 'graph').notCountedReason, 'cli-only');
+  // Graph is now runnable from Status; pack2 remains experimental and unwired.
+  assert.equal(stageOf(c, 'graph').counted, true);
+  assert.equal(stageOf(c, 'graph').state, 'done');
   assert.equal(stageOf(c, 'pack2').state, 'not-wired');
-  assert.deepEqual(c.overall.excluded.map(e => e.key).sort(), ['graph', 'pack2']);
+  assert.deepEqual(c.overall.excluded.map(e => e.key), ['pack2']);
 });
 
 test('a Canvas disabled-feature body must not be counted as one page and one quiz', async () => {
@@ -278,7 +278,7 @@ test('a source newer than the mined output must read as stale, not as done', asy
   assert.equal(stageOf(c, 'parse').state, 'done', 'a changed modules.json has nothing to do with the syllabus');
   assert.equal(c.overall.state, 'stale');
   assert.equal(c.overall.done, 3);
-  assert.equal(c.overall.percent, 60);
+  assert.equal(c.overall.percent, 50);
 });
 
 test('a byte-identical syllabus rewrite must not re-fire the AI parse stage forever', async () => {
@@ -724,10 +724,7 @@ test('a two-hour-old pid-less lock is abandoned, not a holder still mid-acquire'
     'inside the 10s window the same shape genuinely is a holder between mkdir and writeFile');
 });
 
-test('a stage no button in the app runs must never be reported queued behind a live pipeline', async () => {
-  // build-graph.js has no orchestrator in trigger.js, so nothing the user can
-  // click will ever run it. Showing it "queued" promised work that was never
-  // going to start.
+test('the newly runnable graph can queue, while the unwired pack still cannot', async () => {
   const root = await newRoot();
   const dir = await writeFullClass(root, '20002-econ-999-001');
   await touch(path.join(dir, 'modules.json'), at(600)); // makes graph, mine and build stale
@@ -737,8 +734,9 @@ test('a stage no button in the app runs must never be reported queued behind a l
     pipelineStatus: () => ({ running: true, active: [], queuedCount: 2, maxConcurrent: 3 }),
   });
   const c = classOf(p, '20002-econ-999-001');
-  assert.equal(stageOf(c, 'graph').counted, false);
-  assert.notEqual(stageOf(c, 'graph').state, 'queued', 'nothing is going to run it, so nothing is queued');
+  assert.equal(stageOf(c, 'graph').counted, true);
+  assert.equal(stageOf(c, 'graph').state, 'queued', 'the Status-page graph action makes this real queued work');
+  assert.notEqual(stageOf(c, 'pack2').state, 'queued', 'the unwired pack must never promise queued work');
   assert.equal(stageOf(c, 'mine').state, 'queued', 'a counted stale stage beside a live pipeline still is');
 });
 

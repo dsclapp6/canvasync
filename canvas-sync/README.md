@@ -99,9 +99,16 @@ job concurrency is derived from CPU cores and free memory (1–3 jobs, override 
 machine-wide lock (`<data root>/locks/local-model.lock`) so only ONE ~20 GB model load can ever
 exist at a time, no matter how many pipeline processes are running. A running sync can be
 cancelled from the extension popup (the Force button becomes **Cancel sync**) or the dashboard
-(**Rebuild packs** becomes **Cancel pipeline**); cancel SIGTERMs running jobs — which forward it
+(**Rebuild summaries** becomes **Cancel pipeline**); cancel SIGTERMs running jobs — which forward it
 to their python/soffice children — and skips everything queued. Force sync is refused while a
 sync is already running instead of queueing a second full pull.
+
+The **Status** page can also force one pipeline part across the current class selection without
+rebuilding everything: syllabus parsing, course-file extraction, dated-reading indexing,
+task/homework mining, material-link graphing, AI context, or calendar generation. Reading and
+task runs automatically perform the cheap calendar refresh afterward so their results appear
+immediately. These actions use data already synced from Canvas and honor the corresponding
+Functions switches in Settings.
 
 ## What gets scraped — and what can't be
 

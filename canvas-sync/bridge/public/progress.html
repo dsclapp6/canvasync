@@ -160,6 +160,26 @@ body::after {
 .status.head .v { color: var(--ink); }
 .status.idle .k { color: var(--muted); }
 
+/* --- Selective pipeline controls ----------------------------------------- */
+.pipeline-actions {
+  background: var(--panel); border: 1px solid var(--rule-2); border-radius: var(--r-2);
+  box-shadow: var(--sit); padding: 12px 14px; margin-bottom: 22px;
+}
+.pipeline-actions h2 { font: 700 12px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.pipeline-actions p { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.action-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.action-grid button {
+  font: 600 12px var(--sans); color: var(--ink); background: var(--ground);
+  border: 1px solid var(--edge); border-radius: var(--r-1); padding: 6px 10px;
+  box-shadow: var(--sit); cursor: pointer;
+}
+.action-grid button:hover:not(:disabled) { background: var(--sunk); border-color: var(--accent); }
+.action-grid button:disabled { cursor: default; opacity: .45; box-shadow: none; }
+.action-grid button.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent-2); }
+.action-grid button.danger { color: var(--on-alarm); background: var(--alarm); border-color: var(--alarm); opacity: 1; }
+.action-note { min-height: 18px; font: 12px var(--mono); color: var(--muted); margin-top: 7px; }
+.action-note.bad { color: var(--alarm); }
+
 /* --- Classes -------------------------------------------------------------- */
 .section-head {
   display: flex; align-items: baseline;
@@ -258,6 +278,8 @@ body::after {
 
   <section class="topline" id="topline" hidden></section>
 
+  <section class="pipeline-actions" id="pipeline-actions" aria-label="Pipeline controls"></section>
+
   <div class="section-head">
     <h2>Classes</h2>
   </div>
@@ -292,11 +314,18 @@ async function loadSecret() {
 
 // The header is omitted rather than sent as the string "null" when we have no
 // secret, so a 401 means "wrong secret" and not "we sent garbage".
-async function api(pathname) {
+async function api(pathname, options) {
   const headers = {};
   if (SECRET) headers['X-Bridge-Secret'] = SECRET;
-  const res = await fetch(pathname, { headers: headers, cache: 'no-store' });
-  if (!res.ok) { const e = new Error(res.status + ' ' + res.statusText); e.code = res.status; throw e; }
+  if (options && options.body != null) headers['Content-Type'] = 'application/json';
+  const res = await fetch(pathname, Object.assign({}, options || {}, { headers: headers, cache: 'no-store' }));
+  if (!res.ok) {
+    let detail = null;
+    try { detail = await res.json(); } catch (e) {}
+    const e = new Error((detail && detail.error) || (res.status + ' ' + res.statusText));
+    e.code = res.status;
+    throw e;
+  }
   return res.json();
 }
 
@@ -318,6 +347,8 @@ let LAST = null;            // last good payload, kept so a failed poll degrades
 let LAST_AT = 0;            // when that payload arrived (ms epoch)
 let TIMER = null;
 let BUSY = false;
+let ACTION_MSG = '';
+let ACTION_BAD = false;
 // True once a poll has failed while a previous payload is still on screen.
 // Everything this page says in the present tense ("the local model IS loaded
 // and working") stops being a present-tense claim the moment the bridge goes
@@ -572,6 +603,48 @@ function renderTopline(d) {
 
   document.getElementById('topline').innerHTML = out.join('');
   document.getElementById('topline').hidden = false;
+}
+
+const PIPELINE_ACTIONS = [
+  { key: 'parse', label: 'Syllabus', help: 'Re-parse syllabus files (uses the configured AI backend).' },
+  { key: 'extract', label: 'Course files', help: 'Re-extract downloaded PDFs, slides and documents.' },
+  { key: 'index', label: 'Readings + calendar', help: 'Re-index dated readings, then refresh the calendar.' },
+  { key: 'mine', label: 'Tasks / homework + calendar', help: 'Re-mine assignments and implicit work, then refresh the calendar.' },
+  { key: 'graph', label: 'Material links', help: 'Rebuild relationships between tasks and course materials.' },
+  { key: 'build', label: 'AI context', help: 'Rebuild class summaries and uploadable context.' },
+  { key: 'calendar', label: 'Calendar only', help: 'Regenerate the worklist and ICS files from current indexes.' },
+];
+
+function stageOff(d, key) {
+  const classes = Array.isArray(d && d.classes) ? d.classes : [];
+  return classes.some(function (c) {
+    return (Array.isArray(c.stages) ? c.stages : []).some(function (s) {
+      return s.key === key && s.notCountedReason === 'off-in-settings';
+    });
+  });
+}
+
+function renderPipelineActions(d) {
+  const box = document.getElementById('pipeline-actions');
+  if (!box) return;
+  const working = isWorking(d);
+  let html = '<h2>Run one part</h2>'
+    + '<p>Runs across current classes using already-synced Canvas data. Choose only what changed.</p>'
+    + '<div class="action-grid">';
+  html += '<button type="button" class="primary" data-pipeline-all'
+    + (working ? ' disabled' : '')
+    + ' title="Run every enabled stage whose inputs are newer than its output">All stale parts</button>';
+  PIPELINE_ACTIONS.forEach(function (a) {
+    const off = stageOff(d, a.key);
+    html += '<button type="button" data-pipeline-stage="' + esc(a.key) + '"'
+      + ((working || off) ? ' disabled' : '')
+      + ' title="' + esc(off ? 'Switched off in Settings' : a.help) + '">'
+      + esc(a.label) + '</button>';
+  });
+  if (working) html += '<button type="button" class="danger" data-pipeline-cancel>Cancel running pipeline</button>';
+  html += '</div><div class="action-note' + (ACTION_BAD ? ' bad' : '') + '">'
+    + esc(ACTION_MSG || (working ? 'A pipeline run is in progress.' : '')) + '</div>';
+  box.innerHTML = html;
 }
 
 // --- Meter ------------------------------------------------------------------
@@ -937,6 +1010,7 @@ function render(d) {
     COLORS = fallbackColors(d.classes.map(function (c) { return slugOf(c.folder); }));
   }
   renderTopline(d);
+  renderPipelineActions(d);
   renderClasses(d);
   renderGlobal(d);
   renderFoot(d);
@@ -1075,6 +1149,34 @@ document.getElementById('classes').addEventListener('click', function (ev) {
   if (!folder) return;
   if (OPEN.has(folder)) OPEN.delete(folder); else OPEN.add(folder);
   if (LAST) renderClasses(LAST);
+});
+
+document.getElementById('pipeline-actions').addEventListener('click', async function (ev) {
+  const button = ev.target.closest ? ev.target.closest('button') : null;
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  ACTION_BAD = false;
+  try {
+    if (button.hasAttribute('data-pipeline-cancel')) {
+      ACTION_MSG = 'Cancelling…';
+      if (LAST) renderPipelineActions(LAST);
+      await api('/api/pipeline/cancel', { method: 'POST', body: '{}' });
+      ACTION_MSG = 'Cancellation requested.';
+    } else {
+      const key = button.getAttribute('data-pipeline-stage');
+      const action = PIPELINE_ACTIONS.find(function (a) { return a.key === key; });
+      ACTION_MSG = 'Starting ' + (action ? action.label : 'stale pipeline parts') + '…';
+      if (LAST) renderPipelineActions(LAST);
+      const body = key ? JSON.stringify({ stages: [key] }) : '{}';
+      await api('/api/pipeline/run', { method: 'POST', body: body });
+      ACTION_MSG = 'Started ' + (action ? action.label : 'all stale parts') + '.';
+    }
+  } catch (err) {
+    ACTION_BAD = true;
+    ACTION_MSG = 'Could not run that part: ' + String((err && err.message) || 'unknown error');
+  }
+  if (LAST) renderPipelineActions(LAST);
+  tick();
 });
 
 // Pausing on a hidden tab is the difference between a status page and a

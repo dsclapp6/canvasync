@@ -1,5 +1,5 @@
-// trigger.js — post-ingest job scheduler for canvas-sync bridge
-// Spawns parse-syllabus and build-context scripts for each class dir.
+// trigger.js — post-ingest and user-requested job scheduler for canvas-sync.
+// Runs the full stale pipeline or an explicitly selected subset per class.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,7 +8,6 @@ import { createWriteStream, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, isInScope } from '../scope.js';
-import { indexClassReadings } from '../scripts/index-readings.js';
 
 // One shared definition for every entry point — see ../data-root.js.
 const syncHome = dataRoot;
@@ -74,6 +73,8 @@ let lastSpawnAt = 0;
 let running = false;
 let rerunRequested = false;
 let cancelRequested = false;
+let currentMode = null;
+let currentStages = [];
 const queued = new Set();
 const active = new Set();
 const children = new Set();
@@ -149,11 +150,23 @@ async function stageToggles() {
   return {
     parse:    on('CSYNC_STAGE_PARSE'),
     extract:  on('CSYNC_STAGE_EXTRACT'),
+    index:    true,
     mine:     on('CSYNC_STAGE_MINE'),
+    graph:    on('CSYNC_STAGE_GRAPH'),
     build:    on('CSYNC_STAGE_CONTEXT'),
     calendar: on('CSYNC_STAGE_CALENDAR'),
   };
 }
+
+export async function pipelineStageAvailability() {
+  return stageToggles();
+}
+
+// These are the stages a user may explicitly run from the Status page. pack2
+// remains an experimental, not-wired artifact and is deliberately absent.
+export const PIPELINE_STAGE_KEYS = Object.freeze([
+  'parse', 'extract', 'index', 'mine', 'graph', 'build', 'calendar',
+]);
 
 async function spawnJob(scriptPath, classDir, token) {
   await acquireSemaphore();
@@ -261,7 +274,15 @@ export function pipelineStatus() {
   });
   // Report the LIVE cap (honors a settings.json override changed since launch),
   // not the module-load constant, so the dashboard reflects the real value.
-  return { running, active: jobs, queuedCount: queued.size, maxConcurrent: computeMaxConcurrent() };
+  return {
+    running,
+    active: jobs,
+    queuedCount: queued.size,
+    maxConcurrent: computeMaxConcurrent(),
+    cancelRequested,
+    mode: currentMode,
+    requestedStages: [...currentStages],
+  };
 }
 
 // Cancel everything: queued jobs are skipped as their turn comes up, live
@@ -333,52 +354,74 @@ async function isStale(outPath, sourcePaths, dirSources = []) {
   return newestSource > 0 && (outMtime === null || outMtime < newestSource);
 }
 
-// Run one pipeline stage if its output is stale. The staleness check happens
-// right before the spawn (not up front) so each stage sees the outputs the
-// previous stage just wrote — parse feeds extract feeds mine feeds context in
-// a single trigger pass instead of one stage per ingest.
-async function runStageIfStale(classDir, scriptName, outPath, sourcePaths, dirSources = []) {
-  if (!(await isStale(outPath, sourcePaths, dirSources))) return;
+async function hasAnyInput(sourcePaths, dirSources = []) {
+  const [fileMtimes, dirMtimes] = await Promise.all([
+    Promise.all(sourcePaths.map(statMtime)),
+    Promise.all(dirSources.map(newestMtimeInDir)),
+  ]);
+  return Math.max(0, ...fileMtimes.map(m => m ?? 0), ...dirMtimes) > 0;
+}
+
+// Automatic passes run stale stages. A Status-page action uses force=true, but
+// still requires at least one real input: "parse syllabus" must not spawn six
+// failing model jobs for classes that have never supplied a syllabus.
+async function runClassStage(classDir, scriptName, outPath, sourcePaths, dirSources = [], { force = false } = {}) {
+  const shouldRun = force
+    ? await hasAnyInput(sourcePaths, dirSources)
+    : await isStale(outPath, sourcePaths, dirSources);
+  if (!shouldRun) return;
   const token = `${classDir}:${scriptName}`;
   if (queued.has(token) || active.has(token)) return;
   queued.add(token);
   await spawnJob(path.join(REPO_ROOT, 'scripts', scriptName), classDir, token);
 }
 
-async function processClassDir(classDir, fn) {
+async function processClassDir(classDir, fn, { selected = null, force = false } = {}) {
   const p = (...s) => path.join(classDir, ...s);
+  const wants = key => fn[key] && (!selected || selected.has(key));
 
   // 1. Parse syllabus → syllabus_parsed.json
-  if (fn.parse) await runStageIfStale(classDir, 'parse-syllabus.js',
+  if (wants('parse')) await runClassStage(classDir, 'parse-syllabus.js',
     p('syllabus_parsed.json'),
-    [p('syllabus.html'), p('syllabus.pdf'), p('syllabus.docx')]);
+    [p('syllabus.html'), p('syllabus.pdf'), p('syllabus.docx')], [], { force });
 
   // 2. Extract text from downloaded course files → materials/. The anchor is
   // last_extracted.txt (written after everything else): _combined.txt is
   // absent in split mode, and files_index.json is rewritten by extract itself.
-  if (fn.extract) await runStageIfStale(classDir, 'extract-course-files.js',
+  if (wants('extract')) await runClassStage(classDir, 'extract-course-files.js',
     p('materials', 'last_extracted.txt'),
     [p('files_index.json')],
-    [p('files')]);
+    [p('files')], { force });
 
-  // Deterministic and cheap. This runs independently of the AI mining switch:
-  // turning the model off must never turn explicit syllabus readings off too.
-  // The writer is content-aware, so an unchanged pass does not bump mtimes or
-  // make downstream stages stale.
-  await indexClassReadings(classDir);
+  // 3. Index dated readings without a model. Unlike task mining this is a
+  // correctness floor, so it has no Functions kill switch.
+  if (wants('index')) await runClassStage(classDir, 'index-readings.js',
+    p('readings_index.json'),
+    [p('metadata.json'), p('syllabus_parsed.json'), p('syllabus.html'),
+      p('files_index.json'), p('materials', 'last_extracted.txt')],
+    [], { force });
 
   // 4. Mine the exhaustive task list (AI) → assignments_mined.json
-  if (fn.mine) await runStageIfStale(classDir, 'mine-assignments.js',
+  if (wants('mine')) await runClassStage(classDir, 'mine-assignments.js',
     p('assignments_mined.json'),
     [
       p('assignments.json'), p('assignment_groups.json'), p('quizzes.json'),
       p('syllabus_parsed.json'), p('modules.json'), p('pages.json'),
       p('announcements.json'), p('discussions.json'), p('calendar_events.json'),
       p('materials', 'last_extracted.txt'), p('readings_index.json'),
-    ]);
+    ], [], { force });
 
-  // 5. Build the context + uploadable pack → AI_CONTEXT/
-  if (fn.build) await runStageIfStale(classDir, 'build-context.js',
+  // 5. Rebuild the deterministic material/task relationship graph.
+  if (wants('graph')) await runClassStage(classDir, 'build-graph.js',
+    p('correlation_graph.json'),
+    [p('files_index.json'), p('assignments.json'), p('modules.json'),
+      p('pages.json'), p('quizzes.json'), p('announcements.json'),
+      p('discussions.json'), p('metadata.json'), p('syllabus.html'),
+      p('materials', 'last_extracted.txt')],
+    [], { force });
+
+  // 6. Build the context + uploadable pack → AI_CONTEXT/
+  if (wants('build')) await runClassStage(classDir, 'build-context.js',
     p('AI_CONTEXT', 'last_built.txt'),
     [
       p('metadata.json'), p('assignments.json'), p('assignment_groups.json'),
@@ -387,21 +430,23 @@ async function processClassDir(classDir, fn) {
       p('grades.json'), p('tabs.json'),
       p('syllabus_parsed.json'), p('assignments_mined.json'),
       p('readings_index.json'), p('materials', 'last_extracted.txt'),
-    ]);
+    ], [], { force });
 }
 
-export async function runIfNeeded() {
+function startPipeline({ selected = null, force = false, rerunWhenBusy = false } = {}) {
   // Idempotent guard — fire-and-forget, never throws. A call while a pass is
   // already running (e.g. a sync finishing during a long mining stage) flags
   // a rerun so the fresh data is processed as soon as this pass ends, instead
   // of sitting untouched until the next external trigger.
   if (running) {
-    rerunRequested = true;
-    return;
+    if (rerunWhenBusy) rerunRequested = true;
+    return { started: false, busy: true, stages: [...currentStages] };
   }
   running = true;
   cancelRequested = false;
   rerunRequested = false;
+  currentMode = selected ? 'selected' : 'automatic';
+  currentStages = selected ? [...selected] : [...PIPELINE_STAGE_KEYS];
   refreshSemaphore();
   (async () => {
     try {
@@ -440,16 +485,17 @@ export async function runIfNeeded() {
       const offNames = Object.entries(fn).filter(([, v]) => !v).map(([k]) => k);
       if (offNames.length) await appendLog(`SKIP (off in settings): ${offNames.join(', ')}`).catch(() => {});
 
-      // Process all class dirs concurrently (each internally serialises
-      // parse -> extract -> mine -> context).
-      await Promise.all(classDirs.map(d => processClassDir(d, fn).catch(err =>
+      // Process all class dirs concurrently; each class keeps dependency order.
+      await Promise.all(classDirs.map(d => processClassDir(d, fn, { selected, force }).catch(err =>
         appendLog(`ERROR processClassDir ${d} ${err.message}`).catch(() => {})
       )));
 
       // Rebuild the calendar worklist once per pass. Deterministic and cheap
       // (no AI unless CSYNC_CAL_AGENT=1) — the user's Claude routine consumes
       // <base>/calendar/worklist.md on its own schedule.
-      if (fn.calendar && classDirs.length > 0) {
+      const wantsCalendar = fn.calendar && classDirs.length > 0
+        && (!selected || selected.has('calendar'));
+      if (wantsCalendar) {
         const calToken = 'global:sync-calendar';
         if (!queued.has(calToken) && !active.has(calToken)) {
           queued.add(calToken);
@@ -460,10 +506,26 @@ export async function runIfNeeded() {
       await appendLog(`ERROR runIfNeeded ${err.message}`).catch(() => {});
     } finally {
       running = false;
+      currentMode = null;
+      currentStages = [];
       if (rerunRequested && !cancelRequested) {
         await appendLog('RERUN — new data arrived during the last pass').catch(() => {});
         runIfNeeded();
       }
     }
   })();
+  return { started: true, busy: false, mode: currentMode, stages: [...currentStages] };
+}
+
+export function runSelectedStages(stageKeys, { refreshCalendar = true } = {}) {
+  const selected = new Set(stageKeys);
+  // These two stages change calendar-visible work. Refreshing the deterministic
+  // worklist is the small downstream step that makes the button's result show
+  // up immediately without rebuilding unrelated model outputs.
+  if (refreshCalendar && (selected.has('index') || selected.has('mine'))) selected.add('calendar');
+  return startPipeline({ selected, force: true, rerunWhenBusy: false });
+}
+
+export function runIfNeeded() {
+  return startPipeline({ selected: null, force: false, rerunWhenBusy: true });
 }

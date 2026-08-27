@@ -335,7 +335,7 @@ function renderPipelineButton(pipeline) {
   } else {
     btn.textContent = 'Rebuild summaries';
     btn.classList.remove('danger');
-    btn.title = 'Re-run parse/extract/mine/context over synced data';
+    btn.title = 'Run every stale pipeline part over synced data';
   }
 }
 

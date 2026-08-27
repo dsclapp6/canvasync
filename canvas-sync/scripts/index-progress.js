@@ -140,11 +140,8 @@ export const STAGES = [
   {
     key: 'graph', label: 'Correlation graph', script: 'build-graph.js', needsModel: false,
     inputs: GRAPH_SOURCES, anchor: GRAPH_FILE, errorSidecar: null,
-    // Only the CLI orchestrator has a graph stage. Everything the user actually
-    // triggers goes through trigger.js, which has none — so counting this stage
-    // would show every class permanently short of 100% for work no button runs.
-    orchestrators: ['scripts/sync-all-contexts.js:188'],
-    counted: false, notCountedReason: 'cli-only',
+    orchestrators: ['bridge/trigger.js', 'scripts/sync-all-contexts.js'],
+    counted: true, notCountedReason: null,
   },
   {
     key: 'build', label: 'AI context', script: 'build-context.js', needsModel: true,
@@ -1025,7 +1022,6 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
     predicateNotes: PREDICATE_NOTES,
     requiresNewWrites: [
       'pipeline.queued[] — trigger.js:243 reduces the queued Set to a count, so the page cannot name which class is waiting',
-      'pipeline.cancelRequested — not exposed by pipelineStatus()',
       'jobs[].pid and jobs[].startedAt from the pipeline itself — recovered here from `ps` + trigger.log; trigger.js:181 discards both',
       "model.waiting[].basis === 'announced' — _acquireModelLock (scripts/_util.js:140) leaves no trace of a waiter, so a 40-minute wait and active generation are indistinguishable",
       'classes[].canvasNewerThanIndex beyond course files — nothing records Canvas updated_at per course/assignment (bridge/storage.js:160)',
@@ -1112,11 +1108,13 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
         activeCount: activeTokens.length,
         queuedCount: ps.queuedCount ?? null,
         maxConcurrent: ps.maxConcurrent ?? null,
-        cancelRequested: null,
+        cancelRequested: typeof ps.cancelRequested === 'boolean' ? ps.cancelRequested : null,
+        mode: ps.mode ?? null,
+        requestedStages: Array.isArray(ps.requestedStages) ? ps.requestedStages : [],
         active: activeTokens,
         queued: [],
         _from: 'bridge/trigger.js pipelineStatus() — in-memory and per-process: a bridge that did not spawn the children reports idle',
-        _gap: 'queued[] names and cancelRequested are discarded at the API boundary (trigger.js:243)',
+        _gap: 'queued[] names are still reduced to a count at the API boundary',
       }
       : {
         available: false,
@@ -1125,6 +1123,8 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
         queuedCount: null,
         maxConcurrent: null,
         cancelRequested: null,
+        mode: null,
+        requestedStages: [],
         active: [],
         queued: [],
         _from: 'not supplied — this call has no bridge in-memory state (CLI run, or the route did not pass pipelineStatus)',
@@ -1485,13 +1485,10 @@ async function buildClass(args) {
     // reports only how many (trigger.js:243).
     //
     // Gated on `counted`, because an uncounted stage is uncounted precisely
-    // because no orchestrator the user can press spawns it. build-graph.js runs
-    // only from scripts/sync-all-contexts.js:188, so telling a user watching a
-    // live pipeline that the graph is "queued" on five classes promises work
-    // the bridge will never do — they wait, and nothing happens. Stale is the
-    // true state and it stays.
+    // because no orchestrator the user can press spawns it. Telling a user an
+    // unwired stage is queued promises work that will never happen.
     // A stage switched off in Settings is uncounted for the same reason a
-    // cli-only one is: nothing the user can press will spawn it.
+    // unwired one is: nothing the user can press will spawn it.
     const offInSettings = args.disabledStages?.has(stage.key) === true;
 
     let queuedBasis = null;
@@ -1656,7 +1653,7 @@ export function formatProgress(p) {
     L.push(pad(label, 32) + cells + `${c.overall.done}/${c.overall.total} ${pct} ${c.overall.state}${c.overall.blocked ? ` (blocked: ${c.overall.blocked})` : ''}`);
   }
   L.push('-'.repeat(header.length));
-  L.push('* not counted toward PROGRESS: graph is spawned only by scripts/sync-all-contexts.js, pack2 by nothing at all.');
+  L.push('* not counted toward PROGRESS: pack2 is not wired into an orchestrator.');
 
   for (const c of p.classes) {
     L.push('');

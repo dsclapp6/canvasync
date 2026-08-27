@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PAGE = path.join(HERE, '..', 'public', 'progress.html');
 
-const REGIONS = ['banner', 'topline', 'classes', 'global', 'foot', 'pulse', 'poll-note'];
+const REGIONS = ['banner', 'topline', 'pipeline-actions', 'classes', 'global', 'foot', 'pulse', 'poll-note'];
 
 function stubNode(id) {
   return {
@@ -132,12 +132,13 @@ function payload(overrides = {}) {
         folder: '93903-busi-380-002', courseId: '93903', code: 'BUSI 380 002',
         name: 'Marketing', term: 'Fall 2026', inScope: true,
         lastScrapedAt: '2026-08-24T17:58:12.136Z',
-        overall: { done: 2, total: 4, state: 'running', blocked: null },
+        overall: { done: 4, total: 6, state: 'running', blocked: null },
         stages: [
           { key: 'parse', state: 'done', script: 'scripts/parse-syllabus.js' },
           { key: 'extract', state: 'done', script: 'scripts/extract-course-files.js' },
+          { key: 'index', state: 'done', script: 'scripts/index-readings.js' },
           { key: 'mine', state: 'running', script: 'scripts/mine-assignments.js', elapsedSec: 262 },
-          { key: 'graph', state: 'cli-only', script: 'scripts/build-graph.js' },
+          { key: 'graph', state: 'done', script: 'scripts/build-graph.js' },
           { key: 'build', state: 'stale', script: 'scripts/build-context.js' },
           { key: 'pack2', state: 'not-wired', script: 'scripts/build-pack.js' },
         ],
@@ -209,16 +210,39 @@ test('a class with no usable overall counts must still show a denominator, never
   assert.ok(!/>\s*\d{1,3}%\s*</.test(markup), 'a bare percentage escaped into the row');
 });
 
-test('stages the pipeline will never run must not be counted against a class', async () => {
-  // graph is CLI-only under the bridge orchestrator and pack2 is wired to
-  // nothing. Counting either makes every class permanently incomplete for work
-  // that is never going to happen.
+test('only the remaining unwired stage is excluded from the progress meter', async () => {
+  // Graph is now a Status-page action. pack2 is still wired to nothing, so it
+  // alone stays out of the denominator.
   const page = await renderPage(() => payload());
   const markup = page.markup();
   const busi380 = markup.split('data-folder="93903-busi-380-002"')[1].split('</button>')[0];
   const segments = (busi380.match(/<i[ >]/g) || []).length;
-  assert.equal(segments, 4, 'the meter should draw 4 countable stages, not all 6');
-  assert.ok(busi380.includes('2/4'), 'the ratio must match the meter drawn beside it');
+  assert.equal(segments, 6, 'the meter should draw 6 runnable stages, excluding pack2');
+  assert.ok(busi380.includes('4/6'), 'the ratio must match the meter drawn beside it');
+});
+
+test('the Status page offers each independently runnable pipeline part', async () => {
+  const page = await renderPage(() => payload({
+    pipeline: { running: false, activeCount: 0, queuedCount: 0, maxConcurrent: 3 },
+    jobs: [],
+  }));
+  const html = page.nodes['pipeline-actions'].innerHTML;
+  for (const label of [
+    'All stale parts', 'Syllabus', 'Course files', 'Readings + calendar',
+    'Tasks / homework + calendar', 'Material links', 'AI context', 'Calendar only',
+  ]) {
+    assert.ok(html.includes(label), `${label} selective action is missing`);
+  }
+  assert.match(html, /data-pipeline-stage="index"/);
+  assert.match(html, /data-pipeline-stage="mine"/);
+});
+
+test('selective actions lock while a pipeline is running and expose cancel', async () => {
+  const page = await renderPage(() => payload());
+  const html = page.nodes['pipeline-actions'].innerHTML;
+  assert.match(html, /data-pipeline-stage="index" disabled/);
+  assert.match(html, /data-pipeline-cancel/);
+  assert.ok(html.includes('A pipeline run is in progress.'));
 });
 
 test('an empty Canvas feed must read as "none published", not as a zero score', async () => {

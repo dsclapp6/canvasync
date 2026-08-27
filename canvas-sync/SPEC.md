@@ -146,6 +146,7 @@ behaviour, not the audit trail.
 | F6 | `url` / `submit_url` as worklist fields, `Submit:` in event descriptions | DONE (code) | `scripts/sync-calendar.js`: op fields in `opsForItem`, `- url:` / `- submit_url:` in `renderWorklistMd`, `Submit: <url>` in the description builder. `submit_url` is emitted only when it differs from `url` |
 | F7 | Truncated-JSON salvage for syllabus parses | DONE (code+tests+live) | `salvageTruncatedJson()` in `scripts/parse-syllabus.js`; all 5 classes have a `syllabus_parsed.json` |
 | F8 | Dated readings cannot be omitted by the assignment-mining model | DONE (code+tests+live) | `reading-index.js` + `scripts/index-readings.js`: structured schedule is the floor, newest extracted syllabus is the raw-text fallback, `tasksForClass()` unions the index everywhere. Live dry-run: 39 reading ops (ECON 205 1, BUSI 305 15, BUSI 380 23), up from 0; 0 readings left unscheduled |
+| F9 | Run one pipeline part without rebuilding everything | DONE (code+tests) | Status-page controls + `POST /api/pipeline/run {stages:[…]}` force only the selected stage across in-scope classes. Reading/task runs add only the calendar refresh; stage validation, settings gating, busy locking, and selective-run logs are integration-tested |
 
 ### F1. The meeting-time recovery chain
 

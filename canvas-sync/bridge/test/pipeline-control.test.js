@@ -133,6 +133,47 @@ test('cancel while idle is a harmless no-op', async () => {
   assert.equal(r.json.signalled, 0);
 });
 
+test('a selective readings run indexes readings and refreshes the calendar only', async () => {
+  const logPath = path.join(tmpHome, 'logs', 'trigger.log');
+  const before = await fs.readFile(logPath, 'utf8').catch(() => '');
+  const r = await request('POST', '/api/pipeline/run', { body: { stages: ['index'] } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.mode, 'selected');
+  assert.deepEqual(r.json.stages, ['index', 'calendar']);
+
+  const mid = await request('GET', '/api/status');
+  assert.equal(mid.json.pipeline.mode, 'selected');
+  assert.deepEqual(mid.json.pipeline.requestedStages, ['index', 'calendar']);
+
+  let running = true;
+  for (let i = 0; i < 40 && running; i++) {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    running = (await request('GET', '/api/status')).json.pipeline.running;
+  }
+  assert.equal(running, false, 'selective readings pass did not finish');
+
+  const added = (await fs.readFile(logPath, 'utf8')).slice(before.length);
+  assert.match(added, /START index-readings\.js/);
+  assert.match(added, /START sync-calendar\.js/);
+  assert.doesNotMatch(added, /START (?:parse-syllabus|extract-course-files|mine-assignments|build-graph|build-context)\.js/,
+    'a readings-only action rebuilt an unrelated stage');
+});
+
+test('selective pipeline requests validate stage names and respect Functions switches', async () => {
+  const bad = await request('POST', '/api/pipeline/run', { body: { stages: ['made-up'] } });
+  assert.equal(bad.status, 400);
+  assert.ok(bad.json.allowed.includes('index'));
+
+  process.env.CSYNC_STAGE_MINE = '0';
+  try {
+    const off = await request('POST', '/api/pipeline/run', { body: { stages: ['mine'] } });
+    assert.equal(off.status, 409);
+    assert.match(off.json.error, /switched off in Settings/);
+  } finally {
+    delete process.env.CSYNC_STAGE_MINE;
+  }
+});
+
 test('ingest rejects untracked classes with 410 (server-side backstop)', async () => {
   const origin = `chrome-extension://${EXT_ID}`;
   const r = await request('POST', '/ingest/course', {
