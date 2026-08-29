@@ -5,7 +5,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { slugifyCourseCode, classDirFor, writeCourse, writeCourseFile, updateLastSync } from '../storage.js';
+import {
+  slugifyCourseCode, classDirFor, writeCourse, writeCourseFile, writeFile,
+  updateLastSync,
+} from '../storage.js';
 
 // --- slugifyCourseCode ---
 test('slugifyCourseCode: basic lowercasing', () => {
@@ -178,6 +181,59 @@ test('writeCourse then writeCourseFile: correct order persists the file and its 
     const entry = idx.find(e => e && e.canvasId === 1001);
     assert.ok(entry, 'the ingested file should have an index entry');
     assert.equal(entry.localPath, path.join('files', 'lecture1.pdf'));
+  } finally {
+    delete process.env.CANVAS_SYNC_HOME;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('only the explicitly ranked syllabus candidate can replace the canonical syllabus', async () => {
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-test-'));
+  process.env.CANVAS_SYNC_HOME = tmpHome;
+  try {
+    const { classDir } = await writeCourse({
+      course: { id: 42, name: 'Test Course', course_code: 'TC 101' },
+    });
+    const best = Buffer.from('%PDF best and newest syllabus');
+    const lowerRanked = Buffer.from('%PDF old syllabus candidate');
+
+    await writeFile({
+      courseId: 42,
+      filename: 'Course Syllabus Updated.pdf',
+      contentType: 'application/pdf',
+      isSyllabus: true,
+      dataBase64: best.toString('base64'),
+    });
+    await writeFile({
+      courseId: 42,
+      filename: 'Course Syllabus Old.pdf',
+      contentType: 'application/pdf',
+      isSyllabus: false,
+      dataBase64: lowerRanked.toString('base64'),
+    });
+
+    assert.deepEqual(await fs.readFile(path.join(classDir, 'syllabus.pdf')), best);
+    assert.deepEqual(await fs.readFile(path.join(classDir, 'Course Syllabus Old.pdf')), lowerRanked,
+      'the lower-ranked source is still preserved under its own name');
+  } finally {
+    delete process.env.CANVAS_SYNC_HOME;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('legacy file ingest without isSyllabus still recognises a syllabus filename', async () => {
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-test-'));
+  process.env.CANVAS_SYNC_HOME = tmpHome;
+  try {
+    const { classDir } = await writeCourse({ course: { id: 7, course_code: 'TC 102' } });
+    const bytes = Buffer.from('%PDF legacy syllabus');
+    await writeFile({
+      courseId: 7,
+      filename: 'Fall Syllabus.pdf',
+      contentType: 'application/pdf',
+      dataBase64: bytes.toString('base64'),
+    });
+    assert.deepEqual(await fs.readFile(path.join(classDir, 'syllabus.pdf')), bytes);
   } finally {
     delete process.env.CANVAS_SYNC_HOME;
     await fs.rm(tmpHome, { recursive: true, force: true });

@@ -174,6 +174,36 @@ test('selective pipeline requests validate stage names and respect Functions swi
   }
 });
 
+test('broken pipeline mode reruns only the failed class/stage pair', async () => {
+  const classDir = path.join(tmpHome, 'classes', '101-test-course');
+  const logPath = path.join(tmpHome, 'logs', 'trigger.log');
+  await fs.appendFile(logPath, [
+    `${new Date(Date.now() - 2000).toISOString()} START build-context.js ${classDir}`,
+    `${new Date(Date.now() - 1000).toISOString()} END build-context.js ${classDir} exit=1`,
+    '',
+  ].join('\n'));
+
+  const before = await fs.readFile(logPath, 'utf8');
+  const r = await request('POST', '/api/pipeline/run', { body: { broken: true } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.started, true);
+  assert.equal(r.json.mode, 'broken');
+  assert.equal(r.json.targetCount, 1);
+  assert.deepEqual(r.json.stages, ['build']);
+
+  let running = true;
+  for (let i = 0; i < 40 && running; i++) {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    running = (await request('GET', '/api/status')).json.pipeline.running;
+  }
+  assert.equal(running, false, 'broken-only pass did not finish');
+
+  const added = (await fs.readFile(logPath, 'utf8')).slice(before.length);
+  assert.match(added, /START build-context\.js/);
+  assert.doesNotMatch(added, /START (?:parse-syllabus|extract-course-files|index-readings|mine-assignments|build-graph|sync-calendar)\.js/,
+    'broken-only mode ran a stage that was not broken');
+});
+
 test('ingest rejects untracked classes with 410 (server-side backstop)', async () => {
   const origin = `chrome-extension://${EXT_ID}`;
   const r = await request('POST', '/ingest/course', {

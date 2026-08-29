@@ -161,13 +161,27 @@ export async function writeFile(payload = {}) {
   const destPath = path.join(classDir, safeFilename);
   await atomicWriteBinary(destPath, buffer);
 
-  // Treat as canonical syllabus if the extension flagged it OR the filename
-  // matches the legacy /syllabus/i heuristic.
+  // `false` is authoritative. The extension ranks every syllabus-looking file,
+  // marks the best candidate true and the remaining candidates false. Treating
+  // every filename containing "syllabus" as canonical meant the *last*,
+  // lowest-ranked candidate overwrote the best one. Only fall back to the
+  // legacy filename heuristic when an older caller omitted isSyllabus.
   const nameHasSyllabus = /syllabus/i.test(safeFilename);
-  if (isSyllabus || nameHasSyllabus) {
+  const canonicalSyllabus = isSyllabus === true
+    || (isSyllabus == null && nameHasSyllabus);
+  if (canonicalSyllabus) {
     const ext = syllabusExtension(contentType, safeFilename);
     const syllabusPath = path.join(classDir, `syllabus${ext}`);
     await atomicWriteBinary(syllabusPath, buffer);
+
+    // A professor can replace a PDF with a DOCX (or vice versa). The parser
+    // prefers PDF, so leaving the old binary beside the new canonical file
+    // silently keeps parsing the obsolete document forever. syllabus.html is
+    // deliberately retained: Canvas's syllabus tab is a separate useful source.
+    for (const obsoleteExt of ['.pdf', '.docx']) {
+      if (obsoleteExt === ext) continue;
+      await fs.rm(path.join(classDir, `syllabus${obsoleteExt}`), { force: true });
+    }
 
     const hashPath = path.join(classDir, 'syllabus.hash');
     const newHash = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -490,4 +504,3 @@ function logDeleteFailSync(rule, input) {
     : String(input).slice(0, 200);
   logDeleteSync(`DELETE_FAILED reason=${rule} input=${JSON.stringify(clipped)}`);
 }
-

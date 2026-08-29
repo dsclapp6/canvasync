@@ -228,19 +228,35 @@ test('the Status page offers each independently runnable pipeline part', async (
   }));
   const html = page.nodes['pipeline-actions'].innerHTML;
   for (const label of [
-    'All stale parts', 'Syllabus', 'Course files', 'Readings + calendar',
+    'All stale parts', 'Run broken', 'Syllabus', 'Course files', 'Readings + calendar',
     'Tasks / homework + calendar', 'Material links', 'AI context', 'Calendar only',
   ]) {
     assert.ok(html.includes(label), `${label} selective action is missing`);
   }
   assert.match(html, /data-pipeline-stage="index"/);
   assert.match(html, /data-pipeline-stage="mine"/);
+  assert.match(html, /data-pipeline-broken disabled/);
+});
+
+test('Run broken counts unique retry targets, including partial file failures', async () => {
+  const p = payload({
+    pipeline: { running: false, activeCount: 0, queuedCount: 0, maxConcurrent: 3 },
+    jobs: [],
+  });
+  p.classes[0].stages.find(s => s.key === 'mine').state = 'failed';
+  p.classes[0].categories.push({ key: 'files', state: 'error', failed: 2, count: 4 });
+  p.global.calendar.state = 'error';
+  const page = await renderPage(() => p);
+  const html = page.nodes['pipeline-actions'].innerHTML;
+  assert.match(html, /data-pipeline-broken[^>]*>Run broken \(3\)<\/button>/);
+  assert.doesNotMatch(html, /data-pipeline-broken disabled/);
 });
 
 test('selective actions lock while a pipeline is running and expose cancel', async () => {
   const page = await renderPage(() => payload());
   const html = page.nodes['pipeline-actions'].innerHTML;
   assert.match(html, /data-pipeline-stage="index" disabled/);
+  assert.match(html, /data-pipeline-broken disabled/);
   assert.match(html, /data-pipeline-cancel/);
   assert.ok(html.includes('A pipeline run is in progress.'));
 });

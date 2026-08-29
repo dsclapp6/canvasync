@@ -8,6 +8,7 @@ import { createWriteStream, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, isInScope } from '../scope.js';
+import { TEXTBOOK_SCHEMA_VERSION } from './textbooks.js';
 
 // One shared definition for every entry point — see ../data-root.js.
 const syncHome = dataRoot;
@@ -246,16 +247,21 @@ async function spawnJob(scriptPath, classDir, token) {
       releaseSemaphore();
       return true;
     };
-    child.on('close', async (code) => {
+    child.on('close', async (code, signal) => {
       if (!settle()) return;
-      await appendLog(`END ${scriptName} ${classDir} exit=${code ?? 'null'}`).catch(() => {});
-      if (code !== 0) {
+      // Node reports signal exits as code=null. When this pipeline requested
+      // the signal, persist the conventional SIGTERM status so the progress
+      // model calls it cancelled instead of treating an absent output as a
+      // failed stage that “Run broken” should immediately start again.
+      const exitCode = code ?? (cancelRequested && signal ? 143 : null);
+      await appendLog(`END ${scriptName} ${classDir} exit=${exitCode ?? 'null'}`).catch(() => {});
+      if (exitCode !== 0) {
         const out = tail.join('').slice(-STAGE_OUTPUT_TAIL_CHARS).trim();
         await appendLog(out
           ? `OUTPUT ${scriptName} ${classDir}\n${out}\n--- end output ---`
           : `OUTPUT ${scriptName} ${classDir} (no output)`).catch(() => {});
       }
-      resolve(code);
+      resolve(exitCode);
     });
     child.on('error', async (err) => {
       if (!settle()) return;
@@ -381,9 +387,20 @@ async function processClassDir(classDir, fn, { selected = null, force = false } 
   const wants = key => fn[key] && (!selected || selected.has(key));
 
   // 1. Parse syllabus → syllabus_parsed.json
+  // A matching mtime is not enough across a parser schema migration. Existing
+  // classes need one fresh pass for v2 textbook status/role detection even when
+  // the syllabus document itself has not changed.
+  let forceParse = force;
+  if (!forceParse && wants('parse')) {
+    try {
+      const previous = JSON.parse(await fs.readFile(p('syllabus_parsed.json'), 'utf8'));
+      if (Number(previous?.textbook_schema_version) < TEXTBOOK_SCHEMA_VERSION
+        || !Array.isArray(previous?.textbooks)) forceParse = true;
+    } catch { /* a missing/corrupt output follows the ordinary stale path */ }
+  }
   if (wants('parse')) await runClassStage(classDir, 'parse-syllabus.js',
     p('syllabus_parsed.json'),
-    [p('syllabus.html'), p('syllabus.pdf'), p('syllabus.docx')], [], { force });
+    [p('syllabus.html'), p('syllabus.pdf'), p('syllabus.docx')], [], { force: forceParse });
 
   // 2. Extract text from downloaded course files → materials/. The anchor is
   // last_extracted.txt (written after everything else): _combined.txt is
@@ -433,7 +450,14 @@ async function processClassDir(classDir, fn, { selected = null, force = false } 
     ], [], { force });
 }
 
-function startPipeline({ selected = null, force = false, rerunWhenBusy = false } = {}) {
+function startPipeline({
+  selected = null,
+  targeted = null,
+  force = false,
+  rerunWhenBusy = false,
+  runCalendar = null,
+  mode = null,
+} = {}) {
   // Idempotent guard — fire-and-forget, never throws. A call while a pass is
   // already running (e.g. a sync finishing during a long mining stage) flags
   // a rerun so the fresh data is processed as soon as this pass ends, instead
@@ -445,8 +469,13 @@ function startPipeline({ selected = null, force = false, rerunWhenBusy = false }
   running = true;
   cancelRequested = false;
   rerunRequested = false;
-  currentMode = selected ? 'selected' : 'automatic';
-  currentStages = selected ? [...selected] : [...PIPELINE_STAGE_KEYS];
+  currentMode = mode ?? (targeted ? 'broken' : selected ? 'selected' : 'automatic');
+  if (targeted) {
+    currentStages = [...new Set([...targeted.values()].flatMap(stages => [...stages]))];
+    if (runCalendar) currentStages.push('calendar');
+  } else {
+    currentStages = selected ? [...selected] : [...PIPELINE_STAGE_KEYS];
+  }
   refreshSemaphore();
   (async () => {
     try {
@@ -486,15 +515,23 @@ function startPipeline({ selected = null, force = false, rerunWhenBusy = false }
       if (offNames.length) await appendLog(`SKIP (off in settings): ${offNames.join(', ')}`).catch(() => {});
 
       // Process all class dirs concurrently; each class keeps dependency order.
-      await Promise.all(classDirs.map(d => processClassDir(d, fn, { selected, force }).catch(err =>
-        appendLog(`ERROR processClassDir ${d} ${err.message}`).catch(() => {})
-      )));
+      const runnableClassDirs = targeted
+        ? classDirs.filter(d => targeted.has(path.basename(d)))
+        : classDirs;
+      await Promise.all(runnableClassDirs.map(d => {
+        const stagesForClass = targeted ? targeted.get(path.basename(d)) : selected;
+        return processClassDir(d, fn, { selected: stagesForClass, force }).catch(err =>
+          appendLog(`ERROR processClassDir ${d} ${err.message}`).catch(() => {})
+        );
+      }));
 
       // Rebuild the calendar worklist once per pass. Deterministic and cheap
       // (no AI unless CSYNC_CAL_AGENT=1) — the user's Claude routine consumes
       // <base>/calendar/worklist.md on its own schedule.
-      const wantsCalendar = fn.calendar && classDirs.length > 0
-        && (!selected || selected.has('calendar'));
+      const calendarSelected = runCalendar == null
+        ? (!selected || selected.has('calendar'))
+        : runCalendar;
+      const wantsCalendar = fn.calendar && classDirs.length > 0 && calendarSelected;
       if (wantsCalendar) {
         const calToken = 'global:sync-calendar';
         if (!queued.has(calToken) && !active.has(calToken)) {
@@ -524,6 +561,46 @@ export function runSelectedStages(stageKeys, { refreshCalendar = true } = {}) {
   // up immediately without rebuilding unrelated model outputs.
   if (refreshCalendar && (selected.has('index') || selected.has('mine'))) selected.add('calendar');
   return startPipeline({ selected, force: true, rerunWhenBusy: false });
+}
+
+/**
+ * Force only the class/stage pairs selected from the progress report. The
+ * target folders are validated again here even though the server authored the
+ * plan: nothing reaching the scheduler may turn into an arbitrary path.
+ */
+export function runBrokenStages(targets, {
+  retryCalendar = false,
+  refreshCalendar = true,
+} = {}) {
+  const targeted = new Map();
+  for (const target of Array.isArray(targets) ? targets : []) {
+    const folder = String(target?.folder ?? '');
+    if (!CLASS_DIR_RE.test(folder)) continue;
+    const stages = new Set((Array.isArray(target?.stages) ? target.stages : [])
+      .filter(stage => PIPELINE_STAGE_KEYS.includes(stage) && stage !== 'calendar'));
+    if (stages.size) targeted.set(folder, stages);
+  }
+
+  const refreshNeeded = [...targeted.values()].some(stages =>
+    stages.has('index') || stages.has('mine'));
+  const runCalendar = retryCalendar || (refreshCalendar && refreshNeeded);
+  if (targeted.size === 0 && !runCalendar) {
+    return {
+      started: false,
+      busy: false,
+      mode: 'broken',
+      stages: [],
+      reason: 'no-broken-items',
+    };
+  }
+
+  return startPipeline({
+    targeted,
+    force: true,
+    rerunWhenBusy: false,
+    runCalendar,
+    mode: 'broken',
+  });
 }
 
 export function runIfNeeded() {

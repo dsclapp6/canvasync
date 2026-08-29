@@ -7,8 +7,8 @@
 //
 // All fixtures are built under mkdtemp. Nothing in here reads or writes
 // ~/canvas-sync-data — CANVAS_SYNC_HOME is pointed at the fixture before each
-// call, because modelLockStatus() and anthropicKeyStatus() resolve their own
-// paths through dataRoot().
+// call, because the model/provider status helpers resolve their own paths
+// through dataRoot().
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -459,6 +459,31 @@ test('a stage cancelled by the user must not be reported as a failure', async ()
   const p = await indexProgress(root, NO_SCAN);
   const stage = stageOf(classOf(p, '20001-busi-101-001'), 'mine');
   assert.equal(stage.state, 'cancelled', 'exit 143 is SIGTERM — the user did this, it is not a defect');
+});
+
+test('a failed global calendar run is retryable even when an older worklist still reads', async () => {
+  const root = await newRoot();
+  await writeFullClass(root, '20001-busi-101-001');
+  const classesDir = path.join(root, 'classes');
+  await writeJson(path.join(root, 'calendar', 'worklist.json'), {
+    generated_at: '2026-08-24T17:00:00.000Z',
+    counts: { homework: 1 },
+    ops: [],
+  });
+  await mkdir(path.join(root, 'logs'), { recursive: true });
+  await writeFile(path.join(root, 'logs', 'trigger.log'), [
+    `2026-08-24T18:00:00.000Z START sync-calendar.js ${classesDir}`,
+    `2026-08-24T18:00:01.000Z END sync-calendar.js ${classesDir} exit=1`,
+    `2026-08-24T18:00:01.001Z OUTPUT sync-calendar.js ${classesDir}`,
+    'calendar write failed: disk full',
+    '--- end output ---',
+    '',
+  ].join('\n'), 'utf8');
+
+  const p = await indexProgress(root, NO_SCAN);
+  assert.equal(p.global.calendar.state, 'failed');
+  assert.equal(p.global.calendar.exitCode, 1);
+  assert.match(p.global.calendar.failureOutput, /disk full/);
 });
 
 test('a mining error sidecar older than the output must not mark the class failed forever', async () => {

@@ -43,7 +43,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, isInScope, courseIdOf, CLASS_DIR_RE } from '../scope.js';
-import { modelLockStatus, anthropicKeyStatus, sha256File } from './_util.js';
+import { modelLockStatus, cliProviderStatuses, sha256File } from './_util.js';
 import { compactCourseCode } from './cal-names.js';
 
 const execFileP = promisify(execFile);
@@ -1135,20 +1135,28 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
     if (!proc.available && proc.error) warnings.push(`process table unavailable (${proc.error}) — "running" vs "interrupted" cannot be separated`);
     const modelProcs = scanProcesses ? await scanModelProcesses({ self: process.pid }) : { available: false, error: 'process scan disabled by caller', present: false, procs: [], totalRssBytes: null };
 
-    const log = await readTriggerLog(home, { classDirs, maxBytes: logBytes });
+    // Include classes/ itself so the one global pipeline job
+    // (sync-calendar.js) is reconstructed alongside per-class stages. Longer
+    // class paths are matched first inside readTriggerLog, so this parent path
+    // cannot steal their entries.
+    const log = await readTriggerLog(home, {
+      classDirs: [...classDirs, classesDir],
+      maxBytes: logBytes,
+    });
     if (log.truncated) warnings.push(`trigger.log is larger than the ${Math.round(logBytes / 1024)} KB read window; stage history older than the window reads as "no START in the log window", never as "never ran"`);
 
     // model -----------------------------------------------------------------
-    // modelLockStatus() and anthropicKeyStatus() both resolve their own paths
-    // through dataRoot(), so when this report is asked about a DIFFERENT root
-    // than the process is pointed at (a fixture, or `node index-progress.js
-    // <other-root>`) they answer about the process's root, not the reported
-    // one. Say that rather than quietly attributing one root's lock to another.
+    // modelLockStatus() resolves through dataRoot(), so when this report is
+    // asked about a DIFFERENT root than the process is pointed at (a fixture,
+    // or `node index-progress.js <other-root>`) it answers about the process's
+    // root, not the reported one. CLI login state is machine/user scoped and
+    // is therefore valid for either data root.
     const lock = await modelLockStatus().catch(() => ({ held: false, pid: null, alive: false, heldForMs: 0 }));
     const lockRootMismatch = path.resolve(dataRoot()) !== home;
-    const key = lockRootMismatch
-      ? { present: null, source: null, hint: null }
-      : await anthropicKeyStatus().catch(() => ({ present: false, source: null, hint: null }));
+    const providers = await cliProviderStatuses().catch(() => ({
+      claude: { provider: 'claude', installed: false, authenticated: false, timedOut: false },
+      codex: { provider: 'codex', installed: false, authenticated: false, timedOut: false },
+    }));
 
     // jobs ------------------------------------------------------------------
     const jobs = buildJobs({ folders, classesDir, activeTokens, proc, log, lock, now });
@@ -1170,15 +1178,18 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
       holderKind = lock.heldForMs > MID_ACQUIRE_WINDOW_MS ? 'abandoned' : 'mid-acquire';
     }
 
+    const backend = (process.env.CSYNC_AI_BACKEND || await settingEnv(home, 'CSYNC_AI_BACKEND') || 'auto').toLowerCase();
+    const provider = backend === 'local' ? 'local'
+      : backend === 'claude' || backend === 'codex' ? backend
+      : providers.claude.authenticated ? 'claude'
+      : providers.codex.authenticated ? 'codex'
+      : 'local';
     payload.model = {
-      backend: (process.env.CSYNC_AI_BACKEND || await settingEnv(home, 'CSYNC_AI_BACKEND') || 'auto').toLowerCase(),
+      backend,
+      provider,
+      providers,
+      apiKeysUsed: false,
       localModelId: process.env.CSYNC_LOCAL_MODEL || await settingEnv(home, 'CSYNC_LOCAL_MODEL') || 'mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit',
-      anthropicKey: {
-        ...key,
-        _from: 'anthropicKeyStatus() — masked by construction, the value is never returned by any read path',
-        _rootMismatch: lockRootMismatch,
-        _note: lockRootMismatch ? 'not evaluated: the key lives in the PROCESS data root\'s config.json, which is not the root being reported on' : null,
-      },
       lock: {
         ...lock,
         holderKind,
@@ -1284,6 +1295,32 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
 
     // global ----------------------------------------------------------------
     const w = worklistRead.value;
+    const calendarLog = log.byKey.get(`${classesDir}\u0000sync-calendar.js`) ?? null;
+    const calendarDangling = !!calendarLog?.lastStart
+      && (!calendarLog.lastEnd || calendarLog.lastEnd.atMs < calendarLog.lastStart.atMs);
+    const calendarActive = activeTokens.includes('global · sync-calendar')
+      || activeTokens.includes('global · sync-calendar.js');
+    let calendarState = worklistRead.error ? 'error' : w ? 'complete' : 'not-started';
+    let calendarNote = worklistRead.error ?? null;
+    if (calendarActive) {
+      calendarState = 'running';
+      calendarNote = 'the bridge reports the global calendar job active';
+    } else if (calendarDangling) {
+      // scanStageProcesses deliberately identifies per-class stage arguments.
+      // It cannot prove whether a global classes/ argument belongs to a live
+      // process from another bridge, so preserve the honest two-way state.
+      calendarState = 'running-or-interrupted';
+      calendarNote = `START at ${calendarLog.lastStart.at} with no later END`;
+    } else if (calendarLog?.lastEnd?.exit === 143) {
+      calendarState = 'cancelled';
+      calendarNote = `END exit=143 at ${calendarLog.lastEnd.at} — the user cancelled this`;
+    } else if (calendarLog?.lastEnd && calendarLog.lastEnd.exit !== 0 && calendarLog.lastEnd.exit !== null) {
+      calendarState = 'failed';
+      calendarNote = `END exit=${calendarLog.lastEnd.exit} at ${calendarLog.lastEnd.at}`;
+    } else if (calendarLog?.lastEnd?.exit === 0 && !w) {
+      calendarState = 'failed';
+      calendarNote = 'sync-calendar.js exited successfully but calendar/worklist.json is absent';
+    }
     const outOfScope = folders.filter(f => !isInScope(scope, f));
     const counted = payload.classes.flatMap(c => c.stages.filter(s => s.counted && s.state !== 'n-a'));
     const doneCount = counted.filter(s => s.state === 'done').length;
@@ -1308,8 +1345,13 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
         miningInFlight: w?.mining_in_flight ?? null,
         script: 'scripts/sync-calendar.js',
         scope: 'GLOBAL — spawned once per pass with the classes/ dir, not per class (trigger.js:419-425)',
-        state: worklistRead.error ? 'error' : w ? 'complete' : 'not-started',
-        note: worklistRead.error ?? null,
+        state: calendarState,
+        note: calendarNote,
+        startedAt: calendarLog?.lastStart?.at ?? null,
+        finishedAt: calendarLog?.lastEnd?.at ?? null,
+        exitCode: calendarLog?.lastEnd?.exit ?? null,
+        failureOutput: calendarLog?.lastOutput?.text
+          ? calendarLog.lastOutput.text.slice(-4000) : null,
       },
       unscopedClasses: {
         count: outOfScope.length,
@@ -1623,9 +1665,11 @@ export function formatProgress(p) {
   } else if (p.model.residentModel?.available) {
     L.push('local model resident in RAM: no (no MLX process found in the process table)');
   }
-  const keyState = p.model.anthropicKey.present == null ? 'not evaluated for this root'
-    : p.model.anthropicKey.present ? `present (${p.model.anthropicKey.source})` : 'absent';
-  L.push(`model: backend ${p.model.backend}, local ${p.model.localModelId}, anthropic key ${keyState}`);
+  const providerState = ['claude', 'codex'].map(name => {
+    const status = p.model.providers?.[name];
+    return `${name} ${status?.authenticated ? 'signed in' : status?.installed ? 'not signed in' : 'not installed'}`;
+  }).join(', ');
+  L.push(`model: backend ${p.model.backend}, selected ${p.model.provider ?? 'local'}, ${providerState}, local ${p.model.localModelId}, API keys disabled`);
 
   if (p.jobs.length) {
     L.push('');

@@ -17,21 +17,29 @@ import {
   measureClass,
 } from './storage.js';
 import {
-  runIfNeeded, runSelectedStages, pipelineStatus, pipelineStageAvailability,
+  runIfNeeded, runSelectedStages, runBrokenStages, pipelineStatus, pipelineStageAvailability,
   cancelPipeline, PIPELINE_STAGE_KEYS,
 } from './trigger.js';
+import { brokenPipelinePlan } from './broken-pipeline.js';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, readEnrolledCourses, isInScope, SCOPE_FILE, CLASS_DIR_RE } from '../scope.js';
 import { readUserState, patchTask, UserStateError } from './user-state.js';
+import {
+  patchTextbookLink, referencedTextbooks, resolveTextbooks, TextbookError,
+} from './textbooks.js';
 import { filesWithOrigins } from './file-origins.js';
-import { linkRelatedMaterials, materialSources } from './public/material-links.js';
+import {
+  addDirectTaskMaterials, linkRelatedMaterials, materialSources,
+} from './public/material-links.js';
 import {
   KINDS as CAL_KINDS, KIND_LABELS as CAL_KIND_LABELS,
 } from '../calendar-kinds.js';
 import { canvasItemUrl, canvasSubmitUrl } from '../canvas-links.js';
 import { tasksForClass } from '../canvas-tasks.js';
 import { readingsWithScheduleFloor } from '../reading-index.js';
-import { modelLockStatus, anthropicKeyStatus } from '../scripts/_util.js';
+import {
+  modelLockStatus, cliProviderStatuses, resolveAIProvider,
+} from '../scripts/_util.js';
 import { DEFAULT_PALETTE, COLORS_FILE, resolveColors, applyColorPatch } from '../class-colors.js';
 import { countMeetings } from '../scripts/cal-meetings.js';
 import { shortCourseCode } from '../scripts/cal-names.js';
@@ -698,6 +706,11 @@ export function buildApp(config) {
   // shell, not from the extension.
   const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
   app.use('/app', express.static(PUBLIC_DIR));
+  // The file viewer uses the PDF.js build already installed for pdf-parse.
+  // Serve only that dependency tree: documents themselves still travel
+  // through the authenticated /api/class/:folder/file route.
+  const PDFJS_DIR = path.join(REPO_ROOT, 'scripts', 'node_modules', 'pdfjs-dist');
+  app.use('/vendor/pdfjs', express.static(PDFJS_DIR));
 
   // --- Calendar subscription ------------------------------------------------
   // A calendar app cannot send an X-Bridge-Secret header, so the ics routes
@@ -1075,13 +1088,29 @@ export function buildApp(config) {
       mined: minedRaw, readings: readingFloor, assignments,
     });
     const userState = await readUserState(dir);
+    const textbooks = await resolveTextbooks(dir, syllabusParsed);
     // Provenance is derived from the sibling JSON rather than stored, so it
     // backfills classes synced before file-origins.js existed.
     const filesWithSource = await filesWithOrigins(dir, filesIndex ?? []);
     const sources = materialSources(filesWithSource, pages ?? []);
+    const assignmentById = new Map((assignments ?? []).map(row => [String(row?.id), row]));
     const mined = {
       ...(minedRaw ?? {}),
-      items: taskItems.map(item => linkRelatedMaterials(item, sources)),
+      items: taskItems.map((item) => {
+        const linked = linkRelatedMaterials(
+          addDirectTaskMaterials(item, filesWithSource, assignments ?? []),
+          sources,
+        );
+        const canvas = assignmentById.get(String(linked.canvas_assignment_id ?? ''));
+        return {
+          ...linked,
+          textbooks: referencedTextbooks(textbooks, {
+            ...linked,
+            name: canvas?.name ?? linked.title,
+            description_html: canvas?.description ?? null,
+          }),
+        };
+      }),
       source: taskSource,
     };
     let contextMd = null;
@@ -1101,6 +1130,7 @@ export function buildApp(config) {
       }),
       syllabus_parsed_at: syllabusParsed?.extracted_at ?? null,
       syllabus_parsed: syllabusParsed,
+      textbooks,
       user_state: userState.items,
       // LTI course packs the extension recognised (extension ≥ 1.3.0). The
       // content lives on the provider's site; these carry the launch links.
@@ -1198,9 +1228,15 @@ export function buildApp(config) {
         .map(f => ({ name: f.displayName, localPath: f.localPath, size: f.size }));
     } catch { /* provenance is a nicety here, not a requirement */ }
     const linkedMinedItem = linkRelatedMaterials(
-      mergedSelf ?? minedItem,
+      addDirectTaskMaterials(mergedSelf ?? minedItem, filesForMaterials, assignments ?? []),
       materialSources(filesForMaterials, pages ?? []),
     );
+    const textbooks = await resolveTextbooks(dir, syllabusParsed);
+    const assignmentTextbooks = referencedTextbooks(textbooks, {
+      ...(linkedMinedItem ?? {}),
+      name: a?.name ?? mergedSelf?.title ?? minedItem?.title,
+      description_html: a?.description ?? null,
+    });
 
     res.json({
       folder: folderName,
@@ -1226,8 +1262,32 @@ export function buildApp(config) {
       submit_url: a ? canvasSubmitUrl(a) : null,
       raw_url: a?.html_url ?? null,
       related_files: related,
+      textbooks: assignmentTextbooks,
       user_state: userState.items?.[stateKey] ?? {},
     });
+  });
+
+  // PUT /api/class/:folderName/textbooks/:textbookId — the student-owned
+  // access link for one title extracted from the syllabus. The textbook name
+  // stays parser-owned; the PDF/e-book URL lives in its own file so a re-parse
+  // can never erase something the student found or purchased.
+  dashRouter.put('/class/:folderName/textbooks/:textbookId', disabledCheck, async (req, res) => {
+    const { folderName, textbookId } = req.params;
+    if (!CLASS_RE.test(folderName)) return res.status(400).json({ error: 'invalid folderName' });
+    const dir = path.join(syncHome(), 'classes', folderName);
+    try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
+    if (!req.body || typeof req.body !== 'object' || !Object.hasOwn(req.body, 'url')) {
+      return res.status(400).json({ error: 'url is required (use null to clear it)' });
+    }
+    try {
+      const syllabusParsed = await readJsonOrNull(path.join(dir, 'syllabus_parsed.json'));
+      const textbook = await patchTextbookLink(dir, syllabusParsed, textbookId, req.body.url);
+      res.json({ ok: true, textbook });
+    } catch (err) {
+      if (err instanceof TextbookError) return res.status(400).json({ error: err.message });
+      console.error('[bridge] textbook link error:', err.message);
+      res.status(500).json({ error: 'write failed' });
+    }
   });
 
   // GET /api/class/:folderName/page/:pageId — one synced Canvas page for the
@@ -1346,12 +1406,14 @@ export function buildApp(config) {
   }
 
   dashRouter.get('/ask/status', async (req, res) => {
-    const lock = await modelLockStatus();
+    const [lock, selected] = await Promise.all([modelLockStatus(), resolveAIProvider()]);
+    const localBlocked = selected.provider === 'local' && lock.held && lock.alive;
     res.json({
       busy: !!askInFlight,
       asking: askInFlight ? { folder: askInFlight.folder, since: askInFlight.since } : null,
+      provider: selected.provider,
       model_lock: { held: lock.held && lock.alive, heldForMs: lock.heldForMs },
-      available: !askInFlight && !(lock.held && lock.alive),
+      available: !askInFlight && !localBlocked,
     });
   });
 
@@ -1420,8 +1482,8 @@ export function buildApp(config) {
     const classDir = path.join(home, 'classes', folder);
     try { await fs.access(classDir); } catch { return res.status(404).json({ error: 'class not found', folder }); }
 
-    const lock = await modelLockStatus();
-    if (lock.held && lock.alive) {
+    const [lock, selected] = await Promise.all([modelLockStatus(), resolveAIProvider()]);
+    if (selected.provider === 'local' && lock.held && lock.alive) {
       return res.status(503).json({
         error: 'model busy',
         detail: 'A sync job is using the local model. Ask again when it finishes.',
@@ -1791,51 +1853,57 @@ export function buildApp(config) {
     });
   });
 
-  // --- Anthropic API key -----------------------------------------------------
-  // The `claude` CLI signs in with an OAuth session that expires. When it does,
-  // every AI stage silently falls back to the 20 GB local model — correct, but
-  // minutes per job instead of seconds — and the only visible symptom is that
-  // syncing got slow. A key stored here restores the fast path without a
-  // terminal login.
-  //
-  // The key itself is write-only over HTTP: it is never echoed back, only its
-  // presence, its origin, and a masked hint.
-  dashRouter.get('/ai-key', async (req, res) => {
-    res.json(await anthropicKeyStatus());
+  // --- Subscription CLI authentication -------------------------------------
+  // No API-key surface. The pipeline invokes Claude Code or Codex through the
+  // account already signed in in the user's terminal, and _util.js strips API
+  // key environment variables before every status check and model run.
+  dashRouter.get('/ai-cli', async (req, res) => {
+    const [providers, selected] = await Promise.all([
+      cliProviderStatuses(),
+      resolveAIProvider(),
+    ]);
+    res.json({
+      providers,
+      selectedProvider: selected.provider,
+      // Kept for older dashboard builds during a rolling app restart.
+      selected: selected.provider,
+      backend: selected.backend,
+      apiKeysUsed: false,
+    });
   });
 
-  dashRouter.post('/ai-key', async (req, res) => {
-    const key = String(req.body?.key ?? '').trim();
-    if (!key) return res.status(400).json({ error: 'key required' });
-    // Shape check only — the real test is whether a call succeeds, and this
-    // catches the common paste error (a URL, a whole shell line, the wrong
-    // secret) before it silently breaks every AI stage.
-    if (!/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(key)) {
-      return res.status(400).json({ error: 'that does not look like an Anthropic API key (expected sk-ant-…)' });
+  const shellQuote = value => `'${String(value).replace(/'/g, `'\\''`)}'`;
+  dashRouter.post('/ai-cli/login', disabledCheck, async (req, res) => {
+    const provider = String(req.body?.provider ?? '');
+    if (!['claude', 'codex'].includes(provider)) {
+      return res.status(400).json({ error: 'provider must be claude or codex' });
+    }
+    if (process.platform !== 'darwin') {
+      return res.status(501).json({
+        error: 'automatic terminal launch is available on macOS only',
+        command: provider === 'claude' ? 'claude auth login' : 'codex login',
+      });
     }
     try {
-      const fresh = await loadConfig();
-      fresh.anthropicApiKey = key;
-      await saveConfig(fresh);
-      config.anthropicApiKey = key;
+      const logDir = path.join(syncHome(), 'logs');
+      await fs.mkdir(logDir, { recursive: true });
+      const launcher = path.join(logDir, `login-${provider}.command`);
+      const setup = path.join(REPO_ROOT, 'scripts', 'setup-terminal-ai.sh');
+      await fs.writeFile(launcher,
+        `#!/bin/zsh\nexec ${shellQuote(setup)} ${provider}\n`, { mode: 0o700 });
+      await fs.chmod(launcher, 0o700);
+      const opened = spawn('/usr/bin/open', ['-a', 'Terminal', launcher], {
+        detached: true, stdio: 'ignore',
+      });
+      opened.unref();
+      res.json({
+        ok: true,
+        provider,
+        message: `Terminal opened for ${provider === 'claude' ? 'Claude Code' : 'Codex'} login.`,
+      });
     } catch (err) {
-      console.error('[bridge] /api/ai-key save failed:', err.message);
-      return res.status(500).json({ error: 'could not save the key' });
-    }
-    res.json({ ok: true, ...(await anthropicKeyStatus()) });
-  });
-
-  dashRouter.delete('/ai-key', async (req, res) => {
-    try {
-      const fresh = await loadConfig();
-      const had = typeof fresh.anthropicApiKey === 'string' && fresh.anthropicApiKey.length > 0;
-      delete fresh.anthropicApiKey;
-      await saveConfig(fresh);
-      delete config.anthropicApiKey;
-      res.json({ ok: true, removed: had, ...(await anthropicKeyStatus()) });
-    } catch (err) {
-      console.error('[bridge] /api/ai-key delete failed:', err.message);
-      res.status(500).json({ error: 'could not remove the key' });
+      console.error('[bridge] terminal AI login launch failed:', err.message);
+      res.status(500).json({ error: 'could not open the login terminal', detail: err.message });
     }
   });
 
@@ -1869,6 +1937,8 @@ export function buildApp(config) {
 
   // POST /api/pipeline/run — with no body, run the ordinary stale-only pass.
   // With {stages:[...]}, force only those stages across in-scope classes.
+  // With {broken:true}, force only failed class/stage pairs (including classes
+  // with partially failed course-file extractions).
   // This never scrapes Canvas; the extension owns the source-data sync.
   dashRouter.post('/pipeline/run', disabledCheck, async (req, res) => {
     const st = pipelineStatus();
@@ -1877,6 +1947,35 @@ export function buildApp(config) {
     }
 
     const supplied = req.body?.stages;
+    const broken = req.body?.broken;
+    if (broken !== undefined && typeof broken !== 'boolean') {
+      return res.status(400).json({ error: 'broken must be a boolean' });
+    }
+    if (broken === true && supplied !== undefined) {
+      return res.status(400).json({ error: 'choose either broken or stages, not both' });
+    }
+
+    if (broken === true) {
+      const enabled = await pipelineStageAvailability();
+      const { indexProgress } = await import('../scripts/index-progress.js');
+      const progress = await indexProgress(syncHome(), {
+        pipelineStatus,
+        bridgePid: process.pid,
+      });
+      const plan = brokenPipelinePlan(progress, {
+        allowedStageKeys: PIPELINE_STAGE_KEYS,
+        enabled,
+      });
+      const result = runBrokenStages(plan.targets, {
+        retryCalendar: plan.calendar,
+        refreshCalendar: enabled.calendar !== false,
+      });
+      if (result.busy) {
+        return res.status(409).json({ error: 'pipeline already running', pipeline: pipelineStatus() });
+      }
+      return res.json({ ok: true, ...result, targetCount: plan.targetCount });
+    }
+
     if (supplied !== undefined) {
       if (!Array.isArray(supplied) || supplied.length === 0 || supplied.some(s => typeof s !== 'string')) {
         return res.status(400).json({ error: 'stages must be a non-empty array of stage keys' });

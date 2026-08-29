@@ -17,7 +17,7 @@ import { indexProgressRouter, buildFallbackProgress, CLASS_DIR_RE } from '../rou
 
 const SECRET = 'test-secret-index-progress';
 let tmpHome;
-let savedHome, savedKey;
+let savedHome, savedBackend;
 
 // Mirrors server.js:150. Copied, not imported: server.js has no export for it,
 // and importing server.js would drag in the whole app for a two-line guard.
@@ -65,17 +65,16 @@ async function apiFetch(baseUrl, pathname, { secret = SECRET } = {}) {
 before(async () => {
   tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'index-progress-route-'));
   savedHome = process.env.CANVAS_SYNC_HOME;
-  savedKey = process.env.ANTHROPIC_API_KEY;
-  // modelLockStatus() and anthropicKeyStatus() resolve their paths through
-  // dataRoot(), NOT through the home injected into the router. Without these two
-  // lines the suite reads the developer's real config.json and the assertions
-  // below would depend on whether they happen to have a key configured.
+  savedBackend = process.env.CSYNC_AI_BACKEND;
+  // modelLockStatus() resolves its path through dataRoot(), NOT through the
+  // home injected into the router. Keep this fixture fully isolated and select
+  // local explicitly so the test never depends on the developer's CLI logins.
   process.env.CANVAS_SYNC_HOME = tmpHome;
-  delete process.env.ANTHROPIC_API_KEY;
+  process.env.CSYNC_AI_BACKEND = 'local';
 
   await fs.writeFile(path.join(tmpHome, 'config.json'), JSON.stringify({
     bridgeSecret: SECRET,
-    anthropicApiKey: 'sk-ant-FAKEFAKEFAKEFAKEFAKEFAKE9999',
+    legacyIgnoredApiKey: 'SHOULD-NOT-APPEAR-9999',
   }));
   await fs.writeFile(path.join(tmpHome, 'last_sync.json'), JSON.stringify({
     timestamp: '2026-08-24T17:58:12.136Z',
@@ -115,7 +114,7 @@ before(async () => {
 
 after(async () => {
   if (savedHome === undefined) delete process.env.CANVAS_SYNC_HOME; else process.env.CANVAS_SYNC_HOME = savedHome;
-  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = savedKey;
+  if (savedBackend === undefined) delete process.env.CSYNC_AI_BACKEND; else process.env.CSYNC_AI_BACKEND = savedBackend;
   await fs.rm(tmpHome, { recursive: true, force: true });
 });
 
@@ -222,14 +221,14 @@ test('lastScrape stays global and the worklist counts pass through unchanged', a
   });
 });
 
-test('the anthropic key is reported as present and masked, never as a value', async () => {
+test('API keys are never used or exposed by the subscription CLI status', async () => {
   await withServer(makeApp({ buildProgress: buildFallbackProgress }), async (base) => {
     const { json } = await apiFetch(base, '/api/index-progress');
-    assert.equal(json.model.anthropicKey.present, true);
-    assert.equal(json.model.anthropicKey.source, 'config');
-    assert.ok(json.model.anthropicKey.hint.includes('…'));
+    assert.equal(json.model.apiKeysUsed, false);
+    assert.ok(['auto', 'claude', 'codex', 'local'].includes(json.model.backend));
+    assert.ok(['claude', 'codex', 'local'].includes(json.model.provider));
     // The whole payload, not just that field: nothing anywhere may carry the key.
-    assert.ok(!JSON.stringify(json).includes('sk-ant-FAKEFAKEFAKEFAKEFAKEFAKE9999'));
+    assert.ok(!JSON.stringify(json).includes('SHOULD-NOT-APPEAR-9999'));
   });
 });
 

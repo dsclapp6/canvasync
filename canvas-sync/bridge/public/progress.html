@@ -620,6 +620,37 @@ function stageOff(d, key) {
   });
 }
 
+function brokenTargetCount(d) {
+  const shared = Number(d && d.brokenPipeline && d.brokenPipeline.targetCount);
+  if (Number.isSafeInteger(shared) && shared >= 0) return shared;
+
+  // Compatibility for a progress payload from an older bridge. Current
+  // /api/index-progress responses always carry brokenPipeline from the same
+  // planner used by POST /pipeline/run.
+  const targets = new Set();
+  const brokenStates = ['failed', 'interrupted', 'error'];
+  const classes = Array.isArray(d && d.classes) ? d.classes : [];
+  classes.forEach(function (c) {
+    if (!c || c.inScope === false || !c.folder) return;
+    const stages = Array.isArray(c.stages) ? c.stages : [];
+    stages.forEach(function (s) {
+      if (s && s.counted !== false && brokenStates.indexOf(String(s.state)) >= 0) {
+        targets.add(c.folder + ':' + s.key);
+      }
+    });
+    const files = (Array.isArray(c.categories) ? c.categories : []).find(function (cat) {
+      return cat && cat.key === 'files';
+    });
+    const extract = stages.find(function (s) { return s && s.key === 'extract'; });
+    if (Number(files && files.failed) > 0 && extract && extract.counted !== false) {
+      targets.add(c.folder + ':extract');
+    }
+  });
+  const calendarState = String(d && d.global && d.global.calendar && d.global.calendar.state || '');
+  if (brokenStates.indexOf(calendarState) >= 0 && !stageOff(d, 'calendar')) targets.add('global:calendar');
+  return targets.size;
+}
+
 function renderPipelineActions(d) {
   const box = document.getElementById('pipeline-actions');
   if (!box) return;
@@ -627,9 +658,14 @@ function renderPipelineActions(d) {
   let html = '<h2>Run one part</h2>'
     + '<p>Runs across current classes using already-synced Canvas data. Choose only what changed.</p>'
     + '<div class="action-grid">';
+  const broken = brokenTargetCount(d);
   html += '<button type="button" class="primary" data-pipeline-all'
     + (working ? ' disabled' : '')
     + ' title="Run every enabled stage whose inputs are newer than its output">All stale parts</button>';
+  html += '<button type="button" data-pipeline-broken'
+    + ((working || broken === 0) ? ' disabled' : '')
+    + ' title="Retry only failed stages and failed course-file extractions">Run broken'
+    + (broken > 0 ? ' (' + broken + ')' : '') + '</button>';
   PIPELINE_ACTIONS.forEach(function (a) {
     const off = stageOff(d, a.key);
     html += '<button type="button" data-pipeline-stage="' + esc(a.key) + '"'
@@ -1158,6 +1194,15 @@ document.getElementById('pipeline-actions').addEventListener('click', async func
       if (LAST) renderPipelineActions(LAST);
       await api('/api/pipeline/cancel', { method: 'POST', body: '{}' });
       ACTION_MSG = 'Cancellation requested.';
+    } else if (button.hasAttribute('data-pipeline-broken')) {
+      ACTION_MSG = 'Starting broken items…';
+      if (LAST) renderPipelineActions(LAST);
+      const result = await api('/api/pipeline/run', {
+        method: 'POST', body: JSON.stringify({ broken: true }),
+      });
+      ACTION_MSG = result.started
+        ? 'Started broken items.'
+        : 'Nothing is currently broken.';
     } else {
       const key = button.getAttribute('data-pipeline-stage');
       const action = PIPELINE_ACTIONS.find(function (a) { return a.key === key; });

@@ -24,7 +24,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readSyncScope, isInScope, CLASS_DIR_RE } from '../../scope.js';
-import { modelLockStatus, anthropicKeyStatus, resolveLocalModel } from '../../scripts/_util.js';
+import { modelLockStatus, resolveAIProvider, resolveLocalModel } from '../../scripts/_util.js';
+import { brokenPipelinePlan } from '../broken-pipeline.js';
+import { PIPELINE_STAGE_KEYS, pipelineStageAvailability } from '../trigger.js';
 
 // A class directory is "<courseId>-<slug>" and nothing else. A bare readdir of
 // classes/ returns SEVEN entries on this machine for six classes: .DS_Store is
@@ -79,19 +81,6 @@ function termNameOf(metadata) {
   return t?.name ?? null;
 }
 
-// Which backend an AI stage would pick if it ran now. Jobs are spawned with
-// settings.json's CSYNC_* folded OVER process.env (trigger.js:188), so the file
-// wins here too — reading only process.env reported 'auto' for a user who had
-// pinned 'local' in the dashboard.
-async function resolveBackend(home) {
-  const settings = await readJsonOrNull(path.join(home, 'settings.json'));
-  const fromFile = settings?.env?.CSYNC_AI_BACKEND;
-  const raw = (typeof fromFile === 'string' && fromFile.trim())
-    ? fromFile
-    : (process.env.CSYNC_AI_BACKEND || 'auto');
-  return String(raw).toLowerCase();
-}
-
 // pipelineStatus() is per-process memory (trigger.js:84). A bridge that did not
 // spawn the children — a restart mid-pass, or a second bridge process — reports
 // running:false while three jobs are very much alive. Passing it through with
@@ -119,14 +108,13 @@ function pipelineBlock(pipelineStatus) {
 }
 
 async function modelBlock(home, bridgePid) {
-  const [lock, key, localModelId, backend] = await Promise.all([
+  const [lock, selected, localModelId] = await Promise.all([
     // Machine-wide by intent, per data root in fact: modelLockStatus() reads
     // dataRoot()/locks/local-model.lock, not the home injected here. Pure read —
     // it never creates, reclaims or removes the lock (scripts/_util.js:191).
     modelLockStatus().catch(() => ({ held: false, pid: null, alive: false, heldForMs: 0 })),
-    anthropicKeyStatus().catch(() => ({ present: false, source: null, hint: null })),
+    resolveAIProvider().catch(() => ({ provider: 'local', backend: 'auto', statuses: null })),
     resolveLocalModel().catch(() => null),
-    resolveBackend(home),
   ]);
 
   // class-chat.js runs IN-PROCESS in the bridge (server.js:1089 dynamic import),
@@ -137,9 +125,11 @@ async function modelBlock(home, bridgePid) {
     : null; // 'pipeline-stage' vs 'foreign' needs the pid→job map (F1).
 
   return {
-    backend,
+    backend: selected.backend,
+    provider: selected.provider,
+    providers: selected.statuses,
+    apiKeysUsed: false,
     localModelId,
-    anthropicKey: key, // masked by construction in anthropicKeyStatus(); never the key
     lock: {
       ...lock,
       holderKind,
@@ -322,6 +312,8 @@ export function indexProgressRouter({
   pipelineStatus,
   buildProgress = null,
   bridgePid = process.pid,
+  allowedStageKeys = PIPELINE_STAGE_KEYS,
+  stageAvailability = pipelineStageAvailability,
 } = {}) {
   if (typeof syncHome !== 'function') {
     // Fail at mount time, not per request. A missing syncHome would resolve
@@ -344,6 +336,14 @@ export function indexProgressRouter({
       const home = syncHome();
       if (!inFlight) {
         inFlight = buildPayload(home, { pipelineStatus, bridgePid, buildProgress })
+          .then(async payload => {
+            let enabled = {};
+            try { enabled = await stageAvailability(); } catch { /* fail closed */ }
+            return {
+              ...payload,
+              brokenPipeline: brokenPipelinePlan(payload, { allowedStageKeys, enabled }),
+            };
+          })
           .finally(() => { inFlight = null; });
       }
       const payload = await inFlight;

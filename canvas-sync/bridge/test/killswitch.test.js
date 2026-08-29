@@ -115,13 +115,14 @@ function reqDash(method, pathname, body) {
   });
 }
 
-test('killswitch: the routes that spawn a worklist rebuild are all 503', async () => {
+test('killswitch: dashboard mutation routes are all 503', async () => {
   const folder = '92294-busi-305-001';
   const calls = [
     ['POST', `/api/class/${folder}/meetings`, { days: ['TU'], start: '10:50', end: '12:05' }],
     ['POST', `/api/class/${folder}/meetings/revert`, {}],
     ['DELETE', `/api/class/${folder}/meetings`, undefined],
     ['POST', `/api/class/${folder}/task/abc`, { done: true }],
+    ['PUT', `/api/class/${folder}/textbooks/book-0123456789abcdef`, { url: null }],
   ];
   for (const [method, pathname, body] of calls) {
     const res = await reqDash(method, pathname, body);
