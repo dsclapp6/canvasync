@@ -6,9 +6,17 @@ authoritative reading where they conflict with the body. -->
 
 # Model-Strength-Aware Orchestration — verified design proposal
 
-STATUS: all 10 implementation items PROPOSED, none started.
-Sequencing: items 1-4 as one release, then 5 and 7-10, item 6 last behind a flag.
-Owner routing is the PM session's job; implementing agents update STATUS lines here.
+STATUS: item 2's core LANDED in v1.8.6 (maxTokens 16384 on both repair sites,
+schema re-sent verbatim, shared salvage via the new scripts/json-repair.js,
+truncation signalled through notes + stderr on both paths; implemented by the
+Codex CLI, adversarially verified twice by canvasync-96). Item 2's
+same-or-stronger backend pinning is PARKED with item 1 (canvasync-d8, awaiting
+their user). Items 3-10 PROPOSED, none started.
+Sequencing: 1 then the pinning remainder, then 3-4, then 5 and 7-10, item 6
+last behind a flag. Owner routing is the PM session's job.
+Cleanup ticket noted in passing: extractJsonFromResponse is duplicated in
+parse-syllabus.js and mine-assignments.js (pre-existing); json-repair.js is
+its obvious home.
 
 ## Verifier corrections (read first)
 

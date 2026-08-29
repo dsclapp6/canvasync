@@ -6,10 +6,12 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
+import { repairJson } from '../parse-syllabus.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = join(__dirname, '..');
 const FIXTURES_DIR = join(SCRIPTS_DIR, 'test-fixtures');
+const PROMPT_PATH = join(SCRIPTS_DIR, 'prompts', 'syllabus-extraction.md');
 
 function runParseSyllabus(classDir) {
   return new Promise((resolve, reject) => {
@@ -89,4 +91,37 @@ test('parse-syllabus sets source_file to syllabus.html', async () => {
   const obj = JSON.parse(raw);
 
   assert.equal(obj.source_file, 'syllabus.html');
+});
+
+test('syllabus JSON repair keeps the original 16384-token output budget', async () => {
+  const promptTemplate = await readFile(PROMPT_PATH, 'utf8');
+  let options;
+  await repairJson('{broken', promptTemplate, async (_prompt, invokeOptions) => {
+    options = invokeOptions;
+    return '{}';
+  });
+  assert.equal(options.maxTokens, 16384);
+});
+
+test('syllabus JSON repair re-sends the full extraction schema', async () => {
+  const promptTemplate = await readFile(PROMPT_PATH, 'utf8');
+  const schema = promptTemplate.match(/## Output schema[\s\S]*?```(?:json)?\s*([\s\S]*?)```/)[1].trim();
+  let repairPrompt;
+  await repairJson('{broken', promptTemplate, async prompt => {
+    repairPrompt = prompt;
+    return '{}';
+  });
+  assert.ok(repairPrompt.includes(schema));
+  assert.ok(repairPrompt.includes('"textbook_schema_version": 2'));
+});
+
+test('syllabus JSON repair salvages a truncated repair response', async () => {
+  const promptTemplate = await readFile(PROMPT_PATH, 'utf8');
+  const repair = await repairJson('{broken', promptTemplate, async () =>
+    '{"course":{"title":"Kept"},"schedule":[{"title":"Complete"},{"title":"cut off');
+  assert.equal(repair.truncated, true);
+  assert.deepEqual(repair.parsed, {
+    course: { title: 'Kept' },
+    schedule: [{ title: 'Complete' }],
+  });
 });

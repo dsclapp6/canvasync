@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { load as cheerioLoad } from 'cheerio';
 import { aiInvoke, sha256File, atomicWriteJson, readJsonSafe } from './_util.js';
+import { outputSchemaFromPrompt, salvageFromResponse } from './json-repair.js';
 import {
   reconcileSyllabusTextbooks,
   TEXTBOOK_SCHEMA_VERSION,
@@ -157,64 +158,6 @@ function extractJsonFromResponse(raw) {
   return trimmed;
 }
 
-// A local model that runs out of tokens mid-sentence leaves JSON that is
-// correct right up to the cut. Throwing it away costs the whole syllabus over
-// one unfinished trailing field, so close what is open and keep the rest.
-//
-// Walks the text tracking string state and the bracket stack, remembering the
-// last position where a value had just finished (a comma, or a closing bracket)
-// along with the closers needed there. Truncating to that point and appending
-// them yields valid JSON containing every complete field.
-//
-// Returns null when nothing complete was found — an empty salvage is worse than
-// an honest failure.
-export function salvageTruncatedJson(text) {
-  const stack = [];
-  let inString = false;
-  let escaped = false;
-  let cut = -1;
-  let closers = '';
-
-  const mark = (i) => { cut = i; closers = stack.slice().reverse().join(''); };
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') { inString = true; continue; }
-    if (ch === '{') { stack.push('}'); continue; }
-    if (ch === '[') { stack.push(']'); continue; }
-    if (ch === '}' || ch === ']') { stack.pop(); mark(i + 1); continue; }
-    // Truncate *before* the comma: what precedes it is a finished value.
-    if (ch === ',') mark(i);
-  }
-
-  if (cut <= 0 || !closers) return null;
-  const candidate = text.slice(0, cut) + closers;
-  try {
-    const obj = JSON.parse(candidate);
-    return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : null;
-  } catch {
-    return null;
-  }
-}
-
-// extractJsonFromResponse closes on the *last* `}`, which on a truncated
-// response is some inner object — useless for salvage. Take everything from the
-// first `{` to the end of the text and let the walker find the cut.
-function salvageFromResponse(raw) {
-  const text = String(raw || '');
-  const fence = text.indexOf('```');
-  const body = fence === -1 ? text : text.slice(text.indexOf('\n', fence) + 1);
-  const start = body.indexOf('{');
-  if (start === -1) return null;
-  return salvageTruncatedJson(body.slice(start));
-}
-
 async function parseWithClaude(text, promptTemplate, sourceFile, sourceHash, lowConfidence) {
   const prompt = promptTemplate.replace('<SYLLABUS_TEXT>', () => text);
   // The terminal provider uses its CLI default unless Settings pins a model. maxTokens
@@ -224,10 +167,16 @@ async function parseWithClaude(text, promptTemplate, sourceFile, sourceHash, low
   return raw;
 }
 
-async function repairJson(brokenRaw) {
-  const repairPrompt = `The previous response was not valid JSON. Return valid JSON only.\n\nPrevious response:\n${brokenRaw}`;
-  const raw = await aiInvoke(repairPrompt, { timeoutMs: 60000 });
-  return raw;
+export async function repairJson(brokenRaw, promptTemplate, invoke = aiInvoke) {
+  const schema = outputSchemaFromPrompt(promptTemplate);
+  const repairPrompt = `The previous response was not valid JSON. Return valid JSON only, matching this schema exactly:\n\n${schema}\n\nPrevious response:\n${brokenRaw}`;
+  const raw = await invoke(repairPrompt, { timeoutMs: 60000, maxTokens: 16384 });
+  try {
+    return { raw, parsed: JSON.parse(extractJsonFromResponse(raw)), truncated: false, error: null };
+  } catch (error) {
+    const parsed = salvageFromResponse(raw);
+    return { raw, parsed, truncated: Boolean(parsed), error };
+  }
 }
 
 /**
@@ -407,8 +356,14 @@ async function main() {
     let repairErr = null;
     if (!parsed) {
       try {
-        rawResponse = await repairJson(rawResponse || '');
-        parsed = JSON.parse(extractJsonFromResponse(rawResponse));
+        const repair = await repairJson(rawResponse || '', promptTemplate);
+        rawResponse = repair.raw;
+        if (!repair.parsed && repair.error) throw repair.error;
+        parsed = repair.parsed;
+        if (repair.truncated) {
+          truncated = true;
+          process.stderr.write('Repair response was truncated; kept the fields that completed.\n');
+        }
       } catch (err2) {
         repairErr = err2;
         process.stderr.write(`Repair attempt failed: ${err2.message}\n`);

@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateMined } from '../mine-assignments.js';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+import { repairMinedJson, validateMined } from '../mine-assignments.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const MINING_PROMPT_PATH = join(__dirname, '..', 'prompts', 'assignment-mining.md');
 
 const assignments = [
   { id: 71, name: 'Course Project' },
@@ -98,4 +105,36 @@ test('a bare chapter reference is assigned only to the sole syllabus textbook', 
     textbooks: [...syllabusParsed.textbooks, { title: 'MBM Handbook: Customer Value' }],
   } });
   assert.deepEqual(withTwoBooks.items[0].related_textbooks, [], 'two books is ambiguous, so do not guess');
+});
+
+test('assignment JSON repair keeps the original 16384-token output budget', async () => {
+  const promptTemplate = await readFile(MINING_PROMPT_PATH, 'utf8');
+  let options;
+  await repairMinedJson('{broken', promptTemplate, async (_prompt, invokeOptions) => {
+    options = invokeOptions;
+    return '{"items":[]}';
+  });
+  assert.equal(options.maxTokens, 16384);
+});
+
+test('assignment JSON repair re-sends the full mining schema', async () => {
+  const promptTemplate = await readFile(MINING_PROMPT_PATH, 'utf8');
+  const schema = promptTemplate.match(/## Output schema[\s\S]*?```(?:json)?\s*([\s\S]*?)```/)[1].trim();
+  let repairPrompt;
+  await repairMinedJson('{broken', promptTemplate, async prompt => {
+    repairPrompt = prompt;
+    return '{"items":[]}';
+  });
+  assert.ok(repairPrompt.includes(schema));
+  assert.ok(repairPrompt.includes('"due_confidence": "high | medium | low"'));
+});
+
+test('assignment JSON repair salvages a truncated repair response', async () => {
+  const promptTemplate = await readFile(MINING_PROMPT_PATH, 'utf8');
+  const repair = await repairMinedJson('{broken', promptTemplate, async () =>
+    'Here is the JSON {as requested}:\n```json\n{"items":[{"id":"kept","title":"Complete"},{"id":"cut off');
+  assert.equal(repair.truncated, true);
+  assert.deepEqual(repair.parsed, {
+    items: [{ id: 'kept', title: 'Complete' }],
+  });
 });

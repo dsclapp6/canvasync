@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { aiInvoke, readJsonSafe, atomicWriteJson } from './_util.js';
+import { outputSchemaFromPrompt, salvageFromResponse } from './json-repair.js';
 import { indexClassReadings } from './index-readings.js';
 import { materialSources, resolveMaterial } from '../bridge/public/material-links.js';
 import { referencedTextbooks, textbooksFromSyllabus } from '../bridge/textbooks.js';
@@ -80,6 +81,19 @@ function extractJsonFromResponse(raw) {
     return trimmed.slice(braceStart, braceEnd + 1);
   }
   return trimmed;
+}
+
+export async function repairMinedJson(brokenRaw, promptTemplate, invoke = aiInvoke) {
+  const schema = outputSchemaFromPrompt(promptTemplate);
+  const repairPrompt = `The previous response was not valid JSON. Return the same content as VALID JSON only, matching this schema exactly:\n\n${schema}\n\nPrevious response:\n${brokenRaw}`;
+  const raw = await invoke(repairPrompt, { timeoutMs: 300000, maxTokens: 16384 });
+  try {
+    return { parsed: JSON.parse(extractJsonFromResponse(raw)), truncated: false };
+  } catch (error) {
+    const parsed = salvageFromResponse(raw);
+    if (parsed) return { parsed, truncated: true };
+    throw error;
+  }
 }
 
 // --- Corpus builders -------------------------------------------------------
@@ -507,17 +521,19 @@ async function main() {
 
   let rawResponse = null;
   let parsed = null;
+  let truncated = false;
   try {
     rawResponse = await aiInvoke(prompt, { timeoutMs: 900000, maxTokens: 16384 });
     parsed = JSON.parse(extractJsonFromResponse(rawResponse));
   } catch (err) {
     process.stderr.write(`Mining attempt failed: ${err.message}\n`);
     try {
-      const repair = await aiInvoke(
-        `The previous response was not valid JSON. Return the same content as VALID JSON only, matching the original schema.\n\nPrevious response:\n${rawResponse ?? ''}`,
-        { timeoutMs: 300000 },
-      );
-      parsed = JSON.parse(extractJsonFromResponse(repair));
+      const repair = await repairMinedJson(rawResponse ?? '', promptTemplate);
+      parsed = repair.parsed;
+      if (repair.truncated) {
+        truncated = true;
+        process.stderr.write('Repair response was truncated; kept the fields that completed.\n');
+      }
     } catch (err2) {
       process.stderr.write(`Repair failed: ${err2.message}\n`);
       // Skip empty .ERROR files from cancelled/killed AI calls (see parse-syllabus).
@@ -526,6 +542,11 @@ async function main() {
       }
       process.exit(1);
     }
+  }
+
+  if (truncated) {
+    parsed.notes = (typeof parsed.notes === 'string' ? parsed.notes : '')
+      + ' The model\'s response was cut off; fields after the truncation point are missing.';
   }
 
   const result = validateMined(parsed, { assignments, filesIndex, pages, syllabusParsed });
