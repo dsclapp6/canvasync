@@ -39,7 +39,12 @@ function safeInline(source, { autoLinks = true } = {}) {
   text = escapeContent(text)
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-    .replace(/_([^_\n]+)_/g, '<em>$1</em>');
+    // Underscores must be free-standing to mean emphasis. Without the
+    // boundaries, snake_case ate its own underscores: a syllabus line
+    // reading "submit via: online_text_entry" rendered as
+    // "online<em>text</em>entry" and the reader saw "onlinetextentry".
+    // `_` is itself a \w character, so [^\w] also refuses __double__.
+    .replace(/(^|[^\w])_([^_\n]+)_(?![\w])/g, '$1<em>$2</em>');
 
   if (autoLinks) {
     // Extracted slides frequently contain a bare source URL. Make it useful,
@@ -142,16 +147,35 @@ function headingLike(line, next = '') {
   if (!value || value.length > 78 || /[.!?;]$/.test(value) || /^https?:\/\//i.test(value)) return false;
   const words = value.split(/\s+/).filter(Boolean);
   if (words.length > 10) return false;
-  if (/^(overview|instructions?|requirements?|objectives?|learning outcomes?|course schedule|grading|assessment|submission|deliverables?|resources?|references?|in sum|example)\b/i.test(value)) return true;
-  if (/:$/.test(value)) return words.length <= 7;
-  const meaningful = words.filter(word => !/^(a|an|and|as|at|by|for|from|in|of|on|or|the|to|via|with)$/i.test(word));
-  const titled = meaningful.filter(word => /^[A-Z0-9]/.test(word)).length;
-  return meaningful.length > 0 && titled / meaningful.length >= 0.75
+  // A label followed by its value ("Class Meeting: MWF 10:00") and a dated
+  // schedule row ("Week 2 - Jan 27: …") are content, not headings. The former
+  // heuristic promoted both because most of their words began with capitals.
+  if (/^[^:]{1,36}:\s+\S/.test(value) || /^week\s+\d+\b/i.test(value)) return false;
+  if (/^(overview|instructions?|requirements?|objectives?|learning outcomes?|course schedule|grading|assessment|submission|deliverables?|resources?|references?|policies?|course (?:overview|description|information|materials)|attendance and absence policies?|important dates|materials?|textbooks?|in sum|example)\b/i.test(value)) return true;
+  // A colon alone is weak evidence. PDF line wrapping leaves ordinary prose
+  // such as "electronic-book version:" and title fragments like "Century:"
+  // on their own lines; promoting either one invents document structure.
+  // All-caps display headings survive extraction reliably. Ordinary title
+  // case is too ambiguous to infer: syllabi use it for labels and deadlines.
+  return /^[A-Z][A-Z0-9 &'()/+-]+$/.test(value)
     && (!next || next.length > value.length || /[.!?]$/.test(next));
 }
 
+function standaloneExtractLine(line) {
+  return /^(?:instructor|email|office hours?|class meetings?|grading scale|late policy|attendance|academic integrity|accommodations|devices)\s*:/i.test(line)
+    || /^(?:problem sets?|midterm exam|final exam|participation)\b.*\b\d+%/i.test(line)
+    || /^week\s+\d+\b/i.test(line);
+}
+
+function renderStandaloneLine(line) {
+  const labelled = /^([^:]{1,36}:)\s*(.*)$/.exec(line);
+  return labelled
+    ? `<p class="source-line"><strong>${safeInline(labelled[1])}</strong> ${safeInline(labelled[2])}</p>`
+    : `<p class="source-line">${safeInline(line)}</p>`;
+}
+
 function joinWrapped(lines) {
-  return lines.reduce((text, raw) => {
+  const joined = lines.reduce((text, raw) => {
     const line = raw.trim();
     if (!text) return line;
     // PDF extractors split words at the page's right edge. Rejoin a lowercase
@@ -159,6 +183,25 @@ function joinWrapped(lines) {
     if (/[a-z]-$/.test(text) && /^[a-z]/.test(line)) return text.slice(0, -1) + line;
     return `${text} ${line}`;
   }, '');
+  // Superscripts are sometimes emitted as a separate line: "21\nst\nCentury".
+  return joined.replace(/\b(\d+)\s+(st|nd|rd|th)\b/gi, '$1$2');
+}
+
+function extractListItem(line) {
+  const bullet = /^\s*[-*+\u2022]\s+(.+)$/.exec(line);
+  if (bullet) return { kind: 'ul', content: bullet[1] };
+  const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line);
+  if (numbered) return { kind: 'ol', content: numbered[2], start: Number(numbered[1]) };
+  const lettered = /^\s*([A-Z])[.)]\s+(.+)$/.exec(line);
+  if (lettered) {
+    return { kind: 'ol-alpha', content: lettered[2], start: lettered[1].charCodeAt(0) - 64 };
+  }
+  return null;
+}
+
+function listItemNeedsContinuation(lines) {
+  const tail = lines.at(-1)?.trim() || '';
+  return /(?:[-–—]|:|\b(?:a|an|and|for|from|in|of|on|or|the|to|under|when|with))$/i.test(tail);
 }
 
 function renderSlideExtract(lines) {
@@ -214,30 +257,61 @@ function renderProseExtract(lines) {
       first = false;
     }
     let paragraph = [];
-    let listTag = null;
+    let listKind = null;
+    let listItem = [];
     const flushParagraph = () => {
       if (!paragraph.length) return;
       const text = joinWrapped(paragraph);
       out.push(`<p>${safeInline(text)}</p>`);
       paragraph = [];
     };
+    const flushListItem = () => {
+      if (!listItem.length) return;
+      out.push(`<li>${safeInline(joinWrapped(listItem))}</li>`);
+      listItem = [];
+    };
     const closeList = () => {
-      if (listTag) out.push(`</${listTag}>`);
-      listTag = null;
+      if (!listKind) return;
+      flushListItem();
+      out.push(`</${listKind === 'ul' ? 'ul' : 'ol'}>`);
+      listKind = null;
+    };
+    const openList = (item) => {
+      if (listKind === item.kind) {
+        flushListItem();
+      } else {
+        closeList();
+        listKind = item.kind;
+        if (item.kind === 'ul') out.push('<ul>');
+        else if (item.kind === 'ol-alpha') {
+          out.push(`<ol class="source-alpha" type="A"${item.start === 1 ? '' : ` start="${item.start}"`}>`);
+        } else {
+          out.push(`<ol${item.start === 1 ? '' : ` start="${item.start}"`}>`);
+        }
+      }
+      listItem.push(item.content);
     };
 
     for (let i = 0; i < current.length; i++) {
       const line = current[i];
-      const item = /^\s*(?:([-*+])|(\d+)[.)])\s+(.+)$/.exec(line);
+      const item = extractListItem(line);
       if (item) {
         flushParagraph();
-        const wanted = item[2] ? 'ol' : 'ul';
-        if (listTag !== wanted) { closeList(); out.push(`<${wanted}>`); listTag = wanted; }
-        out.push(`<li>${safeInline(item[3])}</li>`);
+        openList(item);
+      } else if (listKind && listItemNeedsContinuation(listItem)) {
+        // A visually wrapped list row can resemble a heading, especially when
+        // the final words are uppercase ("HANDBOOK or\nSTUDENT COMPANION").
+        listItem.push(line);
+      } else if (standaloneExtractLine(line)) {
+        flushParagraph(); closeList(); out.push(renderStandaloneLine(line));
       } else if (!first && headingLike(line, current[i + 1] || '')) {
         flushParagraph(); closeList(); out.push(`<h2>${safeInline(line.replace(/:\s*$/, ''))}</h2>`);
+      } else if (listKind) {
+        // PDF extraction often preserves a marker only on the first visual
+        // line. Keep subsequent wrapped lines inside that same list item.
+        listItem.push(line);
       } else {
-        closeList(); paragraph.push(line);
+        paragraph.push(line);
       }
     }
     flushParagraph(); closeList();
