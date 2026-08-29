@@ -399,7 +399,7 @@ not — and only one of them could empty the calendar. Both are now the same pur
 | 6.11 | Selecting one or more draws **only those** classes. Clicking the only selected chip goes back to everything. | The §6-style sequence below | x | x | x |
 | 6.12 | **No sequence of clicks can select no classes.** | Exhaustive sweep over all 2⁷ selections × 7 chips in `cal-plan.test.js`, asserting at least one class always shows | x | x | x |
 | 6.13 | There is **no `show all` link** — 6.11 is what it was for. | `[data-cal-show-all]` count === 0 | x | x | x |
-| 6.14 | **Every drawn item answers to exactly one chip.** An op with no class is the `Personal` chip's, so no item can be filtered out by a control that does not list it. | Inject a classless op: it draws by default, hides when another class is selected, and returns when `Personal` is | x | x | |
+| 6.14 | **Every drawn item answers to exactly one chip.** An op with no class is the `Personal` chip's, so no item can be filtered out by a control that does not list it. | Inject a classless op — **future-dated and not a meeting**, or the past-meeting filter masks what you are testing (see the trap note below) — then: it draws by default, hides when another class is selected, and returns when `Personal` is | x | x | |
 | 6.15 | **A click resolves against the chips on screen, not a stored superset.** A slug the chips no longer offer is pruned out of both the drawn selection and the click transition, so it cannot survive a "deselect the last one" as an invisible residue. | Store `['busi-305','a-class-that-graduated']`: one chip draws selected, and clicking it returns to all six with `calClassSel` === `[]` | x | x | |
 
 **Measured live 2026-08-26**, on a fixture bridge (`:3849`) over the six real
@@ -538,6 +538,44 @@ and "ink says off, not opacity" above `.class-chip.off`). Replaced with the
 muted-ink treatment `.filter-chip.empty` already uses. The dashed border is
 kept: it echoes the `.ai-added` provenance idiom, so the control looks like the
 thing it governs.
+
+**Re-verified 2026-08-29 at HEAD `9b9e8b9` (v1.8.3).** v1.8.2 landed four
+formatting fixes touching `bridge/public/app.js` (`fmtTimeSpan`, `calPoints`,
+`calUrl`) and a render-neutral removal of dead declarations from `style.css`.
+Under rule 3 that voided every `Live` tick on the rows those two files serve, so
+§6.10–6.15 and §6.16–6.21 were driven again rather than assumed. All rows hold;
+nothing changed but the numbers, and those moved because the worklist is now
+**311 ops** rather than the 354 of 2026-08-26. The blocks above are left as the
+dated records they are — a spec that rewrites its own history stops being
+evidence.
+
+```
+class chips   default 6 lit / 298 items · BUSI 305 -> 59 · +ECON 205 -> 63
+              -ECON 205 -> 59 · deselect the last -> 298, calClassSel []
+              [data-cal-show-all] === 0
+AI toggle     chip "AI-added 73" · toggle 298 -> 225 · reload keeps it (calShowAiAdded '0')
+              summary "86 hidden (73 AI-added, 13 past schedule)"
+              AI off + Readings (39/39 AI) -> 0 rows + the AI message; AI on -> 39
+              AI ops stripped -> 0 ai chips, 7 kind + 6 class chips still drawn
+              opacity '1' in BOTH states; on rgb(36,72,61), off rgb(98,108,100)
+6.14          classless op draws by default, hides under another class, returns via Personal
+past branch   past-only class -> 0 rows, "Everything here has already happened…"
+```
+
+`app.js` and `style.css` were clean in the working tree at drive time — only
+Codex's in-flight `scripts/` work was dirty — so this exercised the committed
+bytes, not a local variant.
+
+**A trap in driving 6.14, recorded so the next person does not lose an hour to
+it.** The first pass of this re-drive showed the classless op *not* drawing, and
+it looked like a regression. It was the fixture, not the product: the injected op
+was cloned from a meeting and inherited that meeting's date, `2026-08-24` — in
+the past — so the past-meeting filter removed it before the class filter was ever
+consulted. The row under test says nothing about dates, which is exactly why the
+wrong date is easy to miss. Re-dated to `2026-10-15` and typed `homework`, the
+row passed on the first attempt. An injected op for 6.14 must be future-dated and
+non-meeting, or you are testing `hiddenPast` while believing you are testing
+`opClassSlug`.
 
 ## §7 — Class times: set, change, and undo
 
