@@ -86,6 +86,21 @@ async function _acquireToken() {
 // --- Core fetch wrapper ----------------------------------------------------------
 
 /**
+ * Throw the typed error a status deserves, or return for the caller to carry on.
+ *
+ * Exported for tests, and factored out because the rate-limit retry below used
+ * to test `retry.status === 403` and nothing else: a 500 or a 401 on the second
+ * attempt was handed back as a Response, and the caller — paginate(), usually —
+ * called .json() on an error body. That surfaced as a JSON parse failure rather
+ * than ServerError or AuthError, which also meant _withRetry never saw a 5xx it
+ * would have retried.
+ */
+export function throwForStatus(response, url) {
+  if (response.status === 401) throw new AuthError('Canvas session expired or unauthorized', url);
+  if (response.status >= 500) throw new ServerError(response.status);
+}
+
+/**
  * canvasFetch(path, init?)
  * path — relative to CANVAS_BASE, e.g. '/api/v1/courses'
  * Returns the raw Response (caller checks status).
@@ -130,6 +145,10 @@ export async function canvasFetch(path, init = {}) {
       } catch (err) {
         throw new NetworkError(`fetch (retry) failed: ${err.message}`);
       }
+      // The retry gets the SAME reading as the first attempt. A 403 here means
+      // the rate limit is still in force; a 401 or 5xx is its own failure and
+      // must be typed as one rather than returned as a body to parse.
+      throwForStatus(retry, url);
       if (retry.status === 403) throw new RateLimitError();
       return retry;
     }
@@ -183,8 +202,12 @@ export async function* paginate(url, init = {}) {
  * fetchBinary(url)
  * For signed file download URLs (Canvas Files API).
  * Returns { contentType: string, base64: string }.
- * OPEN: Signed URLs expire; if the sync is slow the URL may be stale by the time
- * we fetch it. Consider re-fetching the file metadata to get a fresh URL.
+ *
+ * Signed URLs expire, and an expired one 403s exactly like a file the student
+ * may not read. This function cannot tell them apart on its own, so it does not
+ * try: it throws PermissionError either way, and the caller decides. See
+ * fetchFileWithFreshUrl in sync-support.js, which asks Canvas for a fresh URL
+ * once before believing the first answer.
  */
 export async function fetchBinary(url) {
   await _acquireToken();

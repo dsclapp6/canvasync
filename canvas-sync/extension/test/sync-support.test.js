@@ -22,6 +22,8 @@ import {
   rollUpFileCounts,
   formatFileCounts,
   fetchFileWithFreshUrl,
+  decodedByteLength,
+  shouldNotifyError,
 } from '../sync-support.js';
 
 // --- A store that behaves like chrome.storage: async, and with no transaction.
@@ -302,4 +304,82 @@ test('a non-403 failure is never retried and never asks for metadata', async () 
     /socket reset/,
   );
   assert.equal(fetches, 1);
+});
+
+// ===========================================================================
+// Slice 2 — items 4 and 5.
+// ===========================================================================
+
+// --- Item 4: measuring what actually arrived --------------------------------
+
+test('decodedByteLength matches real base64 across every padding case', () => {
+  // Checked against Buffer rather than against the formula, so the test does
+  // not simply restate the implementation.
+  for (const n of [0, 1, 2, 3, 4, 5, 17, 64, 1023, 4096]) {
+    const raw = Buffer.alloc(n, 7);
+    const b64 = raw.toString('base64');
+    assert.equal(decodedByteLength(b64), n, `${n} bytes round-trips`);
+  }
+});
+
+test('decodedByteLength is safe on junk input', () => {
+  assert.equal(decodedByteLength(null), 0);
+  assert.equal(decodedByteLength(undefined), 0);
+  assert.equal(decodedByteLength(''), 0);
+});
+
+test('a file Canvas declared as 0 bytes is caught once its real size is known', () => {
+  // The exact hole item 4 closes: Canvas omits `size`, the pre-fetch gate reads
+  // 0, `0 > cap` is false, and the file sails through. Post-fetch it is weighed
+  // for real.
+  const cap = 1024;
+  const declaredSize = 0;
+  const payload = Buffer.alloc(4096, 1).toString('base64');
+
+  assert.equal(declaredSize > cap, false, 'the pre-fetch gate lets it through');
+  assert.ok(decodedByteLength(payload) > cap, 'the post-fetch check stops it');
+});
+
+test('a file inside the cap is not stopped by the post-fetch check', () => {
+  const cap = 1024;
+  const payload = Buffer.alloc(1000, 1).toString('base64');
+  assert.ok(decodedByteLength(payload) <= cap);
+});
+
+// --- Item 5: one alert per distinct failure ---------------------------------
+
+test('the first failure alerts, an identical repeat does not', () => {
+  assert.equal(shouldNotifyError(null, 'Bridge unreachable'), true);
+  assert.equal(shouldNotifyError('Bridge unreachable', 'Bridge unreachable'), false);
+});
+
+test('a different failure alerts again', () => {
+  assert.equal(shouldNotifyError('Bridge unreachable', 'Canvas returned 500'), true);
+});
+
+test('a cleared memory alerts again — recovery makes the next outage new news', () => {
+  assert.equal(shouldNotifyError(undefined, 'Bridge unreachable'), true);
+});
+
+test('an empty message never alerts', () => {
+  assert.equal(shouldNotifyError(null, ''), false);
+  assert.equal(shouldNotifyError(null, null), false);
+  assert.equal(shouldNotifyError(null, undefined), false);
+});
+
+test('a bridge left switched off produces exactly one toast, not one per sync', () => {
+  // The failure item 5 exists for: a weekly alarm plus every Canvas visit, each
+  // raising its own notification because the id carried Date.now().
+  let notified = 0;
+  let remembered = null;
+  for (let sync = 0; sync < 12; sync++) {
+    const message = 'Bridge unreachable';
+    if (shouldNotifyError(remembered, message)) { notified++; remembered = message; }
+  }
+  assert.equal(notified, 1);
+
+  // ...and a recovery re-arms it.
+  remembered = null;
+  if (shouldNotifyError(remembered, 'Bridge unreachable')) notified++;
+  assert.equal(notified, 2);
 });

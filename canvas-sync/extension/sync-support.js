@@ -2,13 +2,15 @@
 // own. No chrome.* access, no network: every dependency arrives as an argument,
 // so background.js keeps the wiring and this file keeps the reasoning.
 //
-// Three jobs, all of them fixes for silent failure:
+// Four jobs, all of them fixes for silent failure:
 //   1. serialising read-modify-write appends, so concurrent writers stop
 //      clobbering each other's log lines;
 //   2. carrying per-file outcome counts out of the download loop, so a sync
 //      that skipped half a course can say so after the fact;
 //   3. telling an expired download URL apart from a real permission denial,
-//      which Canvas reports with the same status code.
+//      which Canvas reports with the same status code;
+//   4. measuring what was actually downloaded rather than what Canvas said it
+//      would be, and deciding when a repeated failure is worth a second alert.
 
 // --- Serialised append ------------------------------------------------------
 
@@ -137,4 +139,49 @@ export async function fetchFileWithFreshUrl(
 
     return { binary: await fetchBinary(url), refreshed: true };
   }
+}
+
+// --- What actually arrived --------------------------------------------------
+
+/**
+ * How many bytes a base64 payload decodes to.
+ *
+ * The pre-fetch size gate reads Canvas's declared `size`, and Canvas does not
+ * always declare one — module-item lookups and embedded-link discoveries are
+ * exactly where the metadata is thinnest. `typeof f.size === 'number' ? f.size
+ * : 0` then yields 0, `0 > cap` is false, and a file of any size walks straight
+ * through the gate, downloads in full inside the service worker, and is
+ * rejected by the bridge's body limit. Measuring the bytes we are holding
+ * closes that path without touching the cap it checks against.
+ *
+ * Four base64 characters carry three bytes; each '=' removes one.
+ */
+export function decodedByteLength(base64) {
+  const s = String(base64 ?? '');
+  if (!s) return 0;
+  let padding = 0;
+  if (s.endsWith('==')) padding = 2;
+  else if (s.endsWith('=')) padding = 1;
+  return Math.max(0, Math.floor(s.length / 4) * 3 - padding);
+}
+
+// --- When a repeat failure deserves a second alert --------------------------
+
+/**
+ * Whether a sync failure should raise an OS notification.
+ *
+ * The generic error path built a unique notification id from Date.now(), so
+ * every failure stacked another toast — a bridge left switched off produced one
+ * per weekly alarm and one per Canvas visit, forever. The pairing path twenty
+ * lines above already had this right: a fixed id, plus a flag so a state that
+ * has not changed does not re-alert.
+ *
+ * Same rule here, keyed on the message: the first failure speaks, identical
+ * repeats stay quiet, a genuinely different failure speaks again, and a
+ * successful sync clears the memory so the next outage is heard.
+ */
+export function shouldNotifyError(lastNotifiedMessage, message) {
+  const now = String(message ?? '');
+  if (!now) return false;
+  return now !== String(lastNotifiedMessage ?? '');
 }

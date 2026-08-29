@@ -20,6 +20,8 @@ import {
   emptyFileCounts,
   rollUpFileCounts,
   fetchFileWithFreshUrl,
+  decodedByteLength,
+  shouldNotifyError,
 } from './sync-support.js';
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +1007,9 @@ async function fullSync(reason) {
       lastSyncReason:     reason,
       coursesTracked:     coursesToSync.length,
       lastError:          null,
+      // Forget which failure we last alerted about: a recovery means the next
+      // outage is new news, even if it fails the same way as the last one.
+      lastErrorNotified:  null,
       // A success clears the backoff and any stale pairing flag, so one good
       // sync fully re-arms normal scheduling.
       syncFailureCount:   0,
@@ -1065,12 +1070,22 @@ async function fullSync(reason) {
       await _log('error', `Network error during sync: ${err.message}`, reason);
     } else {
       _setBadge('off');
-      chrome.notifications.create(`canvas-sync-error-${Date.now()}`, {
-        type:    'basic',
-        iconUrl: 'icons/icon48.png',
-        title:   'Canvas Sync — Error',
-        message: `Sync failed: ${err.message}`,
-      });
+      // A FIXED id, so a repeat replaces rather than stacks, plus the same
+      // has-this-changed guard the pairing branch above uses. The id used to be
+      // built from Date.now(), which made every failure a new toast: a bridge
+      // left switched off produced one per weekly alarm and one per Canvas
+      // visit, indefinitely. The badge and lastError still update every time —
+      // only the interruption is rationed.
+      const { lastErrorNotified } = await _storageGet(['lastErrorNotified']);
+      if (shouldNotifyError(lastErrorNotified, err.message)) {
+        chrome.notifications.create('canvas-sync-error', {
+          type:    'basic',
+          iconUrl: 'icons/icon48.png',
+          title:   'Canvas Sync — Error',
+          message: `Sync failed: ${err.message}`,
+        });
+        await _storageSet({ lastErrorNotified: err.message });
+      }
       await _log('error', `Sync error: ${err.message}`, reason);
     }
 
@@ -1429,7 +1444,14 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
     }
 
     if (!f.url) {
+      // Counted AND said out loud. The catch branch below logs every failure it
+      // sees; this one moved a counter and left nothing behind to explain it,
+      // which is the one error the coverage line cannot account for.
       errored++;
+      await _log('warn',
+        `No download URL for course file ${f.id} `
+        + `(${f.display_name ?? f.filename ?? 'unnamed'}) in course ${courseId}`,
+        reason);
       continue;
     }
 
@@ -1447,6 +1469,28 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
         isPermissionError: err => err instanceof PermissionError,
       }));
       if (refreshed) refreshedUrls++;
+
+      // The gate above trusts Canvas's declared `size`, and Canvas does not
+      // always declare one — a file with absent metadata reads as 0 and walks
+      // straight through. Weigh what we are actually holding before handing it
+      // to the bridge, which would otherwise 413 it on every sync forever.
+      // Same cap, measured a second time against real bytes.
+      const actualBytes = decodedByteLength(binary.base64);
+      if (actualBytes > MAX_INGEST_BYTES) {
+        skippedSize++;
+        await _log('warn',
+          `Skipped ${f.display_name ?? f.filename ?? f.id}: Canvas declared `
+          + `${size} bytes but it downloaded as ${actualBytes}, over the `
+          + `${MAX_INGEST_MB} MB ingest limit`,
+          reason);
+        _broadcastProgress({
+          phase: 'course-item', courseId, item: 'files_download',
+          status: 'running',
+          display: _formatFilesDisplay({ done, total, skippedForbidden, skippedSize, errored }),
+        });
+        continue;
+      }
+
       await ingestCourseFile({
         courseId,
         fileId:          f.id,
