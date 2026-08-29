@@ -121,8 +121,8 @@ Bound up with it:
 
 Both of these exist so the project can be handed to someone else:
 
-- **Claude API key input** — an alternative to the `claude` CLI OAuth path, so setup does not
-  depend on a logged-in CLI.
+- **Terminal subscription login** — Claude Code and Codex OAuth sessions replace the removed API-key path, so setup does not
+  depend on provisioning an API credential.
 - The weaker local model tier (§2) and the calendar-id hover explanations (§4) serve the same
   goal.
 

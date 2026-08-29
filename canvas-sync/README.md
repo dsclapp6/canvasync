@@ -68,10 +68,11 @@ Chrome (authenticated canvas.rice.edu session)
                  first run, and loads the same dashboard UI
 ```
 
-**AI backends.** Steps marked (AI) run through `scripts/_util.js aiInvoke()`:
-`CSYNC_AI_BACKEND=claude` (claude CLI only, default model `claude-opus-5`, override with
-`CSYNC_CLAUDE_MODEL`), `local` (local MLX model only), or `auto` (default — claude first, falls
-back to the local model if the CLI fails, e.g. logged out). The local backend runs
+**AI backends.** Steps marked (AI) run through `scripts/_util.js aiInvoke()` using terminal
+subscription sessions — never API keys. `CSYNC_AI_BACKEND=claude` selects Claude Code,
+`codex` selects Codex, `local` selects MLX, and `auto` (default) tries a signed-in Claude CLI,
+then a signed-in Codex CLI, then the local model. Claude and Codex use their CLI-default model
+unless `CSYNC_CLAUDE_MODEL` or `CSYNC_CODEX_MODEL` is set in Settings. The local backend runs
 `scripts/local_generate.py` with `~/mlx-env/bin/python` (override `CSYNC_LOCAL_PYTHON`) and model
 `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit` (override `CSYNC_LOCAL_MODEL`), fully offline.
 
@@ -147,9 +148,9 @@ re-downloaded, with a 200 MB per-file cap.
 ## Local-only guarantees
 
 - **Data path:** `~/canvas-sync-data/` (chmod 700). Can be relocated via `--base-path`.
-- **Network egress — four endpoints:**
+- **Network egress:**
   - `canvas.rice.edu` (source, via your browser session)
-  - `api.anthropic.com` (AI stages, via the `claude` CLI — not contacted when the backend is `local`)
+  - the signed-in Claude Code or Codex service (AI stages only; neither is contacted when the backend is `local`)
   - `fonts.googleapis.com` / `fonts.gstatic.com` (dashboard typefaces; the dashboard falls back to system fonts offline)
   - `huggingface.co` (only when you explicitly download the local model from the desktop app)
   - All other domains blocked at the extension level by Content Security Policy.
@@ -170,7 +171,12 @@ re-downloaded, with a 200 MB per-file cap.
 - macOS (primary). Linux mostly works; Windows not supported.
 - Node.js 20+.
 - Chrome (latest).
-- [`claude` CLI](https://docs.anthropic.com/en/docs/claude-code) logged in — run `claude login` and re-run it whenever the OAuth session expires (the Activity log will show "OAuth session expired" when it has). Used when syllabi change or assignments shift (parse/mine/context rebuilds). If the CLI is unavailable or logged out, the pipeline falls back to the local MLX model automatically (`CSYNC_AI_BACKEND=auto`, see Architecture). Context packs and the calendar worklist are built deterministically either way — only syllabus parsing, assignment mining, and pack enrichment need an AI backend.
+- Optional: Claude Code or Codex CLI with a subscription login. In **Settings → Terminal AI**,
+  click **Open login terminal** for either provider; CANVASync checks `claude auth status` or
+  `codex login status` and uses the authenticated CLI automatically. API-key environment
+  variables are removed from every provider child process. If neither CLI is ready, `auto`
+  falls back to the local MLX model. Context packs and the calendar worklist are deterministic;
+  only syllabus parsing, assignment mining, and pack enrichment need an AI backend.
 
 ## Pre-install checklist
 
@@ -249,6 +255,12 @@ opens the assignment inside the app: the Canvas description (sanitized — scrip
 removed), what mining understood the work to be, the most relevant course materials, and the
 files that came from that assignment, which open locally. Two links go out to Canvas from
 there — the assignment page and, when there is somewhere to submit, the submission page.
+
+**Textbooks.** Every class has a Textbooks tab populated from the required and recommended
+books named in its syllabus. Paste a legal PDF or purchased e-book URL beside a title and it
+is saved separately from the generated syllabus data, so later syncs cannot erase it.
+Assignments that name that book — or assign a chapter when the class has only one unambiguous
+textbook — automatically show the saved title as a clickable link.
 
 **Links that actually open.** Canvas reports `html_url` on every assignment, but for a
 quiz-backed one that URL is the teacher's view of the object and a student following it gets
@@ -491,6 +503,7 @@ Per-class on-disk layout (v1.1):
   materials/pdf/   ppt/doc/xls converted to PDF (when LibreOffice is installed)
   files_index.json canonical per-file state (sha256, extractionStatus, duplicateOf…)
   user_state.json  your task state: done, notes, flags, date moves, checkpoints
+  textbook_links.json  your PDF/e-book links, joined to syllabus textbook names
   meeting_override.json  when this class meets, as you typed it (only if you set it)
   AI_CONTEXT/      context.md + context.json + last_built.txt
   AI_CONTEXT/pack/ uploadable pack for a Claude project
