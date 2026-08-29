@@ -2,7 +2,7 @@
 // own. No chrome.* access, no network: every dependency arrives as an argument,
 // so background.js keeps the wiring and this file keeps the reasoning.
 //
-// Four jobs, all of them fixes for silent failure:
+// Five jobs, all of them fixes for silent failure:
 //   1. serialising read-modify-write appends, so concurrent writers stop
 //      clobbering each other's log lines;
 //   2. carrying per-file outcome counts out of the download loop, so a sync
@@ -10,7 +10,8 @@
 //   3. telling an expired download URL apart from a real permission denial,
 //      which Canvas reports with the same status code;
 //   4. measuring what was actually downloaded rather than what Canvas said it
-//      would be, and deciding when a repeated failure is worth a second alert.
+//      would be, and deciding when a repeated failure is worth a second alert;
+//   5. deciding which failures are worth a second attempt at all.
 
 // --- Serialised append ------------------------------------------------------
 
@@ -184,4 +185,32 @@ export function shouldNotifyError(lastNotifiedMessage, message) {
   const now = String(message ?? '');
   if (!now) return false;
   return now !== String(lastNotifiedMessage ?? '');
+}
+
+// --- Which failures are worth retrying --------------------------------------
+
+/**
+ * Build the predicate _withRetry uses to decide whether to try again.
+ *
+ * Lives here, away from the loop that acts on it, because this one boolean is
+ * the line a future edit is most likely to widen carelessly — "just retry
+ * HttpError too" reads harmless and buys three attempts at a 404 per file, per
+ * sync. Out here it can be pinned by a test that enumerates every error type on
+ * both sides of the boundary; inside a 20-line loop in a service worker it
+ * cannot be reached at all.
+ *
+ * Types are injected rather than imported so this module keeps its one useful
+ * property — no dependencies — and so importing it into the popup does not drag
+ * canvas-client.js along for a sentence about file counts.
+ *
+ * NOTE FOR WHOEVER WIDENS THIS: retrying is only safe while every endpoint
+ * _withRetry wraps is idempotent. Three of its call sites are bridge POSTs. See
+ * the comment at _withRetry in background.js.
+ */
+export function makeIsTransient(types) {
+  const transient = Object.values(types ?? {}).filter(t => typeof t === 'function');
+  return function isTransient(err) {
+    if (!err) return false;
+    return transient.some(T => err instanceof T);
+  };
 }

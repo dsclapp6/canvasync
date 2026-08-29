@@ -35,6 +35,25 @@ export class ServerError extends Error {
   }
 }
 
+/**
+ * A response arrived and was not usable, and it is none of the statuses above.
+ *
+ * fetchBinary types 401, 403 and 5xx before reaching its catch-all, so this
+ * carries what is left: 404, 400, 405, 409, 410, 429, and 3xx that fetch did
+ * not follow. It exists because those used to be thrown as NetworkError, which
+ * put "this file is not there" and "the request never left the machine" behind
+ * one type — and a retry policy cannot tell them apart from one type. A 404 is
+ * never worth a second attempt; a dropped packet almost always is.
+ */
+export class HttpError extends Error {
+  constructor(status, url) {
+    super(`HTTP ${status} for ${url}`);
+    this.name = 'HttpError';
+    this.status = status;
+    this.url = url;
+  }
+}
+
 export class PermissionError extends Error {
   constructor(url) {
     super(`Permission denied (${url})`);
@@ -227,7 +246,11 @@ export async function fetchBinary(url) {
   // Any other non-OK (404, expired signed URL, redirect to an error page):
   // without this check the error page's HTML would be base64'd and ingested
   // as the file's actual bytes.
-  if (!response.ok) throw new NetworkError(`fetchBinary got HTTP ${response.status} for ${url}`);
+  //
+  // HttpError, not NetworkError: the response ARRIVED. Retrying a 404 is three
+  // attempts at a URL that will never exist, per file, per sync — which is what
+  // the old type would have bought once transport failures became retryable.
+  if (!response.ok) throw new HttpError(response.status, url);
 
   const contentType = response.headers.get('Content-Type') ?? 'application/octet-stream';
   const buffer      = await response.arrayBuffer();

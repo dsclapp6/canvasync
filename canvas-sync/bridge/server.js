@@ -362,6 +362,9 @@ export function buildApp(config) {
     next();
   });
 
+  // The extension retries transport failures against this endpoint (_withRetry
+  // in extension/background.js), so a POST that times out may arrive twice.
+  // Keep this write idempotent — writeCourse is a wholesale keyed write today.
   ingestRouter.post('/course', async (req, res) => {
     const courseId = req.body?.course?.id ?? req.body?.courseId;
     try {
@@ -401,6 +404,8 @@ export function buildApp(config) {
     }
   });
 
+  // Same retry contract as /course above: this may arrive twice. Safe today
+  // because updateLastSync overwrites and startPipeline has a busy guard.
   ingestRouter.post('/complete', async (req, res) => {
     const { coursesSeen } = req.body ?? {};
     try {

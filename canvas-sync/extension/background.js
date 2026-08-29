@@ -22,6 +22,7 @@ import {
   fetchFileWithFreshUrl,
   decodedByteLength,
   shouldNotifyError,
+  makeIsTransient,
 } from './sync-support.js';
 
 // ---------------------------------------------------------------------------
@@ -542,16 +543,31 @@ function _updateProgressState(e) {
 // Retry wrapper for 5xx errors
 // ---------------------------------------------------------------------------
 
+// What counts as worth trying again. ServerError is Canvas-side and
+// BridgeServerError is bridge-side — both 5xx, both transient; only the first
+// used to be retried, so a single bridge hiccup aborted an otherwise-healthy
+// sync. NetworkError joins them: it now means only that the request never
+// completed, because fetchBinary's non-OK statuses became HttpError, which is
+// deliberately absent from this list. A 404 does not improve on the third ask.
+//
+// THE PRECONDITION, and it does not live in this file: retrying is safe only
+// while every endpoint _withRetry wraps is idempotent. Three of its five call
+// sites are bridge POSTs — publishScope, /ingest/course, /ingest/complete — and
+// a transport failure on a POST is ambiguous by nature, since the write may
+// have landed with only the response lost. They are safe today because the
+// bridge makes them so: writeCourse and updateLastSync are wholesale writes
+// keyed by id, and runIfNeeded's startPipeline carries a busy guard. An
+// append-style ingest endpoint added later would break this silently and
+// nothing here would fail loudly. See bridge/server.js's ingest handlers.
+const _isTransient = makeIsTransient({ NetworkError, ServerError, BridgeServerError });
+
 async function _withRetry(fn) {
   let lastErr;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      // ServerError is Canvas-side, BridgeServerError is bridge-side. Both are
-      // 5xx and both are transient; only the first used to be retried, so a
-      // single bridge hiccup aborted an otherwise-healthy sync.
-      const transient = err instanceof ServerError || err instanceof BridgeServerError;
+      const transient = _isTransient(err);
       if (transient && attempt < RETRY_DELAYS_MS.length) {
         const delay = RETRY_DELAYS_MS[attempt];
         await _log('warn', `Server error, retrying in ${delay}ms: ${err.message}`);

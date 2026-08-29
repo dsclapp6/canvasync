@@ -14,12 +14,17 @@ import assert from 'node:assert/strict';
 
 import {
   canvasFetch,
+  fetchBinary,
   throwForStatus,
   AuthError,
   ServerError,
   RateLimitError,
   PermissionError,
+  NetworkError,
+  HttpError,
 } from '../canvas-client.js';
+import { BridgeServerError, ConfigError } from '../bridge-client.js';
+import { makeIsTransient } from '../sync-support.js';
 
 // A stand-in for the parts of Response this module reads.
 function fakeResponse(status, body = '', headers = {}) {
@@ -152,4 +157,104 @@ test('a 200 is returned untouched', async () => {
   const res = await canvasFetch('/api/v1/courses');
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { ok: true });
+});
+
+// ===========================================================================
+// Slice 3 — item 6: transport failure vs a response that arrived.
+// ===========================================================================
+
+function binaryResponse(status, { body = '', bytes = null } = {}) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get: () => 'application/pdf' },
+    clone: () => binaryResponse(status, { body, bytes }),
+    text: async () => body,
+    arrayBuffer: async () => (bytes ?? new Uint8Array([1, 2, 3])).buffer,
+  };
+}
+
+test('a 404 from fetchBinary is HttpError carrying the status, not NetworkError', async () => {
+  // The regression guard. Before item 6 this threw NetworkError, which put "the
+  // file is not there" and "the request never left the machine" behind one type
+  // — and made a 404 retryable the moment transport failures became retryable.
+  globalThis.fetch = async () => binaryResponse(404);
+  await assert.rejects(() => fetchBinary('https://signed/gone'), (err) => {
+    assert.ok(err instanceof HttpError, `expected HttpError, got ${err?.name}`);
+    assert.ok(!(err instanceof NetworkError),
+      'HttpError must NOT be a NetworkError, or the top-level branch keeps catching it');
+    assert.equal(err.status, 404);
+    assert.equal(err.url, 'https://signed/gone');
+    return true;
+  });
+});
+
+test('a rejected fetch is still NetworkError — the request never completed', async () => {
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  await assert.rejects(() => fetchBinary('https://signed/x'), NetworkError);
+  await assert.rejects(() => canvasFetch('/api/v1/courses'), NetworkError);
+});
+
+test('fetchBinary keeps its existing types for 401, 403 and 5xx', async () => {
+  globalThis.fetch = async () => binaryResponse(401);
+  await assert.rejects(() => fetchBinary('https://signed/x'), AuthError);
+  globalThis.fetch = async () => binaryResponse(403);
+  await assert.rejects(() => fetchBinary('https://signed/x'), PermissionError);
+  globalThis.fetch = async () => binaryResponse(500);
+  await assert.rejects(() => fetchBinary('https://signed/x'), ServerError);
+});
+
+test('a 200 from fetchBinary still returns bytes', async () => {
+  globalThis.fetch = async () => binaryResponse(200, { bytes: new Uint8Array([104, 105]) });
+  const out = await fetchBinary('https://signed/ok');
+  assert.equal(out.contentType, 'application/pdf');
+  assert.equal(Buffer.from(out.base64, 'base64').toString(), 'hi');
+});
+
+// --- The retry boundary, enumerated against the REAL error classes ----------
+
+const isTransient = makeIsTransient({ NetworkError, ServerError, BridgeServerError });
+
+test('every error type sits on the side of the retry boundary it belongs on', () => {
+  const retryable = [
+    ['NetworkError',      new NetworkError('socket reset')],
+    ['ServerError',       new ServerError(503)],
+    ['BridgeServerError', new BridgeServerError(500, 'write failed')],
+  ];
+  const notRetryable = [
+    ['HttpError 404',   new HttpError(404, 'https://signed/gone')],
+    ['HttpError 400',   new HttpError(400, 'https://x')],
+    ['AuthError',       new AuthError()],
+    ['PermissionError', new PermissionError('https://x')],
+    ['RateLimitError',  new RateLimitError()],
+    ['ConfigError',     new ConfigError('not paired')],
+    ['plain Error',     new Error('something else')],
+  ];
+
+  for (const [name, err] of retryable) {
+    assert.equal(isTransient(err), true, `${name} should be retried`);
+  }
+  for (const [name, err] of notRetryable) {
+    assert.equal(isTransient(err), false, `${name} must NOT be retried`);
+  }
+});
+
+test('a 404 is not retried — the failure mode of widening this predicate', () => {
+  // "Just retry HttpError too" costs three attempts at a URL that will never
+  // exist, per file, per sync.
+  assert.equal(isTransient(new HttpError(404, 'https://signed/gone')), false);
+});
+
+test('isTransient is safe on null and undefined', () => {
+  assert.equal(isTransient(null), false);
+  assert.equal(isTransient(undefined), false);
+});
+
+test('a deliberate-abort NetworkError is retryable BY TYPE — the abort is kept out of _withRetry by placement, not by type', () => {
+  // background.js:621 throws NetworkError to abort a sync when the untracked
+  // list cannot be read, so deleted classes are not resurrected. It is NOT
+  // wrapped in _withRetry, and that is the only thing stopping it from being
+  // retried now that NetworkError is transient. Pinned here so that if anyone
+  // ever wraps that region, this comment is findable.
+  assert.equal(isTransient(new NetworkError('Cannot read untracked-class list')), true);
 });
