@@ -44,6 +44,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { withPathLock, atomicWrite } from '../write-lock.js';
 import {
   parseDayCodes, parseTimeRange, parseRoom, parseWeeklyPatterns, meetingsFromCanvasEvents, NO_CLASS_RE,
 } from './cal-meetings.js';
@@ -442,10 +443,30 @@ export async function readMeetingOverride(classDir) {
   return override;
 }
 
-async function writeJsonAtomic(file, value) {
-  const tmp = `${file}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
-  await fs.rename(tmp, file);
+function writeJsonAtomic(file, value) {
+  // Trailing newline preserved — these files are read by humans and diffed.
+  return atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/**
+ * Serialise the three mutators against each other, per CLASS.
+ *
+ * Keyed by the class dir and NOT by file, which matters here more than
+ * anywhere else in this conversion: every one of the three mutators writes TWO
+ * files for one logical operation — the override itself and its undo stash.
+ * Lock per file and one mutator's stash can still interleave with another's
+ * main write, which leaves the exact bug standing while looking fixed: a
+ * double-clicked "use the syllabus instead" lets the second clear read an
+ * override the first has already unlinked, stash `previous: null`, and destroy
+ * the undo target the first one just recorded. Neither the clear control nor
+ * the save form has a double-click guard, so that is one impatient click away.
+ *
+ * Only the bridge calls these (server.js's meeting routes); nothing in the
+ * pipeline mutates an override. So an in-process lock is the whole fix, not
+ * half of one.
+ */
+function withMeetingLock(classDir, fn) {
+  return withPathLock(`meeting:${classDir}`, fn);
 }
 
 async function stashPrevious(classDir, previous, action) {
@@ -487,7 +508,11 @@ export async function readMeetingRevert(classDir) {
  * replaced becomes the new stash, so a revert is itself revertible — a second
  * revert is redo, and no click here can strand the user.
  */
-export async function revertMeetingOverride(classDir) {
+export function revertMeetingOverride(classDir) {
+  return withMeetingLock(classDir, () => revertMeetingOverrideLocked(classDir));
+}
+
+async function revertMeetingOverrideLocked(classDir) {
   const stash = await readMeetingRevert(classDir);
   if (!stash) return null;
   const current = await readMeetingOverride(classDir);
@@ -523,7 +548,11 @@ export function describeRevertTarget(stash) {
  * this is a user typing, and silently discarding what they typed reads to them
  * as the feature being broken.
  */
-export async function writeMeetingOverride(classDir, patch = {}) {
+export function writeMeetingOverride(classDir, patch = {}) {
+  return withMeetingLock(classDir, () => writeMeetingOverrideLocked(classDir, patch));
+}
+
+async function writeMeetingOverrideLocked(classDir, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new TypeError('writeMeetingOverride: patch must be an object');
   }
@@ -591,7 +620,11 @@ export async function writeMeetingOverride(classDir, patch = {}) {
 }
 
 /** Forget the override. True when a file was actually removed. */
-export async function clearMeetingOverride(classDir) {
+export function clearMeetingOverride(classDir) {
+  return withMeetingLock(classDir, () => clearMeetingOverrideLocked(classDir));
+}
+
+async function clearMeetingOverrideLocked(classDir) {
   // Stash what is being cleared first: "Use the syllabus instead" clicked by
   // mistake must not eat a time the user typed.
   //

@@ -16,6 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataRoot as syncHome } from '../data-root.js';
+import { withPathLock, atomicWriteJson } from '../write-lock.js';
 
 export const USER_STATE_FILE = 'user_state.json';
 
@@ -59,21 +60,7 @@ export async function readUserState(classDir) {
 }
 
 async function writeUserState(classDir, state) {
-  const file = statePath(classDir);
-  // A pid is NOT unique between two concurrent requests — the bridge is one
-  // process serving every route, so two mutations in flight together used the
-  // same tmp path: both wrote it, the first rename moved it away, and the
-  // second got ENOENT and answered 500 for a change that had in fact landed.
-  // Random per call, and cleaned up if the rename never happens. Identical to
-  // the fix custom-items.js already carries for the same defect.
-  const tmp = `${file}.tmp.${crypto.randomBytes(6).toString('hex')}`;
-  try {
-    await fs.writeFile(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
-    await fs.rename(tmp, file);
-  } catch (err) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
-    throw err;
-  }
+  await atomicWriteJson(statePath(classDir), { ...state, updatedAt: new Date().toISOString() });
 }
 
 // Every mutation is read-modify-write over the WHOLE class file — user_state
@@ -102,19 +89,8 @@ async function writeUserState(classDir, state) {
 // keying by task would reproduce exactly the mistake the client already makes.
 // Cross-process safety is not claimed and is not needed — only the bridge
 // writes this file, and the pipeline never does.
-const MUTATION_QUEUES = new Map();
 function withStateLock(classDir, fn) {
-  const key = statePath(classDir);
-  // The stored tail never rejects, so one failed mutation cannot poison the
-  // queue behind it; the caller still sees its own rejection through `run`.
-  const tail = MUTATION_QUEUES.get(key) ?? Promise.resolve();
-  const run = tail.then(fn);
-  const settled = run.then(() => {}, () => {});
-  MUTATION_QUEUES.set(key, settled);
-  settled.then(() => {
-    if (MUTATION_QUEUES.get(key) === settled) MUTATION_QUEUES.delete(key);
-  });
-  return run;
+  return withPathLock(statePath(classDir), fn);
 }
 
 function str(value, max, field) {

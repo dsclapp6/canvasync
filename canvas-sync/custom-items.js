@@ -16,6 +16,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { withPathLock, atomicWriteJson } from './write-lock.js';
 
 export const CUSTOM_ITEMS_FILE = 'custom_items.json';
 
@@ -101,43 +102,17 @@ async function preserveUnreadable(state, calDir) {
 
 async function writeCustomItems(calDir, state) {
   await fs.mkdir(calDir, { recursive: true });
-  const file = itemsPath(calDir);
-  // A pid is NOT unique between two concurrent requests — the bridge is one
-  // process serving every route, so two mutations in flight together used the
-  // same tmp path: both wrote it, the first rename moved it away, and the
-  // second got ENOENT and answered 500 for a change that had in fact landed
-  // (while the other answered 200 for one that had been overwritten). Random
-  // per call, and cleaned up if the rename never happens.
-  const tmp = `${file}.tmp.${crypto.randomBytes(6).toString('hex')}`;
-  try {
-    await fs.writeFile(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
-    await fs.rename(tmp, file);
-  } catch (err) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
-    throw err;
-  }
+  await atomicWriteJson(itemsPath(calDir), { ...state, updatedAt: new Date().toISOString() });
 }
 
 // Every mutation is read-modify-write over the WHOLE file, so two of them in
 // flight together lose one of the two changes even when they touch different
 // items — the second write is computed from a snapshot taken before the first
-// landed. There is no lock to take (the file is this module's alone), so the
-// serialization is a per-path promise chain: mutations queue, reads do not.
+// landed. Keyed by the items file: one file, one logical target.
 // Cross-process safety is not claimed and is not needed — only the bridge
 // writes this file, and the pipeline never does.
-const MUTATION_QUEUES = new Map();
 function withItemsLock(calDir, fn) {
-  const key = itemsPath(calDir);
-  // The stored tail never rejects, so one failed mutation cannot poison the
-  // queue behind it; the caller still sees its own rejection through `run`.
-  const tail = MUTATION_QUEUES.get(key) ?? Promise.resolve();
-  const run = tail.then(fn);
-  const settled = run.then(() => {}, () => {});
-  MUTATION_QUEUES.set(key, settled);
-  settled.then(() => {
-    if (MUTATION_QUEUES.get(key) === settled) MUTATION_QUEUES.delete(key);
-  });
-  return run;
+  return withPathLock(itemsPath(calDir), fn);
 }
 
 function str(value, max, field) {

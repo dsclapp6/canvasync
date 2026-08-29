@@ -7,6 +7,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { withPathLock, atomicWriteJson } from '../write-lock.js';
 
 export const TEXTBOOK_LINKS_FILE = 'textbook_links.json';
 export const TEXTBOOK_SCHEMA_VERSION = 2;
@@ -352,15 +353,16 @@ async function syllabusBooksForClass(classDir, syllabusParsed) {
   return textbooksFromSyllabus(parsed);
 }
 
+function linksPath(classDir) {
+  return path.join(classDir, TEXTBOOK_LINKS_FILE);
+}
+
 async function writeTextbookLinks(classDir, state) {
-  const file = path.join(classDir, TEXTBOOK_LINKS_FILE);
-  const tmp = `${file}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify({
+  await atomicWriteJson(linksPath(classDir), {
     version: 1,
     links: state.links,
     updatedAt: new Date().toISOString(),
-  }, null, 2));
-  await fs.rename(tmp, file);
+  });
 }
 
 function normaliseUrl(value) {
@@ -398,11 +400,31 @@ export async function resolveTextbooks(classDir, syllabusParsed) {
   });
 }
 
-/** Set or clear one syllabus textbook's PDF/e-book link. */
+/**
+ * Set or clear one syllabus textbook's PDF/e-book link.
+ *
+ * textbook_links.json holds EVERY book of the class under `links`, and this is
+ * read-modify-write across two awaits — the syllabus read and the links read —
+ * so two of these in flight together lose one of the two edits even though they
+ * name different books. The dashboard makes that ordinary rather than exotic:
+ * saving a link disables only that row's button (app.js), so pasting URLs for
+ * two books of one class in quick succession sends two concurrent PUTs.
+ *
+ * Locked by the LINKS FILE, which is the whole target here — unlike the meeting
+ * override, one logical edit touches exactly one file. The syllabus read is
+ * inside the lock deliberately: it is what `book` is resolved from, and a
+ * resolution taken before another writer's edit is the same stale snapshot the
+ * lock exists to prevent.
+ */
 export async function patchTextbookLink(classDir, syllabusParsed, textbookId, value) {
   if (typeof textbookId !== 'string' || !BOOK_ID_RE.test(textbookId)) {
     throw new TextbookError('invalid textbook id');
   }
+  return withPathLock(linksPath(classDir),
+    () => patchTextbookLinkLocked(classDir, syllabusParsed, textbookId, value));
+}
+
+async function patchTextbookLinkLocked(classDir, syllabusParsed, textbookId, value) {
   const books = await syllabusBooksForClass(classDir, syllabusParsed);
   const book = books.find(candidate => candidate.id === textbookId);
   if (!book) throw new TextbookError('textbook not found in this class syllabus');
