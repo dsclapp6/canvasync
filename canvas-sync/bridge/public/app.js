@@ -1953,9 +1953,13 @@ function dueRelHtml(diff, cls = '', { done = false } = {}) {
 // overrunning the title beside it.
 function fmtTimeSpan(start, end) {
   const a = fmtTime12(start);
-  if (!end) return a;
-  const b = fmtTime12(end);
-  if (!a || !b) return a || b;
+  const b = end ? fmtTime12(end) : '';
+  // A span whose START could not be read is not a span, and returning the end
+  // on its own printed a finish time in the place a start time goes: an item
+  // ending at 3pm read as one beginning at 3pm, with nothing to say otherwise.
+  // "until" is four characters to keep that from being silent.
+  if (!a) return b ? `until ${b}` : '';
+  if (!b) return a;
   const ap = a.slice(-2);
   return ap === b.slice(-2) ? `${a.slice(0, -3)}–${b}` : `${a}–${b}`;
 }
@@ -2859,13 +2863,27 @@ function stripClassPrefix(title, slug) {
 }
 
 function calPoints(description) {
-  const m = /^Points:\s*([\d.]+)/m.exec(description || '');
+  // A NUMBER, not a run of [\d.]: that class accepted "..." from a truncated
+  // description and printed "... pts" on the chip, and let "1.2.3" through as
+  // though a score could have two decimal points.
+  const m = /^Points:\s*(\d+(?:\.\d+)?)/m.exec(description || '');
   return m ? m[1] : null;
 }
 
 function calUrl(description) {
-  const m = /(https?:\/\/\S+)/.exec(description || '');
-  return m ? m[1] : null;
+  const m = /(https?:\/\/[^\s<>]+)/.exec(description || '');
+  if (!m) return null;
+  // Sentence punctuation is not part of the link. content-format.js strips the
+  // same set when it autolinks prose, and the two disagreeing meant one URL was
+  // live in the file reader and a 404 on the calendar chip beside it.
+  let url = m[1].replace(/[.,;:!?]+$/, '');
+  // A closing paren is the sentence's, not the link's, unless the link opened
+  // one itself: "(see https://x/y)" sheds it, ".../Foo_(bar)" keeps it.
+  while (url.endsWith(')')
+    && (url.split('(').length - 1) < (url.split(')').length - 1)) {
+    url = url.slice(0, -1).replace(/[.,;:!?]+$/, '');
+  }
+  return url || null;
 }
 
 /**

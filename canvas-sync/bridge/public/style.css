@@ -2037,20 +2037,26 @@ table.files tr:hover td { background: var(--sunk); }
 }
 .hu-row:hover { background: var(--sunk); }
 .hu-day {
-  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--t-legend);
   color: var(--muted);
-  min-width: 11ch; flex: none;
+  flex: none;
 }
-/* The graded distance beside the day — floored at the longest future phrase
-   ("in 30 weeks" = 11ch; the list never shows the past) so titles stay a
-   column. */
+/* The graded distance beside the day. Both the font and the floor are set once,
+   with .hu-day, in the home-page block further down — declaring them here as
+   well only looked authoritative: the later rule has the same specificity and
+   silently won, so this block's `font-family: var(--mono)` and
+   `min-width: 11ch` never applied to a single render.
+
+   The floor is a floor, not a cap: .hu-rel is `flex: none` with no overflow
+   rule, so a longer phrase widens the column rather than being clipped. That
+   matters because relPhrase() does show the past ("2 weeks ago") and its
+   longest output is 13 characters ("114 weeks ago"), not the 11 this comment
+   used to claim. */
 .hu-rel {
-  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--t-legend);
-  min-width: 11ch; flex: none;
+  flex: none;
 }
 .hu-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hu-kind { font-size: var(--t-legend); color: var(--muted); flex: none; }
