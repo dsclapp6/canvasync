@@ -52,6 +52,9 @@
          rendered, so a persistently failing sync looked identical to a healthy
          one unless the user opened the separate progress page. -->
     <p id="last-error" class="last-error hidden"></p>
+    <!-- What the last run did NOT bring back. Silent until there is
+         something to say — see formatFileCounts(). -->
+    <p id="last-coverage" class="last-coverage hidden"></p>
 
     <section id="tracked-classes">
       <header>
@@ -145,6 +148,6 @@
     </section>
 
   </div>
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

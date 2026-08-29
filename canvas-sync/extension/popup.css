@@ -353,3 +353,12 @@ body {
 #logs-list li.level-error { color: var(--alarm); }
 #logs-list li.level-warn  { color: var(--alarm); }
 #logs-list li.level-info  { color: var(--muted); }
+
+/* What the last sync left behind. Quieter than .last-error — a run that
+   skipped files is a fact to check, not a failure to alarm about. */
+.last-coverage {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted, #6b7280);
+}

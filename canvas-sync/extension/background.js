@@ -15,6 +15,12 @@ import {
   ConfigError,
   BridgeServerError,
 } from './bridge-client.js';
+import {
+  makeSerialAppender,
+  emptyFileCounts,
+  rollUpFileCounts,
+  fetchFileWithFreshUrl,
+} from './sync-support.js';
 
 // ---------------------------------------------------------------------------
 // Slug alignment — MUST match bridge/storage.js slugifyCourseCode
@@ -174,16 +180,16 @@ function _resetProgressState(reason) {
 // Logging
 // ---------------------------------------------------------------------------
 
+// Both capped lists go through ONE appender, so a read never straddles another
+// writer's write. Declared before _storageGet/_storageSet are defined, which is
+// fine: those are hoisted function declarations and the appender only calls
+// them later, from inside a queued task.
+const _appendCapped = makeSerialAppender({ get: _storageGet, set: _storageSet });
+
 async function _log(level, message, reason = '') {
   const entry = { ts: new Date().toISOString(), reason, level, message };
   console[level === 'error' ? 'error' : 'log'](`[CanvasSync] ${message}`);
-
-  const data = await _storageGet(['logs']);
-  const logs = Array.isArray(data.logs) ? data.logs : [];
-  logs.push(entry);
-  // Keep only the most recent MAX_LOG_ENTRIES
-  const trimmed = logs.slice(-MAX_LOG_ENTRIES);
-  await _storageSet({ logs: trimmed });
+  await _appendCapped('logs', entry, MAX_LOG_ENTRIES);
 }
 
 // ---------------------------------------------------------------------------
@@ -428,13 +434,10 @@ function _broadcastProgress(data) {
 }
 
 async function _appendSyncHistory(entry) {
+  // Best-effort, as before: a run that finished must not be reported as failed
+  // because we could not write its history row.
   try {
-    const { syncHistory } = await _storageGet(['syncHistory']);
-    const list = Array.isArray(syncHistory) ? syncHistory : [];
-    list.push(entry);
-    // Keep only the most recent runs.
-    const trimmed = list.slice(-MAX_SYNC_HISTORY);
-    await _storageSet({ syncHistory: trimmed });
+    await _appendCapped('syncHistory', entry, MAX_SYNC_HISTORY);
   } catch { /* best-effort */ }
 }
 
@@ -460,7 +463,14 @@ function _updateProgressState(e) {
   if (e.phase === 'course-item') {
     const c = _progressState.courses[e.courseId];
     if (!c) return;
-    c.items[e.item] = { status: e.status, count: e.count, display: e.display };
+    // Keep the last counts we were given: intermediate broadcasts carry only a
+    // display string, and dropping the object on those would erase the final
+    // tally the moment anything painted after it.
+    const prevItem = c.items[e.item];
+    c.items[e.item] = {
+      status: e.status, count: e.count, display: e.display,
+      counts: e.counts ?? prevItem?.counts,
+    };
     return;
   }
   if (e.phase === 'course-done') {
@@ -487,6 +497,7 @@ function _updateProgressState(e) {
       reason:      _progressState.reason,
       phase:       'complete',
       courseCount: e.courseCount,
+      files:       rollUpFileCounts(_progressState.courses),
     });
     return;
   }
@@ -501,6 +512,7 @@ function _updateProgressState(e) {
       phase:       'error',
       error:       e.error,
       courseCount: Object.values(_progressState.courses || {}).filter(c => c.state === 'done').length,
+      files:       rollUpFileCounts(_progressState.courses),
     });
     return;
   }
@@ -519,6 +531,7 @@ function _updateProgressState(e) {
       reason:      _progressState.reason,
       phase:       'cancelled',
       courseCount: Object.values(_progressState.courses || {}).filter(c => c.state === 'done').length,
+      files:       rollUpFileCounts(_progressState.courses),
     });
   }
 }
@@ -1252,7 +1265,20 @@ async function _findSyllabusCandidates(course, filesIndex, modules) {
     if (fromModuleBonus.has(id))     score += fromModuleBonus.get(id);
     if (score > 0) ranked.push({ file: f, score });
   }
-  ranked.sort((a, b) => b.score - a.score);
+  // Canvas keeps replaced files as separate objects. On an equal name/type
+  // score, prefer the newest upload; relying on API array order made an older
+  // syllabus canonical on some courses. A larger numeric file id is the final
+  // tie-breaker because Canvas allocates ids monotonically.
+  const freshness = candidate => {
+    const value = candidate?.file?.updated_at
+      ?? candidate?.file?.modified_at
+      ?? candidate?.file?.created_at;
+    const stamp = Date.parse(value ?? '');
+    return Number.isFinite(stamp) ? stamp : 0;
+  };
+  ranked.sort((a, b) => b.score - a.score
+    || freshness(b) - freshness(a)
+    || (Number(b.file?.id) || 0) - (Number(a.file?.id) || 0));
   return ranked.slice(0, MAX_SYLLABUS_CANDIDATES);
 }
 
@@ -1368,6 +1394,10 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
   const bridgeById = new Map(bridgeIndex.map(f => [String(f.canvasId), f]));
 
   let done = 0, skippedForbidden = 0, skippedSize = 0, skippedUnchanged = 0, errored = 0;
+  // Files that 403'd on a stale URL and arrived on a fresh one. Not a failure —
+  // it exists so the expiry rate is visible instead of being absorbed into
+  // "forbidden", which is how these files used to disappear.
+  let refreshedUrls = 0;
   const total = effective.length;
 
   // Serial per-class so memory stays bounded (one base64 in flight at a time).
@@ -1404,7 +1434,19 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
     }
 
     try {
-      const binary = await _withRetry(() => fetchBinary(f.url));
+      // A 403 here means either "you may not read this" or "the signed URL we
+      // were handed when the file list was fetched has since expired". Canvas
+      // says both the same way, so ask once for a fresh URL before believing
+      // the first answer. See fetchFileWithFreshUrl.
+      const { binary, refreshed } = await _withRetry(() => fetchFileWithFreshUrl({
+        file: f,
+        courseId,
+        fetchBinary,
+        getFileMeta: (cid, fileId) =>
+          canvasGetJson(`/api/v1/courses/${cid}/files/${fileId}`),
+        isPermissionError: err => err instanceof PermissionError,
+      }));
+      if (refreshed) refreshedUrls++;
       await ingestCourseFile({
         courseId,
         fileId:          f.id,
@@ -1444,6 +1486,14 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
     display: _formatFilesDisplay({
       done, total, skippedForbidden, skippedSize, errored, skippedUnchanged, final: true,
     }),
+    // The display string is for the running view and is overwritten on every
+    // file. These counts are what outlives the run: they ride into the sync
+    // history so "done" can be checked against what actually arrived.
+    counts: {
+      ...emptyFileCounts(),
+      done, total, skippedForbidden, skippedSize, skippedUnchanged, errored,
+      refreshed: refreshedUrls,
+    },
   });
 }
 

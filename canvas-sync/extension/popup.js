@@ -1,4 +1,8 @@
-// popup.js — Canvas Sync popup logic. No framework, no build step. Vanilla JS.
+// popup.js — Canvas Sync popup logic. No framework, no build step. Loaded as
+// an ES module so it can share sync-support.js with the background worker —
+// the coverage sentence has to read identically in both places.
+
+import { formatFileCounts } from './sync-support.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,6 +40,7 @@ const $connectError    = document.getElementById('connect-error');
 const $repairLink      = document.getElementById('repair-link-wrap');
 const $repairBtn       = document.getElementById('repair-btn');
 const $lastError       = document.getElementById('last-error');
+const $lastCoverage    = document.getElementById('last-coverage');
 const $forceSyncBtn    = document.getElementById('force-sync-btn');
 const $fullViewBtn     = document.getElementById('full-view-btn');
 const $syncProgress    = document.getElementById('sync-progress');
@@ -108,6 +113,33 @@ function _setStatusHeader(state, label) {
 // Status rendering
 // ---------------------------------------------------------------------------
 
+// What the last completed run did not bring back.
+//
+// The per-file outcome counts used to exist only as a display string on a live
+// progress event, so the moment a sync ended the fact that it had skipped 40
+// files went with it — and "Last sync: 6 minutes ago" read the same either way.
+// The background now writes the counts into each syncHistory row; this reads
+// the most recent one. Read straight from storage, as the logs panel does,
+// rather than widening GET_STATUS.
+async function _renderCoverage() {
+  if (!$lastCoverage) return;
+  try {
+    const data = await new Promise(resolve =>
+      chrome.storage.local.get(['syncHistory'], resolve));
+    const history = Array.isArray(data?.syncHistory) ? data.syncHistory : [];
+    const line = formatFileCounts(history[history.length - 1]?.files);
+    if (line) {
+      $lastCoverage.textContent = line;
+      _showEl($lastCoverage);
+    } else {
+      _hideEl($lastCoverage);
+    }
+  } catch {
+    // Storage unavailable: say nothing rather than guess at coverage.
+    _hideEl($lastCoverage);
+  }
+}
+
 function _renderStatus(status) {
   const {
     lastSync, lastSyncReason, coursesTracked,
@@ -168,6 +200,8 @@ function _renderStatus(status) {
       _hideEl($lastError);
     }
   }
+
+  _renderCoverage();
 
   if (lastSync) {
     $lastSync.textContent = _relativeTime(lastSync);

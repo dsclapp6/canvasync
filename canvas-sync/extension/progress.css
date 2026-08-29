@@ -355,3 +355,10 @@ footer {
   gap: 32px;
   font-variant-numeric: tabular-nums;
 }
+
+/* Coverage line under a history row — what that run did not bring back. */
+.history-coverage {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+}

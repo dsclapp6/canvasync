@@ -2,6 +2,8 @@
 // Subscribes to SYNC_PROGRESS broadcasts from the background service worker and
 // replays any state that exists at load time via GET_PROGRESS_STATE.
 
+import { formatFileCounts } from './sync-support.js';
+
 const ITEM_ORDER = [
   'syllabus', 'assignments', 'groups', 'modules', 'pages',
   'discussions', 'announcements', 'quizzes', 'events',
@@ -359,6 +361,16 @@ function renderHistory(history) {
     li.appendChild(dur);
     li.appendChild(status);
     li.appendChild(detail);
+    // Per-run coverage, when the run has something to admit. Same sentence the
+    // popup shows, so "3 not permitted" means one thing in both places.
+    const coverage = formatFileCounts(entry.files);
+    if (coverage) {
+      const cov = document.createElement('div');
+      cov.className = 'history-coverage';
+      cov.textContent = coverage;
+      li.appendChild(cov);
+    }
+
     $historyList.appendChild(li);
   }
 }
