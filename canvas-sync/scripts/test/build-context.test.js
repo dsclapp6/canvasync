@@ -74,6 +74,14 @@ test('build-context lists all 4 assignments in context.md', async () => {
   }
 });
 
+test('build-context preserves a syllabus textbook as one complete citation', async () => {
+  const md = await readFile(join(classDir, 'AI_CONTEXT', 'context.md'), 'utf8');
+  assert.match(md, /\*\*Intermediate Microeconomics: A Modern Approach\*\* — Hal R\. Varian · 9th edition · ISBN 978-0-393-12396-8/);
+  const json = JSON.parse(await readFile(join(classDir, 'AI_CONTEXT', 'context.json'), 'utf8'));
+  assert.equal(json.textbooks.length, 1);
+  assert.equal(json.textbooks[0].title, 'Intermediate Microeconomics: A Modern Approach');
+});
+
 test('build-context produces non-empty Open questions section', async () => {
   const mdPath = join(classDir, 'AI_CONTEXT', 'context.md');
   const md = await readFile(mdPath, 'utf8');

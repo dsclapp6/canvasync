@@ -56,10 +56,11 @@ test('parse-syllabus output has required top-level keys', async () => {
   const raw = await readFile(parsedPath, 'utf8');
   const obj = JSON.parse(raw);
 
-  const requiredKeys = ['extracted_at', 'source_file', 'source_hash', 'course', 'grading', 'schedule', 'policies', 'extraction_confidence', 'extraction_notes'];
+  const requiredKeys = ['extracted_at', 'source_file', 'source_hash', 'textbook_schema_version', 'course', 'textbooks', 'grading', 'schedule', 'policies', 'extraction_confidence', 'extraction_notes'];
   for (const key of requiredKeys) {
     assert.ok(key in obj, `Missing required key: "${key}"`);
   }
+  assert.ok(Array.isArray(obj.textbooks), 'textbooks must be an array');
 });
 
 test('parse-syllabus output has valid source_hash (sha256 hex, 64 chars)', async () => {

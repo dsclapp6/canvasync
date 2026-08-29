@@ -138,7 +138,7 @@ const CLASS_FILES = {
     + 'Positioning follows segmentation and targeting for the running-shoe market.\n',
   'syllabus.html': SYLLABUS_HTML,
   'syllabus.hash': createHash('sha256').update(SYLLABUS_HTML).digest('hex'),
-  'syllabus_parsed.json': { extracted_at: '2026-08-24T00:00:00Z', assignments: [] },
+  'syllabus_parsed.json': { extracted_at: '2026-08-24T00:00:00Z', textbooks: [], assignments: [] },
   'readings_index.json': {
     version: 1,
     source: { structured: 'syllabus_parsed.json', raw: 'syllabus.html', syllabus_file: null },

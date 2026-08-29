@@ -10,6 +10,7 @@ import { readSyncScope, isInScope, CLASS_DIR_RE } from '../scope.js';
 // Name only — importing the constant keeps the output filename in one place.
 // correlation-graph.js is pure and side-effect-free, so this costs a parse.
 import { GRAPH_FILE } from './correlation-graph.js';
+import { TEXTBOOK_SCHEMA_VERSION } from '../bridge/textbooks.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,6 +33,12 @@ async function needsParse(classDir) {
 
   const parsedPath = join(classDir, 'syllabus_parsed.json');
   if (!existsSync(parsedPath)) return true;
+
+  // Mtime/hash checks cannot discover a parser schema migration. Version 2 is
+  // the first one that distinguishes optional readings and textbook roles.
+  const previous = await readJsonSafe(parsedPath);
+  if (Number(previous?.textbook_schema_version) < TEXTBOOK_SCHEMA_VERSION
+    || !Array.isArray(previous?.textbooks)) return true;
 
   const sourceMtimes = await Promise.all(sources.map(getMtime));
   const newestSource = Math.max(...sourceMtimes.map(m => m ?? 0));

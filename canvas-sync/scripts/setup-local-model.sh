@@ -121,7 +121,7 @@ else
   # clear sentence beats a pip resolver error thirty lines long.
   if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
     say "MLX runs only on Apple silicon Macs. This machine is $(uname -s)/$(uname -m)."
-    say "Use the Claude API instead: paste an API key in the app's Settings."
+    say "Use a subscription CLI instead: sign in to Claude Code or Codex from the app's Settings."
     exit 1
   fi
   say "Installing mlx-lm (a few minutes)..."

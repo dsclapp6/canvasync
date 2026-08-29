@@ -9,8 +9,9 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { parseHasContent, parseIsCurrent } from '../parse-syllabus.js';
+import { migrateTextbookSchema, parseHasContent, parseIsCurrent } from '../parse-syllabus.js';
 import { sectionSyllabusFullText } from '../mine-assignments.js';
+import { TEXTBOOK_SCHEMA_VERSION } from '../../bridge/textbooks.js';
 
 // --- parseHasContent -------------------------------------------------------
 
@@ -25,6 +26,7 @@ test('parseHasContent: empty scaffold is not content', () => {
 test('parseHasContent: any of course/grading/schedule counts', () => {
   assert.equal(parseHasContent({ course: { code: 'BUSI 380' } }), true);
   assert.equal(parseHasContent({ course: { title: 'Marketing' } }), true);
+  assert.equal(parseHasContent({ textbooks: [{ title: 'Marketing Management' }] }), true);
   assert.equal(parseHasContent({ grading: { components: [{ name: 'Final', weight_pct: 45 }] } }), true);
   assert.equal(parseHasContent({ schedule: [{ title: 'Week 1' }] }), true);
 });
@@ -90,12 +92,41 @@ test('says so when no syllabus exists anywhere', async () => {
 // and unlike syllabus.hash it exists for HTML-only classes too.
 
 test('parseIsCurrent: same hash and real content means no re-parse', () => {
-  const prev = { source_hash: 'abc123', course: { code: 'BUSI 380' } };
+  const prev = {
+    source_hash: 'abc123', course: { code: 'BUSI 380' }, textbooks: [],
+    textbook_schema_version: TEXTBOOK_SCHEMA_VERSION,
+  };
   assert.equal(parseIsCurrent(prev, 'abc123'), true);
 });
 
+test('parseIsCurrent: a pre-v2 textbook schema is not current until locally migrated', () => {
+  const prev = { source_hash: 'abc123', course: { code: 'BUSI 380' }, textbooks: [] };
+  assert.equal(parseIsCurrent(prev, 'abc123'), false);
+});
+
+test('an unchanged pre-v2 parse upgrades textbook detection without replacing other fields', () => {
+  const previous = {
+    source_hash: 'abc123',
+    course: { code: 'ENTR 222' },
+    schedule: [{ date: '2026-08-25', title: 'Introduction' }],
+    textbooks: [{ title: 'Deploy Empathy', required: true }],
+  };
+  const migrated = migrateTextbookSchema(previous, `Required Readings
+See Canvas for required ebooks and articles.
+Optional Readings
+Deploy Empathy by Michele Hansen`, 'abc123');
+
+  assert.equal(migrated.textbook_schema_version, TEXTBOOK_SCHEMA_VERSION);
+  assert.equal(migrated.textbooks[0].status, 'optional');
+  assert.deepEqual(migrated.schedule, previous.schedule, 'non-textbook extraction is preserved');
+  assert.equal(migrateTextbookSchema(previous, 'same text', 'different-hash'), null);
+});
+
 test('parseIsCurrent: a changed syllabus re-parses', () => {
-  const prev = { source_hash: 'abc123', course: { code: 'BUSI 380' } };
+  const prev = {
+    source_hash: 'abc123', course: { code: 'BUSI 380' }, textbooks: [],
+    textbook_schema_version: TEXTBOOK_SCHEMA_VERSION,
+  };
   assert.equal(parseIsCurrent(prev, 'def456'), false);
 });
 

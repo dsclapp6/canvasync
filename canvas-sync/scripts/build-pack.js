@@ -23,6 +23,7 @@ import { atomicWriteText } from './_util.js';
 import { canvasItemUrl } from '../canvas-links.js';
 import { filesWithOrigins } from '../bridge/file-origins.js';
 import { shortCourseCode, clip } from './cal-names.js';
+import { textbooksFromSyllabus } from '../bridge/textbooks.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -376,13 +377,19 @@ function submissionStatus(item, now) {
  * added. Every row links through canvasItemUrl so a quiz-backed assignment
  * points at /quizzes/ rather than the teacher-only /assignments/ page.
  */
-function collectWork(assignments, quizzes, groupsById) {
+function collectWork(assignments, quizzes, groupsById, mined = null) {
   const rows = [];
   const claimed = new Set();
+  const minedByCanvasId = new Map();
+  for (const item of Array.isArray(mined?.items) ? mined.items : []) {
+    const ids = [item?.canvas_assignment_id, ...(Array.isArray(item?.canvas_assignment_ids) ? item.canvas_assignment_ids : [])];
+    for (const id of ids) if (id != null) minedByCanvasId.set(String(id), item);
+  }
 
   for (const a of assignments) {
     if (a?.quiz_id != null) claimed.add(String(a.quiz_id));
     const group = groupsById.get(String(a?.assignment_group_id));
+    const minedItem = minedByCanvasId.get(String(a?.id ?? ''));
     rows.push({
       kind: a?.is_quiz_assignment || a?.quiz_id ? 'quiz' : 'assignment',
       id: String(a?.id ?? ''),
@@ -395,6 +402,8 @@ function collectWork(assignments, quizzes, groupsById) {
       description: htmlToText(a?.description),
       submission: a?.submission ?? null,
       points_possible: a?.points_possible ?? null,
+      related_materials: minedItem?.related_materials ?? [],
+      related_textbooks: minedItem?.related_textbooks ?? [],
     });
   }
 
@@ -434,6 +443,16 @@ function renderWorkRow(row, now, detail) {
   lines.push(`_${meta.join(' · ')}_`);
   if (row.url) lines.push(`Open: ${row.url}`);
   if (detail && row.description) lines.push(`\n${clip(row.description, 600)}`);
+  if (Array.isArray(row.related_materials) && row.related_materials.length) {
+    lines.push('\nMaterials:');
+    for (const material of row.related_materials) lines.push(`- ${material.file}${material.why ? ` — ${material.why}` : ''}`);
+  }
+  if (Array.isArray(row.related_textbooks) && row.related_textbooks.length) {
+    lines.push('\nTextbook references:');
+    for (const book of row.related_textbooks) {
+      lines.push(`- ${book.title}${book.isbn ? ` (ISBN ${book.isbn})` : ''}${book.why ? ` — ${book.why}` : ''}`);
+    }
+  }
   return lines.join('\n');
 }
 
@@ -489,7 +508,7 @@ function renderStartHere(ctx) {
 }
 
 function renderCourse(ctx, detail) {
-  const { code, title, term, syllabus, metadata, groups, grades, externalTools, warnings, sources } = ctx;
+  const { code, title, term, syllabus, textbooks, metadata, groups, grades, externalTools, warnings, sources } = ctx;
   const course = syllabus?.course ?? {};
   const instructor = course.instructor ?? {};
   const grading = syllabus?.grading ?? {};
@@ -519,6 +538,18 @@ function renderCourse(ctx, detail) {
   } else if (syllabus.extraction_confidence && syllabus.extraction_confidence !== 'high') {
     out.push(`> Syllabus extraction confidence is **${syllabus.extraction_confidence}**. Verify anything`,
       '> below against the syllabus file itself before relying on it.', '');
+  }
+
+  out.push('## Textbooks', '');
+  if (textbooks.length) {
+    for (const book of textbooks) {
+      const details = [book.author, book.edition, book.isbn ? `ISBN ${book.isbn}` : null]
+        .filter(Boolean).join(' · ');
+      out.push(`- **${cell(book.title)}**${details ? ` — ${cell(details)}` : ''}`);
+    }
+    out.push('');
+  } else {
+    out.push('_No textbook was extracted from the syllabus._', '');
   }
 
   out.push('## Grading', '');
@@ -668,6 +699,16 @@ function renderWork(ctx, detail) {
         if (detail && it.description) out.push(`\n${clip(it.description, 600)}`);
         const sources = Array.isArray(it.sources) ? it.sources : [];
         if (sources.length) out.push(`\nEvidence: ${sources.map(s => `${s.type} — ${s.ref}`).join('; ')}`);
+        if (Array.isArray(it.related_materials) && it.related_materials.length) {
+          out.push('\nMaterials:');
+          for (const material of it.related_materials) out.push(`- ${material.file}${material.why ? ` — ${material.why}` : ''}`);
+        }
+        if (Array.isArray(it.related_textbooks) && it.related_textbooks.length) {
+          out.push('\nTextbook references:');
+          for (const book of it.related_textbooks) {
+            out.push(`- ${book.title}${book.isbn ? ` (ISBN ${book.isbn})` : ''}${book.why ? ` — ${book.why}` : ''}`);
+          }
+        }
         out.push('');
       }
     }
@@ -881,7 +922,8 @@ export async function buildPack(classDir, opts = {}) {
   const term = typeof rawTerm === 'string' ? rawTerm : (rawTerm?.name || '');
 
   const groupsById = new Map(groups.map(g => [String(g?.id), g]));
-  const work = collectWork(arr(assignments), arr(quizzes), groupsById);
+  const work = collectWork(arr(assignments), arr(quizzes), groupsById, mined);
+  const textbooks = textbooksFromSyllabus(syllabus);
 
   const externalTools = arr(tabs)
     .filter(t => t && (t.type === 'external' || /^context_external_tool/.test(String(t.id ?? ''))))
@@ -1017,7 +1059,7 @@ export async function buildPack(classDir, opts = {}) {
   } catch { /* freshly created */ }
 
   // --- documents ------------------------------------------------------------
-  const ctx = { code, title, term, syllabus, metadata, groups, grades: arr(grades), externalTools, work, mined, materials, skipped, now, warnings, sources };
+  const ctx = { code, title, term, syllabus, textbooks, metadata, groups, grades: arr(grades), externalTools, work, mined, materials, skipped, now, warnings, sources };
 
   const rawGraphMd = graphMarkdown(graphMod, graph);
   const graphMd = rawGraphMd ? clipBlock(demoteHeadings(rawGraphMd), Math.floor(budget * GRAPH_SHARE)) : null;

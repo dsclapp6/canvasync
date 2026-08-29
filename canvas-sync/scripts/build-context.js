@@ -6,6 +6,7 @@ import { aiInvoke, readJsonSafe, atomicWriteJson, atomicWriteText } from './_uti
 import { canvasItemUrl, canvasSubmitUrl } from '../canvas-links.js';
 import { tasksForClass } from '../canvas-tasks.js';
 import { readingsWithScheduleFloor } from '../reading-index.js';
+import { textbooksFromSyllabus } from '../bridge/textbooks.js';
 
 // OPEN: CLAUDE_SKIP=1 bypasses the external claude CLI call for the "Open
 // questions / ambiguities" section. In skip mode the script uses a deterministic
@@ -231,6 +232,13 @@ function renderMinedItem(it, canvasById, { condensed = false } = {}) {
       lines.push(`- ${m.file}${m.why ? ` — ${m.why}` : ''}`);
     }
   }
+  if (Array.isArray(it.related_textbooks) && it.related_textbooks.length > 0) {
+    lines.push('\n**Assigned textbook references:**');
+    for (const book of it.related_textbooks) {
+      const isbn = book.isbn ? ` (ISBN ${book.isbn})` : '';
+      lines.push(`- ${book.title}${isbn}${book.why ? ` — ${book.why}` : ''}`);
+    }
+  }
   return lines.join('\n');
 }
 
@@ -436,6 +444,7 @@ async function main() {
   });
 
   const policies = syllabusParsed && syllabusParsed.policies ? syllabusParsed.policies : {};
+  const textbooks = textbooksFromSyllabus(syllabusParsed);
 
   const ambiguities = await getAmbiguities(syllabusParsed, assignments, absClassDir);
 
@@ -457,6 +466,18 @@ async function main() {
   }
 
   md += buildGradingSection(assignmentGroups, grading, metadata);
+
+  md += `## Textbooks\n\n`;
+  if (textbooks.length > 0) {
+    for (const book of textbooks) {
+      const details = [book.author, book.edition, book.isbn ? `ISBN ${book.isbn}` : null]
+        .filter(Boolean).join(' · ');
+      md += `- **${book.title}**${details ? ` — ${details}` : ''}\n`;
+    }
+  } else {
+    md += '_No textbook was extracted from the syllabus._\n';
+  }
+  md += '\n';
 
   md += buildMinedSection(mined, assignments, mergedTaskItems);
 
@@ -604,6 +625,7 @@ async function main() {
       components: gradingComponents,
       late_policy: grading.late_policy || null
     },
+    textbooks,
     assignments: {
       upcoming,
       recent_past: recentPast,

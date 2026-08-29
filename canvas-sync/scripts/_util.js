@@ -39,37 +39,127 @@ export async function atomicWriteText(filePath, str) {
   await rename(tmp, filePath);
 }
 
-// Default model for all AI jobs in this repo. Claude Opus 5 unless overridden
-// per-call or via CSYNC_CLAUDE_MODEL.
-export const DEFAULT_MODEL = process.env.CSYNC_CLAUDE_MODEL || 'claude-opus-5';
+// A blank model means "use the signed-in CLI's default", which stays valid as
+// subscription model aliases evolve. Either provider can be pinned explicitly
+// in Settings when reproducibility matters.
+export const DEFAULT_MODEL = process.env.CSYNC_CLAUDE_MODEL || null;
 
-// --- Anthropic API key -----------------------------------------------------
-// The `claude` CLI authenticates with an OAuth session by default, and that
-// session expires — when it does, every pipeline stage falls through to the
-// local model and the machine slows to a crawl for jobs that used to take
-// seconds. A key stored in config.json (or ANTHROPIC_API_KEY in the
-// environment) is handed to the CLI so the user can restore the fast path
-// without a terminal login.
-//
-// The value is never returned by any read path here: anthropicKeyStatus()
-// reports presence and a masked hint, and nothing else.
-export async function resolveAnthropicKey() {
-  const fromEnv = process.env.ANTHROPIC_API_KEY;
-  if (typeof fromEnv === 'string' && fromEnv.trim()) return { key: fromEnv.trim(), source: 'env' };
-  try {
-    const cfg = JSON.parse(await readFile(join(dataRoot(), 'config.json'), 'utf8'));
-    const k = cfg?.anthropicApiKey;
-    if (typeof k === 'string' && k.trim()) return { key: k.trim(), source: 'config' };
-  } catch { /* no config, or not readable — treat as unset */ }
-  return { key: null, source: null };
+const CLI_PROVIDERS = new Set(['claude', 'codex']);
+
+function providerBin(provider) {
+  const name = provider === 'codex' ? 'codex' : 'claude';
+  const override = process.env[provider === 'codex' ? 'CSYNC_CODEX_BIN' : 'CSYNC_CLAUDE_BIN'];
+  if (override) return override;
+  // A GUI-launched macOS app commonly has /usr/bin:/bin as PATH even though
+  // both CLIs are installed in ~/.local/bin. Resolve the standard installers'
+  // locations before relying on PATH.
+  const candidates = [
+    join(homedir(), '.local', 'bin', name),
+    `/opt/homebrew/bin/${name}`,
+    `/usr/local/bin/${name}`,
+  ];
+  return candidates.find(existsSync) || name;
 }
 
-export async function anthropicKeyStatus() {
-  const { key, source } = await resolveAnthropicKey();
-  if (!key) return { present: false, source: null, hint: null };
-  // Enough to recognise which key it is, not enough to use it.
-  const hint = key.length > 8 ? `${key.slice(0, 7)}…${key.slice(-4)}` : '…';
-  return { present: true, source, hint };
+// CANVASync deliberately uses the CLIs' subscription OAuth sessions, never an
+// API key inherited from the bridge's shell. Claude and Codex both give API
+// credentials precedence over a saved account login, so merely "not passing a
+// key" is insufficient: remove those variables from the child environment.
+function subscriptionCliEnv() {
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  delete env.OPENAI_API_KEY;
+  return env;
+}
+
+async function _statusSpawn(cmd, args, timeoutMs = 5000) {
+  return new Promise(resolve => {
+    let child;
+    try {
+      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env: subscriptionCliEnv() });
+    } catch (err) {
+      resolve({ code: null, error: err });
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    let finished = false;
+    const done = value => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      done({ code: null, timeout: true, stdout, stderr });
+    }, timeoutMs);
+    child.stdout.on('data', d => { stdout += d; });
+    child.stderr.on('data', d => { stderr += d; });
+    child.on('error', error => done({ code: null, error, stdout, stderr }));
+    child.on('close', code => done({ code, stdout, stderr }));
+  });
+}
+
+/**
+ * Read a CLI's login state without reading credential files or making a model
+ * request. Both official commands exit 0 when authenticated.
+ */
+export async function cliProviderStatus(provider, { timeoutMs = 5000 } = {}) {
+  if (!CLI_PROVIDERS.has(provider)) throw new Error(`unknown AI provider: ${provider}`);
+  const args = provider === 'codex' ? ['login', 'status'] : ['auth', 'status'];
+  const result = await _statusSpawn(providerBin(provider), args, timeoutMs);
+  const installed = !(result.error && result.error.code === 'ENOENT');
+  let authenticated = installed && result.code === 0;
+  if (provider === 'claude' && authenticated) {
+    // `claude auth status` currently exits 0 even when its JSON says the user
+    // is logged out. Fail closed if the documented JSON cannot be read.
+    try { authenticated = JSON.parse(result.stdout).loggedIn === true; }
+    catch { authenticated = false; }
+  }
+  return {
+    provider,
+    installed,
+    authenticated,
+    timedOut: Boolean(result.timeout),
+  };
+}
+
+export async function cliProviderStatuses() {
+  const [claude, codex] = await Promise.all([
+    cliProviderStatus('claude').catch(() => ({ provider: 'claude', installed: false, authenticated: false, timedOut: false })),
+    cliProviderStatus('codex').catch(() => ({ provider: 'codex', installed: false, authenticated: false, timedOut: false })),
+  ]);
+  return { claude, codex };
+}
+
+async function settingValue(key) {
+  const direct = process.env[key];
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  try {
+    const raw = await readFile(join(dataRoot(), 'settings.json'), 'utf8');
+    const value = JSON.parse(raw)?.env?.[key];
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  } catch { return null; }
+}
+
+export async function resolveAIBackend() {
+  return String(await settingValue('CSYNC_AI_BACKEND') || 'auto').toLowerCase();
+}
+
+/** Which backend would actually answer a request right now. */
+export async function resolveAIProvider() {
+  const backend = await resolveAIBackend();
+  if (backend === 'local') return { provider: 'local', backend, statuses: null };
+  if (backend === 'claude' || backend === 'codex') {
+    const status = await cliProviderStatus(backend);
+    return { provider: backend, backend, statuses: { [backend]: status } };
+  }
+  const statuses = await cliProviderStatuses();
+  if (statuses.claude.authenticated) return { provider: 'claude', backend: 'auto', statuses };
+  if (statuses.codex.authenticated) return { provider: 'codex', backend: 'auto', statuses };
+  return { provider: 'local', backend: 'auto', statuses };
 }
 
 // claudeInvoke — run one headless `claude -p` job. The prompt goes in via
@@ -77,29 +167,51 @@ export async function anthropicKeyStatus() {
 //
 // Options:
 //   timeoutMs     — hard kill after this long (default 5 min)
-//   model         — model id/alias for --model (default: DEFAULT_MODEL)
+//   model         — optional model id/alias; otherwise use Settings/CLI default
 //   allowedTools  — array of permission specifiers for --allowedTools. Headless
 //                   -p runs DENY tools not allowlisted, so MCP jobs (calendar,
 //                   gmail) must pass the mcp__<server> names they need.
 //   extraArgs     — raw extra CLI args (escape hatch, e.g. --mcp-config)
 export async function claudeInvoke(prompt, {
   timeoutMs = 300000,
-  model = DEFAULT_MODEL,
+  model = null,
   allowedTools = null,
   extraArgs = [],
 } = {}) {
   const args = ['-p', '--output-format', 'text'];
-  if (model) args.push('--model', model);
+  const configuredModel = model || await settingValue('CSYNC_CLAUDE_MODEL');
+  if (configuredModel) args.push('--model', configuredModel);
   if (Array.isArray(allowedTools) && allowedTools.length > 0) {
     args.push('--allowedTools', allowedTools.join(','));
+  } else {
+    // Parsing/mining are pure text transforms. Disabling tools prevents a
+    // user's Claude project settings from turning one of these calls into an
+    // unrelated filesystem or network agent run.
+    args.push('--tools', '');
   }
+  args.push('--no-session-persistence');
   args.push(...extraArgs);
 
-  // A stored key beats the CLI's own OAuth session, which is what expires.
-  const { key } = await resolveAnthropicKey();
-  const env = key ? { ...process.env, ANTHROPIC_API_KEY: key } : null;
+  const result = await _trySpawn(
+    providerBin('claude'), args, prompt, timeoutMs, 'claude', subscriptionCliEnv(),
+  );
+  return result.trim();
+}
 
-  const result = await _trySpawn('claude', args, prompt, timeoutMs, 'claude', env);
+// Non-interactive Codex is constrained to read-only and receives the whole
+// academic corpus on stdin. It may reason over the prompt, but it cannot edit
+// the repository or persist a chat while acting as the pipeline's model.
+export async function codexInvoke(prompt, { timeoutMs = 300000, model = null } = {}) {
+  const configuredModel = model || await settingValue('CSYNC_CODEX_MODEL');
+  const args = [
+    'exec', '--sandbox', 'read-only', '--ephemeral', '--color', 'never',
+    '--skip-git-repo-check',
+  ];
+  if (configuredModel) args.push('--model', configuredModel);
+  args.push('-');
+  const result = await _trySpawn(
+    providerBin('codex'), args, prompt, timeoutMs, 'codex', subscriptionCliEnv(),
+  );
   return result.trim();
 }
 
@@ -317,22 +429,36 @@ export async function localInvoke(prompt, { timeoutMs = 1200000, maxTokens = 819
   }
 }
 
-// aiInvoke — backend-agnostic text generation for parse/mine/context jobs.
-// CSYNC_AI_BACKEND: 'claude' (never fall back), 'local' (local model only),
-// or 'auto' (default: claude first, local model if claude fails — e.g. OAuth
-// expired). Jobs that need tools (calendar MCP) must call claudeInvoke directly.
-export async function aiInvoke(prompt, { timeoutMs = 300000, model = DEFAULT_MODEL, maxTokens = 8192 } = {}) {
-  const backend = (process.env.CSYNC_AI_BACKEND || 'auto').toLowerCase();
+// aiInvoke — backend-agnostic text generation for parse/mine/context/chat.
+// CSYNC_AI_BACKEND: 'claude', 'codex', 'local', or 'auto'. Auto uses a signed-
+// in subscription CLI first (Claude, then Codex) and loads the local model only
+// when neither CLI is authenticated or both fail. Jobs that need Claude tools
+// (calendar MCP) must call claudeInvoke directly.
+export async function aiInvoke(prompt, {
+  timeoutMs = 300000,
+  model = null,
+  codexModel = null,
+  maxTokens = 8192,
+} = {}) {
+  const backend = await resolveAIBackend();
   if (backend === 'local') {
     return localInvoke(prompt, { timeoutMs: Math.max(timeoutMs, 1200000), maxTokens });
   }
-  try {
-    return await claudeInvoke(prompt, { timeoutMs, model });
-  } catch (err) {
-    if (backend === 'claude') throw err;
-    process.stderr.write(`claude backend failed (${String(err.message).slice(0, 200)}); falling back to local model ${LOCAL_MODEL_ID}\n`);
-    return localInvoke(prompt, { timeoutMs: Math.max(timeoutMs, 1200000), maxTokens });
+  if (backend === 'claude') return claudeInvoke(prompt, { timeoutMs, model });
+  if (backend === 'codex') return codexInvoke(prompt, { timeoutMs, model: codexModel });
+
+  const statuses = await cliProviderStatuses();
+  const attempts = [];
+  if (statuses.claude.authenticated) attempts.push(['claude', () => claudeInvoke(prompt, { timeoutMs, model })]);
+  if (statuses.codex.authenticated) attempts.push(['codex', () => codexInvoke(prompt, { timeoutMs, model: codexModel })]);
+  for (const [name, invoke] of attempts) {
+    try { return await invoke(); }
+    catch (err) {
+      process.stderr.write(`${name} backend failed (${String(err.message).slice(0, 200)}); trying the next signed-in backend\n`);
+    }
   }
+  process.stderr.write(`No signed-in terminal AI completed the request; falling back to local model ${LOCAL_MODEL_ID}\n`);
+  return localInvoke(prompt, { timeoutMs: Math.max(timeoutMs, 1200000), maxTokens });
 }
 
 async function _trySpawn(cmd, args, stdinData, timeoutMs, label = 'claude', env = null) {
@@ -402,4 +528,3 @@ async function _trySpawn(cmd, args, stdinData, timeoutMs, label = 'claude', env 
     proc.stdin.end();
   });
 }
-

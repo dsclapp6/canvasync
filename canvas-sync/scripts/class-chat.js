@@ -16,9 +16,9 @@
 // model is given no room to improve on it.
 //
 // Nothing here calls a model on its own. answerQuestion takes an injectable
-// `invoke`; the default is localInvoke from _util.js (lock-guarded, which is
-// what production must go through). Tests inject a fake and assert on the
-// prompt it was handed.
+// `invoke`; production defaults to aiInvoke, which prefers an authenticated
+// Claude/Codex terminal session and uses the lock-guarded local model only as
+// fallback. Tests inject a fake and assert on the prompt it was handed.
 //
 // Node builtins only. Reads a class dir; never writes to one.
 
@@ -34,7 +34,7 @@ import {
   readGraph, buildGraph, selectForQuery, neighbours, stripHtml, tokenise,
 } from './correlation-graph.js';
 import { searchClassText, isPolicyQuestion, findSyllabusDoc } from './text-search.js';
-import { localInvoke, readJsonSafe, classHome } from './_util.js';
+import { aiInvoke, readJsonSafe, classHome } from './_util.js';
 
 // --- Constants ------------------------------------------------------------
 
@@ -1421,9 +1421,8 @@ function factsAreUseful(facts) {
 /**
  * Ask one class one question.
  *
- * `invoke` is injectable and defaults to localInvoke from _util.js — the
- * lock-guarded path production must use. Tests pass a fake; nothing here calls
- * a model when there is nothing to answer from.
+ * `invoke` is injectable and defaults to aiInvoke from _util.js. Tests pass a
+ * fake; nothing here calls a model when there is nothing to answer from.
  *
  * Resolves to { answer, citations, sources, facts, warnings, used_model, dropped }.
  */
@@ -1431,7 +1430,7 @@ export async function answerQuestion({
   classDir,
   question,
   history = [],
-  invoke = localInvoke,
+  invoke = aiInvoke,
   now = new Date(),
   budgetChars = DEFAULT_BUDGET_CHARS,
   sourceOpts = {},
@@ -1514,7 +1513,7 @@ const USAGE = `Usage:
 Options:
   --facts-only     print the FACTS block and stop
   --fake           answer with a built-in stub instead of a model
-  --run-model      answer with the real local model (localInvoke)
+  --run-model      answer with the configured AI backend (terminal CLI first)
   --json           machine-readable output
   --budget <n>     source character budget (default ${DEFAULT_BUDGET_CHARS})
 `;
@@ -1582,12 +1581,12 @@ async function main(argv) {
         process.stdout.write(`  ${s.tag} ${s.kind} — ${s.label} (${s.chars} chars${s.truncated ? `, ${s.omitted_passages} passages omitted` : ''})\n`);
       }
       process.stdout.write(`\nPrompt would be ${prompt.length} characters. `);
-      process.stdout.write('Re-run with --fake (stub) or --run-model (local model) to get an answer.\n');
+      process.stdout.write('Re-run with --fake (stub) or --run-model (configured AI backend) to get an answer.\n');
     }
     return 0;
   }
 
-  const invoke = flag('--run-model') ? localInvoke : fakeInvoke;
+  const invoke = flag('--run-model') ? aiInvoke : fakeInvoke;
   const res = await answerQuestion({ classDir, question, invoke, budgetChars });
   if (flag('--json')) {
     process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);

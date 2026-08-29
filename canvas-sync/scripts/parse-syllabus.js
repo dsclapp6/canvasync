@@ -5,6 +5,10 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { load as cheerioLoad } from 'cheerio';
 import { aiInvoke, sha256File, atomicWriteJson, readJsonSafe } from './_util.js';
+import {
+  reconcileSyllabusTextbooks,
+  TEXTBOOK_SCHEMA_VERSION,
+} from '../bridge/textbooks.js';
 
 // OPEN: CLAUDE_SKIP=1 bypasses the external claude CLI call and returns a
 // deterministic stub for testing. Set this env var in test environments.
@@ -122,6 +126,8 @@ function buildStubResult(sourceFile, sourceHash, notes) {
       instructor: { name: null, email: null, office_hours: null },
       meeting_schedule: null
     },
+    textbook_schema_version: TEXTBOOK_SCHEMA_VERSION,
+    textbooks: [],
     grading: {
       components: [],
       letter_scale: null,
@@ -211,7 +217,7 @@ function salvageFromResponse(raw) {
 
 async function parseWithClaude(text, promptTemplate, sourceFile, sourceHash, lowConfidence) {
   const prompt = promptTemplate.replace('<SYLLABUS_TEXT>', () => text);
-  // Model defaults to claude-opus-5 (see _util.js DEFAULT_MODEL). maxTokens
+  // The terminal provider uses its CLI default unless Settings pins a model. maxTokens
   // only affects the local backend, where the default 8192 is not enough for
   // a long syllabus schedule — the response truncates mid-JSON.
   const raw = await aiInvoke(prompt, { timeoutMs: 300000, maxTokens: 16384 });
@@ -232,24 +238,39 @@ async function repairJson(brokenRaw) {
  * empty scaffold must be re-parsed, not preserved).
  */
 export function parseIsCurrent(previous, sourceHash) {
-  return Boolean(sourceHash) && previous?.source_hash === sourceHash && parseHasContent(previous);
+  // Textbook extraction v2 distinguishes optional reading lists and records
+  // primary/supplemental roles. A matching source hash from the older, boolean-
+  // only schema is not current because it would preserve the bad detection.
+  return Boolean(sourceHash) && previous?.source_hash === sourceHash
+    && Number(previous?.textbook_schema_version) >= TEXTBOOK_SCHEMA_VERSION
+    && Array.isArray(previous?.textbooks) && parseHasContent(previous);
+}
+
+export function migrateTextbookSchema(previous, sourceText, sourceHash) {
+  if (!sourceHash || previous?.source_hash !== sourceHash || !parseHasContent(previous)
+    || Number(previous?.textbook_schema_version) >= TEXTBOOK_SCHEMA_VERSION) return null;
+  return {
+    ...previous,
+    textbooks: reconcileSyllabusTextbooks(previous.textbooks, sourceText),
+    textbook_schema_version: TEXTBOOK_SCHEMA_VERSION,
+  };
 }
 
 // Does a parse actually contain anything a downstream stage could use?
 export function parseHasContent(p) {
   return Boolean(p?.course?.code || p?.course?.title)
+    || (p?.textbooks?.length ?? 0) > 0
     || (p?.grading?.components?.length ?? 0) > 0
     || (p?.schedule?.length ?? 0) > 0;
 }
 
 function validateResult(obj) {
-  const required = ['extracted_at', 'source_file', 'source_hash', 'course', 'grading', 'schedule', 'policies', 'extraction_confidence', 'extraction_notes'];
+  const required = ['extracted_at', 'source_file', 'source_hash', 'course', 'textbooks', 'grading', 'schedule', 'policies', 'extraction_confidence', 'extraction_notes'];
   for (const key of required) {
-    if (!(key in obj)) {
-      obj[key] = key === 'schedule' || key === 'grading' ? (key === 'schedule' ? [] : {}) : null;
-    }
+    if (!(key in obj)) obj[key] = key === 'schedule' || key === 'textbooks' ? [] : key === 'grading' ? {} : null;
   }
   if (!obj.course) obj.course = {};
+  if (!Array.isArray(obj.textbooks)) obj.textbooks = [];
   if (!obj.grading) obj.grading = {};
   if (!Array.isArray(obj.schedule)) obj.schedule = [];
   if (!obj.policies) obj.policies = {};
@@ -344,6 +365,16 @@ async function main() {
   // asking. `--force` re-parses regardless.
   if (!process.argv.includes('--force')) {
     const previous = await readJsonSafe(OUT_PATH);
+    const migrated = migrateTextbookSchema(previous, extracted.text, sourceHash);
+    if (migrated) {
+      // This schema change needs the source text, not another expensive model
+      // call. Reclassify the old candidates locally (and add only the narrow,
+      // deterministic formats) while preserving the good schedule/grading data.
+      await atomicWriteJson(OUT_PATH, migrated);
+      await rm(join(absClassDir, 'syllabus_parsed.json.ERROR'), { force: true });
+      process.stderr.write(`Syllabus unchanged; upgraded textbook detection locally (${sourceFile}).\n`);
+      process.exit(0);
+    }
     if (parseIsCurrent(previous, sourceHash)) {
       await atomicWriteJson(OUT_PATH, previous);
       process.stderr.write(`Syllabus unchanged since the last parse (${sourceFile}) — kept it. Use --force to re-parse.\n`);
@@ -401,6 +432,13 @@ async function main() {
   }
 
   parsed = validateResult(parsed);
+  // Measure the model result before the deterministic textbook floor is
+  // merged. Otherwise a reply of "{}" plus one easily detected Required
+  // textbook looks non-empty and can overwrite a previous parse containing
+  // the entire schedule and grading scheme.
+  const modelHadContent = parseHasContent(parsed);
+  parsed.textbooks = reconcileSyllabusTextbooks(parsed.textbooks, extracted.text);
+  parsed.textbook_schema_version = TEXTBOOK_SCHEMA_VERSION;
   parsed.extracted_at = new Date().toISOString();
   parsed.source_file = sourceFile;
   parsed.source_hash = sourceHash;
@@ -411,7 +449,7 @@ async function main() {
   // how BUSI 380's schedule vanished after a local-model run). An empty
   // result for a substantial syllabus is a failed extraction, not data.
   const REJECT_NOTE = 'A newer re-parse attempt returned an empty result and was discarded; this data is from the previous successful parse.';
-  if (!parseHasContent(parsed) && extracted.text.length >= 2000) {
+  if (!modelHadContent && extracted.text.length >= 2000) {
     const emptyOutPath = join(absClassDir, 'syllabus_parsed.json');
     await writeFile(emptyOutPath + '.ERROR', rawResponse ?? '(empty response)', 'utf8');
     const previous = await readJsonSafe(emptyOutPath);
@@ -422,6 +460,12 @@ async function main() {
       if (!(previous.extraction_notes || '').includes(REJECT_NOTE)) {
         previous.extraction_notes = ((previous.extraction_notes || '') + ' ' + REJECT_NOTE).trim();
       }
+      // The failed model call cannot improve the schedule, but the local
+      // textbook reconciler can safely upgrade the retained parse. Marking the
+      // schema prevents an empty local model from triggering this same costly
+      // migration on every sync.
+      previous.textbooks = reconcileSyllabusTextbooks(previous.textbooks, extracted.text);
+      previous.textbook_schema_version = TEXTBOOK_SCHEMA_VERSION;
       await atomicWriteJson(emptyOutPath, previous);
       process.stderr.write('Empty parse rejected — kept previous syllabus_parsed.json (raw response in .ERROR)\n');
       process.exit(0);
