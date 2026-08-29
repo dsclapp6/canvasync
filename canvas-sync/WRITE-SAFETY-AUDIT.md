@@ -61,6 +61,19 @@ CAMPAIGN COMPLETE: 8 of 9 sites resolved across v1.8.5–v1.8.9.
   write+rename — a collision ENOENT rejects into Express unhandled, client
   gets no response, an orphaned settings.json.tmp.<pid> remains.
 
+## Testing convention (captured from this campaign)
+
+**An equivalence or normalization test needs BOTH halves: these inputs must
+converge, AND those must not. Only the second half has teeth.** The first half
+alone is satisfied by `return 'constant'` — an assertion that holds whether or
+not the mechanism works. This caught two sessions independently on the same
+day: a lock-key test that a symlink and its target share a key (a constant
+passes, while queueing every class behind every other), and the slice-A site-8
+tests of the same shape. Sameness + discrimination + shape, always. Corollary
+from the same campaign: mutation testing's value is that it tells you which of
+your tests are load-bearing — including the ones it cannot close, which get
+documented instead of faked.
+
 ## Follow-up items (not in the sites-3–8 conversion)
 
 - **files_index.json cross-process race**: SUPERSEDED — the accepted design
