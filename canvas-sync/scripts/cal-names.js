@@ -97,13 +97,27 @@ const NOISE = [
 
 const MAX_TITLE = 46;
 
-/** Trim to a word boundary, with an ellipsis only when something was cut. */
+/**
+ * Trim to a word boundary, with an ellipsis only when something was cut.
+ *
+ * Counted in CODE POINTS, not UTF-16 units. `slice` on a raw string cuts an
+ * astral character in half, and the survivor is a lone surrogate: it renders
+ * as U+FFFD, and because clip's output reaches a .ics SUMMARY through
+ * dueTitle, it writes a replacement character into a file other people's
+ * calendars subscribe to. An emoji is one character to the reader and has to
+ * be one unit here. For a title with no astral characters this is the same
+ * arithmetic as before, index for index.
+ */
 export function clip(s, max = MAX_TITLE) {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
-  if (t.length <= max) return t;
-  const cut = t.slice(0, max - 1);
+  const chars = [...t];
+  if (chars.length <= max) return t;
+  const cut = chars.slice(0, max - 1);
   const sp = cut.lastIndexOf(' ');
-  return `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s,;:\-–—]+$/, '')}…`;
+  const kept = (sp > max * 0.6 ? cut.slice(0, sp) : cut).join('');
+  // A zero-width joiner or variation selector left on the end has lost the
+  // character it was joining to: punctuation with nothing left to punctuate.
+  return `${kept.replace(/[\s,;:\-–—\u200d\ufe0f]+$/, '')}…`;
 }
 
 /**

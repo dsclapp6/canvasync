@@ -79,6 +79,52 @@ test('clip cuts on a word boundary and marks the cut', () => {
   assert.equal(clip('123456789', 9), '123456789');
 });
 
+test('clip never leaves half an emoji at the cut', () => {
+  // slice() on a raw string counts UTF-16 units, so a cut that lands inside a
+  // surrogate pair keeps the high half alone. That is not merely ugly: the
+  // string stops being valid UTF-16, renders as U+FFFD, and reaches a .ics
+  // SUMMARY through dueTitle — a replacement character written into a file
+  // other people's calendars subscribe to.
+  const out = clip(`${'A'.repeat(44)}\u{1F600}Extra words here`);
+  assert.ok(out.endsWith('…'), `expected a cut: ${JSON.stringify(out)}`);
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out),
+    `lone high surrogate in ${JSON.stringify(out)}`);
+  assert.ok(!/(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(out),
+    `lone low surrogate in ${JSON.stringify(out)}`);
+  // The honest check: a broken string does not survive a UTF-8 round trip.
+  assert.equal(new TextDecoder().decode(new TextEncoder().encode(out)), out);
+});
+
+test('clip counts an astral character as one character', () => {
+  // Ten emoji are ten characters to the reader, not twenty units, so a title
+  // at exactly the limit must not be cut at all.
+  const ten = '\u{1F600}'.repeat(10);
+  assert.equal(clip(ten, 10), ten);
+});
+
+test('clip leaves no dangling joiner at the cut', () => {
+  // Cutting between a joiner and the character it joined to leaves a ZWJ with
+  // nothing to join. Valid UTF-8, but it is punctuation with no argument.
+  const family = '\u{1F468}\u200d\u{1F469}\u200d\u{1F467}';
+  const out = clip(`${'B'.repeat(43)}${family}`, 46);
+  assert.ok(!/\u200d…$/.test(out), `dangling ZWJ in ${JSON.stringify(out)}`);
+});
+
+test('the "due" strip keeps what distinguishes the item', () => {
+  // "Homework 1 due" is the shape the live syllabi carry (14 such titles in
+  // the current data): the deadline word is not what tells one homework from
+  // another, so dropping it is the whole point of the rule.
+  assert.equal(cleanItemTitle('Homework 1 due', 'BUSI 305'), 'HW 1');
+  assert.equal(cleanItemTitle('Homework Appendix A due', 'BUSI 305'), 'HW Appendix A');
+  assert.equal(cleanItemTitle('Reminder: Assignment 2 due at 11 am', 'BUSI 305'),
+    'Reminder: Assign 2 at 11 am');
+  // KNOWN LIMITATION, pinned here rather than asserted as correct: /\bdue\b/
+  // has no sense of position, so a title where "due" belongs to the SUBJECT
+  // loses it — "Due Diligence Report" becomes "Diligence Report". No such
+  // title exists in the current data; this guard exists so that a future fix
+  // to that rule cannot regress the three cases above, which do exist.
+});
+
 test('dueTitle reads "CODE · thing"', () => {
   assert.equal(
     dueTitle({ code: 'BUSI 395 001/002/003/004', title: 'Homework Assignment 3', category: 'homework' }),
