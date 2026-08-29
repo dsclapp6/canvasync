@@ -60,9 +60,61 @@ export async function readUserState(classDir) {
 
 async function writeUserState(classDir, state) {
   const file = statePath(classDir);
-  const tmp = `${file}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
-  await fs.rename(tmp, file);
+  // A pid is NOT unique between two concurrent requests — the bridge is one
+  // process serving every route, so two mutations in flight together used the
+  // same tmp path: both wrote it, the first rename moved it away, and the
+  // second got ENOENT and answered 500 for a change that had in fact landed.
+  // Random per call, and cleaned up if the rename never happens. Identical to
+  // the fix custom-items.js already carries for the same defect.
+  const tmp = `${file}.tmp.${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
+// Every mutation is read-modify-write over the WHOLE class file — user_state
+// holds every task under `items` — so two of them in flight together lose one
+// of the two changes even when they touch DIFFERENT tasks: the second write is
+// computed from a snapshot taken before the first landed.
+//
+// That is reachable from ordinary use, not from a stress case. The calendar
+// queues its POSTs per TASK (app.js taskWriteKey is `task|folder|id`), not per
+// file, so ticking two checkboxes in one class sends two concurrent PATCHes,
+// and the route has no lock of its own. The user ticked two boxes, reloaded,
+// and found one of them un-ticked — indistinguishable from the "tick doesn't
+// stick" failure CALENDAR-SPEC 2.4 exists to prevent, and silent.
+//
+// The unique tmp above is not sufficient on its own, and it is worth being
+// precise about why: the ENOENT it prevents was never visible to the user
+// anyway. The tick site swallows the rejection (`app.js`: `await
+// patchTaskState(id, {done}).catch(() => {})`) and then repaints the checkbox
+// from local state, so a failed write and a successful one look identical
+// until the next reload. Fixing only the tmp path would therefore not "make
+// the bug silent" — it is already silent — it would merely delete the last
+// trace of it from the bridge log while still losing the tick. The lost update
+// is the bug; this queue is what fixes it.
+//
+// Mutations serialize per file; reads do not. Keyed by CLASS DIR, not by task:
+// keying by task would reproduce exactly the mistake the client already makes.
+// Cross-process safety is not claimed and is not needed — only the bridge
+// writes this file, and the pipeline never does.
+const MUTATION_QUEUES = new Map();
+function withStateLock(classDir, fn) {
+  const key = statePath(classDir);
+  // The stored tail never rejects, so one failed mutation cannot poison the
+  // queue behind it; the caller still sees its own rejection through `run`.
+  const tail = MUTATION_QUEUES.get(key) ?? Promise.resolve();
+  const run = tail.then(fn);
+  const settled = run.then(() => {}, () => {});
+  MUTATION_QUEUES.set(key, settled);
+  settled.then(() => {
+    if (MUTATION_QUEUES.get(key) === settled) MUTATION_QUEUES.delete(key);
+  });
+  return run;
 }
 
 function str(value, max, field) {
@@ -124,13 +176,21 @@ function normaliseCheckpoints(list) {
  * `{done: true}` without having to round-trip the note it is not editing.
  */
 export async function patchTask(classDir, taskId, patch) {
+  // Validation before the queue: a malformed patch should fail immediately and
+  // must not take a turn behind a slow write it was never going to join.
   if (typeof taskId !== 'string' || !taskId || taskId.length > 200) {
     throw new UserStateError('invalid task id');
   }
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new UserStateError('patch must be an object');
   }
+  return withStateLock(classDir, () => patchTaskLocked(classDir, taskId, patch));
+}
 
+// The read-modify-write itself. Only ever called with the file's queue held —
+// its `readUserState` must happen after the previous mutation's write, which
+// is the whole point of the lock.
+async function patchTaskLocked(classDir, taskId, patch) {
   const state = await readUserState(classDir);
   const current = state.items[taskId] ?? {};
   const next = { ...current };
