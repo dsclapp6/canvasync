@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  nextSelection, isSelected, pruneSelection,
+  nextSelection, isSelected, pruneSelection, isAiItemVisible,
 } from '../public/cal-plan.js';
 
 const KINDS = ['meeting', 'office_hours', 'homework', 'reading', 'exam', 'checkpoint'];
@@ -161,4 +161,16 @@ test('clicking the last VISIBLE chip returns to everything even with a stale slu
 
   const actual = nextSelection(visible, CLASS_SLUGS, 'busi-305');
   assert.deepEqual(actual, [], 'resolving against what is on screen means everything');
+});
+
+// --- AI-added display toggle -----------------------------------------------
+
+test('AI-added items show by default alongside every authoritative item', () => {
+  assert.equal(isAiItemVisible(true, true), true);
+  assert.equal(isAiItemVisible(true, false), true);
+});
+
+test('turning off AI-added hides only AI items, never Canvas or user items', () => {
+  assert.equal(isAiItemVisible(false, true), false);
+  assert.equal(isAiItemVisible(false, false), true);
 });

@@ -15,11 +15,12 @@ import {
   timeWindow, hourMarks, layoutDay,
   partitionDenseSlots,
 } from './cal-grid.js';
-import { nextSelection, isSelected, pruneSelection } from './cal-plan.js';
+import { nextSelection, isSelected, pruneSelection, isAiItemVisible } from './cal-plan.js';
 import {
-  fileName, groupFilesBySource, originDetail, originHeading, primaryOrigin,
+  fileName, filePreviewPlan, groupFilesBySource, originDetail, originHeading, primaryOrigin,
 } from './file-plan.js';
 import { renderMarkdown, renderReadableText } from './content-format.js';
+import { taskTitleHtml } from './task-links.js';
 
 const $ = (id) => document.getElementById(id);
 const IS_APP = !!window.canvasync;
@@ -358,6 +359,7 @@ function wireNav() {
   });
 
   wireTasks();
+  wireTextbooks();
   wireHome();
   wireMeetingTimes();
   wireAssignment();
@@ -411,6 +413,13 @@ function wireNav() {
 
   // The kind filters. Delegated, because renderCalKinds() rebuilds them.
   $('cal-kind-filters').addEventListener('click', (ev) => {
+    const ai = ev.target.closest('[data-ai-added-filter]');
+    if (ai) {
+      CAL_SHOW_AI_ADDED = !CAL_SHOW_AI_ADDED;
+      localStorage.setItem('calShowAiAdded', CAL_SHOW_AI_ADDED ? '1' : '0');
+      renderCalendarOps();
+      return;
+    }
     const btn = ev.target.closest('[data-kind-filter]');
     if (!btn) return;
     CAL_KIND_SEL = nextSelection(CAL_KIND_SEL, calKindList(), btn.dataset.kindFilter);
@@ -1314,6 +1323,11 @@ function renderAssignment() {
   if (a.mined?.description) {
     parts.push(`<h3>What this is</h3><div class="content-prose compact-prose">${renderMarkdown(a.mined.description)}</div>`);
   }
+  if (a.textbooks?.length) {
+    parts.push(`<h3>Textbooks</h3><ul class="assignment-textbooks">${a.textbooks.map(book => `<li>${book.url
+      ? `<a class="material-link" href="${esc(book.url)}" target="_blank" rel="noopener noreferrer">${esc(book.title)}</a>`
+      : `${esc(book.title)} <span class="muted">— add its PDF or e-book link in this class’s Textbooks tab</span>`}</li>`).join('')}</ul>`);
+  }
   const mats = (a.mined?.related_materials || [])
     .map((material, index) => ({ ...material, index }))
     .filter(material => material.source);
@@ -1433,6 +1447,77 @@ function materialsPathFor(f) {
 let FILE_VIEW = null;          // { folder, file }
 let FILE_RETURN = 'detail';    // 'detail' | 'assignment'
 let FILE_RETURN_SCROLL = 0;    // exact spot in the task/assignment pane
+let FILE_PREVIEW_RENDER = 0;   // invalidates an in-flight PDF.js page render
+let PDFJS_MODULE = null;
+
+function cancelFilePreview() {
+  FILE_PREVIEW_RENDER += 1;
+}
+
+function loadPdfJs() {
+  // pdf-parse already brings this exact PDF.js build into the application.
+  // Serving the module locally keeps document bytes and rendering offline.
+  PDFJS_MODULE ||= import('/vendor/pdfjs/build/pdf.mjs').then(pdfjs => {
+    pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/build/pdf.worker.min.mjs';
+    return pdfjs;
+  });
+  return PDFJS_MODULE;
+}
+
+async function renderPdfPages(host, blob, name, renderId) {
+  const pdfjs = await loadPdfJs();
+  const data = new Uint8Array(await blob.arrayBuffer());
+  if (renderId !== FILE_PREVIEW_RENDER) return;
+
+  const loadingTask = pdfjs.getDocument({
+    data,
+    cMapUrl: '/vendor/pdfjs/cmaps/',
+    cMapPacked: true,
+    standardFontDataUrl: '/vendor/pdfjs/standard_fonts/',
+    wasmUrl: '/vendor/pdfjs/wasm/',
+  });
+  const pdf = await loadingTask.promise;
+  if (renderId !== FILE_PREVIEW_RENDER) {
+    await pdf.destroy();
+    return;
+  }
+
+  try {
+    host.innerHTML = '';
+    host.setAttribute('aria-label', `${name}, ${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}`);
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      if (renderId !== FILE_PREVIEW_RENDER) return;
+      const page = await pdf.getPage(pageNumber);
+      const base = page.getViewport({ scale: 1 });
+      const available = Math.max(280, host.clientWidth - 32);
+      const cssWidth = Math.min(base.width * 1.25, available);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const viewport = page.getViewport({ scale: (cssWidth / base.width) * pixelRatio });
+
+      const frame = document.createElement('figure');
+      frame.className = 'file-pdf-page';
+      frame.style.maxWidth = `${cssWidth}px`;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      canvas.setAttribute('role', 'img');
+      canvas.setAttribute('aria-label', `${name}, page ${pageNumber}`);
+      frame.appendChild(canvas);
+      if (pdf.numPages > 1) {
+        const caption = document.createElement('figcaption');
+        caption.textContent = `Page ${pageNumber} of ${pdf.numPages}`;
+        frame.appendChild(caption);
+      }
+      host.appendChild(frame);
+
+      const context = canvas.getContext('2d', { alpha: false });
+      await page.render({ canvasContext: context, viewport }).promise;
+      page.cleanup();
+    }
+  } finally {
+    await pdf.destroy();
+  }
+}
 
 function classDetailScroller() {
   return document.querySelector('#view-classes > .detail');
@@ -1458,6 +1543,8 @@ async function renderFileView() {
   const isPage = file.type === 'page';
   const name = file.displayName || file.filename || file.name || file.title || 'Untitled';
   const ext = extOf(file.localPath || name);
+  cancelFilePreview();
+  const renderId = FILE_PREVIEW_RENDER;
   $('file-title').textContent = name;
 
   const bits = [];
@@ -1503,6 +1590,75 @@ async function renderFileView() {
       return;
     }
 
+    // Preserve the source's pages whenever a PDF is available: the original
+    // for PDFs, or extract-course-files.js's LibreOffice PDF for Office files.
+    // PDF.js paints the authenticated bytes into canvases; Chromium's native
+    // PDF iframe is blank inside the Electron/in-app browser webview.
+    const preview = filePreviewPlan(file);
+    if (preview) {
+      const blob = await (await api(fileUrl(folder, preview.path))).blob();
+
+      let extracted = '';
+      const rel = materialsPathFor(file);
+      if (rel) {
+        try { extracted = await (await api(fileUrl(folder, rel))).text(); }
+        catch { /* the page-preserving view still works without extracted text */ }
+      }
+      const hasText = extracted.trim().length > 0;
+      const viewControls = hasText
+        ? `<div class="file-view-toolbar">
+            <div class="seg seg-sm" role="group" aria-label="Document view">
+              <button type="button" class="seg-btn active" data-file-view-mode="pages" aria-pressed="true">${esc(preview.label)}</button>
+              <button type="button" class="seg-btn" data-file-view-mode="text" aria-pressed="false">Text</button>
+            </div>
+            <span class="muted">${preview.source === 'converted' ? 'PDF preview generated from the original file' : 'Original page layout'}</span>
+          </div>`
+        : '';
+      body.innerHTML = `${viewControls}
+        <div class="file-view-pane" data-file-view-pane="pages">
+          <div class="file-pdf-shell">
+            <div class="file-pdf-pages" data-pdf-pages role="region" aria-busy="true">
+              <div class="file-pdf-loading">Rendering document…</div>
+            </div>
+          </div>
+        </div>
+        ${hasText ? `<div class="file-view-pane hidden" data-file-view-pane="text">
+          <div class="notice" data-extracted-note>Extracted text for searching and copying. Switch back to ${esc(preview.label.toLowerCase())} for the source formatting.</div>
+          <article class="content-prose file-prose extracted-prose">${renderReadableText(extracted, ext)}</article>
+        </div>` : ''}`;
+
+      body.querySelectorAll('[data-file-view-mode]').forEach(button => {
+        button.addEventListener('click', () => {
+          const mode = button.dataset.fileViewMode;
+          body.querySelectorAll('[data-file-view-mode]').forEach(candidate => {
+            const active = candidate.dataset.fileViewMode === mode;
+            candidate.classList.toggle('active', active);
+            candidate.setAttribute('aria-pressed', active ? 'true' : 'false');
+          });
+          body.querySelectorAll('[data-file-view-pane]').forEach(pane =>
+            pane.classList.toggle('hidden', pane.dataset.fileViewPane !== mode));
+        });
+      });
+
+      const pages = body.querySelector('[data-pdf-pages]');
+      try {
+        await renderPdfPages(pages, blob, name, renderId);
+        pages?.setAttribute('aria-busy', 'false');
+      } catch (renderErr) {
+        if (renderId !== FILE_PREVIEW_RENDER) return;
+        if (hasText) {
+          const note = body.querySelector('[data-extracted-note]');
+          note.classList.add('alarm');
+          note.textContent = 'The page preview could not be rendered, so this is the extracted text. You can still open the original file.';
+          body.querySelector('[data-file-view-mode="text"]')?.click();
+        } else {
+          pages.innerHTML = `<div class="file-pdf-error">Could not render this document. Open the original file instead.<br><span class="mono">${esc(renderErr.message)}</span></div>`;
+          pages.setAttribute('aria-busy', 'false');
+        }
+      }
+      return;
+    }
+
     // Everything else — PDF, PPTX, DOCX — is shown as its extracted text.
     const rel = materialsPathFor(file);
     if (!rel) throw new Error('no extractable path');
@@ -1528,6 +1684,7 @@ async function renderFileView() {
 
 function wireFileView() {
   $('file-back').addEventListener('click', () => {
+    cancelFilePreview();
     if (FILE_RETURN === 'assignment' && ASSIGNMENT) showClassesPanel('assignment-panel');
     else showClassesPanel(CURRENT ? 'detail' : 'class-home');
     const scroller = classDetailScroller();
@@ -1622,6 +1779,7 @@ async function openClass(folder) {
   }
 
   renderTasks();
+  renderTextbooks();
   renderGrades();
   $('overview-md').innerHTML = CURRENT.context_md
     ? renderMarkdown(courseOverviewMarkdown(CURRENT.context_md))
@@ -1647,6 +1805,110 @@ function courseOverviewMarkdown(markdown) {
   const taskList = out.search(/^## Complete task list\b/m);
   if (taskList >= 0) out = out.slice(0, taskList);
   return out.trim();
+}
+
+// --- Textbooks ------------------------------------------------------------
+// Names are extracted from the syllabus; only the access link is editable.
+// That division is visible in the form so a sync-owned title never looks like
+// a field the user is expected to maintain.
+function textbookMeta(book) {
+  return [book.author, book.edition, book.isbn ? `ISBN ${book.isbn}` : null]
+    .filter(Boolean).map(esc).join(' · ');
+}
+
+function renderTextbooks() {
+  const root = $('tab-textbooks');
+  if (!root || !CURRENT) return;
+  const books = CURRENT.textbooks ?? [];
+  if (!books.length) {
+    const parsed = Array.isArray(CURRENT.syllabus_parsed?.textbooks);
+    root.innerHTML = `<div class="empty-state"><b>${parsed ? 'No textbooks listed' : 'Textbooks have not been indexed yet'}</b><span>${
+      parsed
+        ? 'The synced syllabus does not name a required or recommended textbook.'
+        : 'Run Rebuild summaries once to fill this tab from the class syllabus.'
+    }</span></div>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="textbook-intro">
+      <div>
+        <h3>Course textbooks</h3>
+        <p class="muted">Names come from the syllabus. Paste a PDF or e-book link once and assignments that reference that book will use it automatically.</p>
+      </div>
+      <span class="textbook-count">${books.length} title${books.length === 1 ? '' : 's'}</span>
+    </div>
+    <div class="textbook-list">${books.map(book => `
+      <section class="textbook-row" data-textbook="${esc(book.id)}">
+        <div class="textbook-copy">
+          <div class="textbook-title-line">
+            <h3>${esc(book.title)}</h3>
+            <span class="badge">${book.required ? 'required' : 'recommended / optional'}</span>
+          </div>
+          ${textbookMeta(book) ? `<div class="textbook-meta">${textbookMeta(book)}</div>` : ''}
+        </div>
+        <form class="textbook-link-form" data-textbook-form>
+          <label class="sr-only" for="textbook-url-${esc(book.id)}">PDF or e-book link for ${esc(book.title)}</label>
+          <input id="textbook-url-${esc(book.id)}" type="url" inputmode="url" data-textbook-url
+                 value="${esc(book.url ?? '')}" placeholder="https://… PDF or e-book link" autocomplete="off" />
+          <button type="submit" data-textbook-save>${book.url ? 'Update link' : 'Save link'}</button>
+          ${book.url ? `<a class="btn-link" href="${esc(book.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>
+            <button type="button" class="linky textbook-clear" data-textbook-clear>Clear</button>` : ''}
+          <span class="note-state" data-textbook-state></span>
+        </form>
+      </section>`).join('')}</div>`;
+}
+
+function updateTextbookEverywhere(textbook) {
+  CURRENT.textbooks = (CURRENT.textbooks ?? []).map(book => book.id === textbook.id ? textbook : book);
+  for (const item of CURRENT.mined?.items ?? []) {
+    item.textbooks = (item.textbooks ?? []).map(book => book.id === textbook.id ? textbook : book);
+  }
+  if (ASSIGNMENT?.folder === CURRENT.folder) {
+    ASSIGNMENT.textbooks = (ASSIGNMENT.textbooks ?? []).map(book => book.id === textbook.id ? textbook : book);
+  }
+}
+
+async function saveTextbookLink(form, value) {
+  const id = form.closest('[data-textbook]')?.dataset.textbook;
+  if (!id || !CURRENT) return;
+  const folder = CURRENT.folder;
+  const button = form.querySelector('[data-textbook-save]');
+  const state = form.querySelector('[data-textbook-state]');
+  button.disabled = true;
+  state.textContent = 'Saving…';
+  try {
+    const result = await apiJson(`/api/class/${folder}/textbooks/${encodeURIComponent(id)}`, {
+      method: 'PUT', body: JSON.stringify({ url: value || null }),
+    });
+    // A slow save may finish after the student has opened another class. The
+    // link is safely stored for its original class; do not paint it into the
+    // newly selected class's in-memory textbook list.
+    if (CURRENT?.folder !== folder) return;
+    updateTextbookEverywhere(result.textbook);
+    renderTextbooks();
+    renderTasks();
+    toast(result.textbook.url ? 'Textbook link saved.' : 'Textbook link cleared.');
+  } catch (err) {
+    button.disabled = false;
+    state.textContent = err.message;
+  }
+}
+
+function wireTextbooks() {
+  const root = $('tab-textbooks');
+  root.addEventListener('submit', (ev) => {
+    const form = ev.target.closest('[data-textbook-form]');
+    if (!form) return;
+    ev.preventDefault();
+    saveTextbookLink(form, form.querySelector('[data-textbook-url]').value.trim());
+  });
+  root.addEventListener('click', (ev) => {
+    const clear = ev.target.closest('[data-textbook-clear]');
+    if (!clear) return;
+    const form = clear.closest('[data-textbook-form]');
+    saveTextbookLink(form, null);
+  });
 }
 
 // All date math is LOCAL time — a UTC slice would put late-evening deadlines
@@ -1835,6 +2097,9 @@ function taskCardHtml(it) {
     .filter(material => material.source)
     .slice(0, 4)
     .map(m => `<li><button type="button" class="linky material-link" data-task-material="${m.index}">${esc(m.file)}</button>${m.why ? ` \u2014 ${esc(m.why)}` : ''}</li>`).join('');
+  const textbooks = (it.textbooks || []).map(book => `<li>${book.url
+    ? `<a class="material-link" href="${esc(book.url)}" target="_blank" rel="noopener noreferrer">${esc(book.title)}</a>`
+    : `${esc(book.title)} <span class="muted">— add its link in Textbooks</span>`}</li>`).join('');
   const cps = st.checkpoints ?? [];
   const cpsDone = cps.filter(c => c.done).length;
   const aiAdded = it.origin ? it.origin === 'syllabus' : it.kind === 'implicit';
@@ -1847,7 +2112,7 @@ function taskCardHtml(it) {
       <div class="task-top">
         <input type="checkbox" class="task-check" data-done${st.done ? ' checked' : ''}
                aria-label="Mark ${esc(it.title)} complete">
-        <button type="button" class="task-title linky-title" data-open-assignment="${esc(it.canvas_assignment_id ?? it.id)}">${esc(it.title)}</button>
+        ${taskTitleHtml(it)}
         <span class="task-due">${due}</span>
       </div>
       <div class="task-badges">
@@ -1860,6 +2125,7 @@ function taskCardHtml(it) {
         ${st.note ? '<span class="badge">note</span>' : ''}
       </div>
       ${it.description ? `<div class="task-desc">${esc(it.description)}</div>` : ''}
+      ${textbooks ? `<div class="task-textbooks">Textbook<ul>${textbooks}</ul></div>` : ''}
       ${mats ? `<div class="task-materials">Relevant materials<ul>${mats}</ul></div>` : ''}
       <button type="button" class="linky task-toggle" data-toggle>Edit</button>
       <div class="task-editor-slot hidden"></div>
@@ -2407,6 +2673,10 @@ let CAL_KIND_SEL = (() => {
     return Array.isArray(v) ? v.filter(k => typeof k === 'string') : [];
   } catch { return []; }
 })();
+// AI-mined syllabus items are visible by default, but can be hidden without
+// suppressing Canvas-backed work or items the student added themselves. This
+// is a display preference only; no pipeline output is deleted or rebuilt.
+let CAL_SHOW_AI_ADDED = localStorage.getItem('calShowAiAdded') !== '0';
 // Which classes are DRAWN — the same selection shape as CAL_KIND_SEL, run
 // through the same nextSelection()/isSelected() pair: [] means every class,
 // and no sequence of clicks reaches "none". This replaced an inverted hidden
@@ -2818,7 +3088,6 @@ function calOpRow(op, { showClass = false } = {}) {
       <span class="cal-tags">
         <span class="cal-kind category-label">${esc(kindLabel)}</span>
         ${op.location ? `<span class="cal-loc">${esc(op.location)}</span>` : ''}
-        ${op.recurrence ? `<span class="cal-loc">weekly ${esc(op.recurrence.byday.join(''))}</span>` : ''}
         ${subcategory ? `<span class="cal-cat ${esc(subcategory)}">${esc(subcategory)}</span>` : ''}
         ${pts ? `<span class="cal-pts">${esc(pts)} pts</span>` : ''}
         ${m.note && !m.isCustom ? '<span class="cal-kind note" title="You wrote a note on this">note</span>' : ''}
@@ -2860,7 +3129,7 @@ function calWhenLabel(op) {
  * three interfaces — just short of the tags, which do not survive a 170px
  * column and are one click away in the list.
  */
-function calChip(op, iso = null, { style = '', timed = false } = {}) {
+function calChip(op, iso = null, { style = '', timed = false, placedClass = '' } = {}) {
   const m = calItemModel(op);
   const overdue = calOverdue(op, m);
   const title = stripClassPrefix(op.title, op.class || '');
@@ -2872,7 +3141,7 @@ function calChip(op, iso = null, { style = '', timed = false } = {}) {
   const spanCls = pos === 'only' ? '' : ` span span-${pos}`;
   const lead = pos === 'only' || pos === 'start';
   return `
-    <div class="cal-chip${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}${spanCls}${timed ? ' placed' : ''}"
+    <div class="cal-chip${overdue ? ' overdue' : ''}${m.isMeeting ? ' meeting' : ''}${m.done ? ' is-done' : ''}${m.aiAdded ? ' ai-added' : ''}${m.isCustom ? ' custom' : ''}${spanCls}${timed ? ' placed' : ''}${placedClass ? ` ${placedClass}` : ''}"
          data-class-slug="${esc(op.class || '')}"
          data-kind="${esc(op.kind || 'other')}"
          style="--class-color:${classColor(op.class)}${style ? `;${style}` : ''}"
@@ -3126,11 +3395,15 @@ function renderCalendarWeekTimed(ops) {
       const top = y(startMin);
       // Never shorter than something a finger and an eye can find, even for a
       // deadline, which is a moment rather than a span.
-      const h = Math.max(y(endMin) - top, 18);
+      // A deadline is a point, but a 22px one-line strip cannot show its
+      // checkbox, kind, time AND title. Give short slots enough room for the
+      // two-row card treatment below; the true start still stays on its line.
+      const h = Math.max(y(endMin) - top, 32);
       const w = 100 / lanes;
       return calChip(op, iso, {
         style: `top:${top}px;height:${h}px;left:${(lane * w).toFixed(3)}%;width:${w.toFixed(3)}%`,
         timed: true,
+        placedClass: `${h < 52 ? 'slot-compact' : 'slot-roomy'}${lanes > 1 ? ' lane-narrow' : ''}`,
       });
     }).join('');
     const collisionStacks = stacks.map(({ group, startMin, endMin, lane, lanes }) => {
@@ -4049,16 +4322,21 @@ function calKindShort(kind) {
 function renderCalKinds(all) {
   const box = $('cal-kind-filters');
   const kinds = calKindList();
-  if (kinds.length < 2) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const aiCount = all.filter(o => calItemModel(o).aiAdded).length;
+  if (kinds.length < 2 && !aiCount) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
   const counts = {};
   for (const o of all) counts[o.kind] = (counts[o.kind] ?? 0) + 1;
-  box.innerHTML = kinds.map((k) => {
+  const kindButtons = kinds.length < 2 ? '' : kinds.map((k) => {
     const on = isSelected(CAL_KIND_SEL, k);
     const n = counts[k] ?? 0;
     return `<button type="button" class="filter-chip${on ? ' on' : ''}${n ? '' : ' empty'}"
       data-kind-filter="${esc(k)}" aria-pressed="${on ? 'true' : 'false'}">${esc(calKindLabel(k))}<span class="chip-count">${n}</span></button>`;
   }).join('');
+  const aiButton = aiCount ? `<button type="button" class="filter-chip ai-filter${CAL_SHOW_AI_ADDED ? ' on' : ''}"
+      data-ai-added-filter aria-pressed="${CAL_SHOW_AI_ADDED ? 'true' : 'false'}"
+      title="Show or hide items added by AI from syllabi">AI-added<span class="chip-count">${aiCount}</span></button>` : '';
+  box.innerHTML = `${kindButtons}${aiButton}`;
 }
 
 /**
@@ -4454,7 +4732,8 @@ function renderCalendarOps() {
   // covers homework, readings and exams, and a filter that cannot tell them
   // apart is three chips pretending to be one.
   const byKind = all.filter(o => isSelected(CAL_KIND_SEL, o.kind));
-  const selectedOps = byKind.filter(o => isSelected(classSel, opClassSlug(o)));
+  const byOrigin = byKind.filter(o => isAiItemVisible(CAL_SHOW_AI_ADDED, calItemModel(o).aiAdded));
+  const selectedOps = byOrigin.filter(o => isSelected(classSel, opClassSlug(o)));
   const hiddenPast = CAL_VIEW === 'list' && !CAL_SHOW_PAST
     ? selectedOps.filter(o => daysUntil(o.date) < 0 && (o.kind === 'meeting' || o.kind === 'office_hours')).length
     : 0;
@@ -4483,8 +4762,12 @@ function renderCalendarOps() {
   const lastVisible = ops.map(o => o.date).filter(Boolean).sort().at(-1);
   const range = firstVisible && lastVisible ? `${fmtDayLabel(firstVisible)} – ${fmtDayLabel(lastVisible)} · `
     : (w.from && w.to ? `${fmtDayLabel(w.from)} – ${fmtDayLabel(w.to)} · ` : '');
+  const hiddenAi = byKind.length - byOrigin.length;
   const hiddenNote = byKind.length - ops.length > 0
-    ? ` · ${byKind.length - ops.length} hidden${hiddenPast ? ` (${hiddenPast} past schedule)` : ''}`
+    ? ` · ${byKind.length - ops.length} hidden${hiddenAi || hiddenPast ? ` (${[
+      hiddenAi ? `${hiddenAi} AI-added` : '',
+      hiddenPast ? `${hiddenPast} past schedule` : '',
+    ].filter(Boolean).join(', ')})` : ''}`
     : '';
   $('cal-summary').textContent =
     `${range}${ops.length} item${ops.length === 1 ? '' : 's'} across ${classCount} class${classCount === 1 ? '' : 'es'}${hiddenNote}`;
@@ -4500,6 +4783,13 @@ function renderCalendarOps() {
     // reachable is a selection of classes that have nothing in this window.
     const why = !byKind.length
       ? `No ${shown ? `${shown} ` : ''}items in this window.`
+      : !byOrigin.length && hiddenAi
+        ? 'All matching items are AI-added — turn on AI-added above to show them.'
+      // Past meetings are dropped by their own toggle, AFTER the class filter.
+      // Blaming the class chips here would send the user to deselect a class
+      // that is in fact selected and does have items — they are simply behind.
+      : hiddenPast
+        ? `Everything here has already happened — turn on past items above to show ${hiddenPast === 1 ? 'it' : 'them'}.`
       : 'Nothing from the selected classes in this window — deselect one above to widen the view.';
     el.innerHTML = `<p class="muted">${esc(why)}</p>`;
     return;
@@ -4801,72 +5091,53 @@ async function loadLogs() {
 }
 
 // ---------------------------------------------------------------------------
-// Anthropic API key
-//
-// Write-only over HTTP: the bridge never hands the key back, only whether one
-// is set, where it came from, and a masked hint. So the field is always empty
-// on load — it is somewhere to type a new key, never a display of the old one.
+// Terminal AI subscription login
 // ---------------------------------------------------------------------------
 
-function renderAiKey(st) {
-  const state = $('ai-key-state');
-  const present = !!st?.present;
-  state.textContent = present
-    ? `Key set${st.source === 'env' ? ' from the environment' : ''} · ${st.hint || ''}`
-    : 'No key set — AI stages fall back to the local model.';
-  // A key coming from the environment is not ours to delete.
-  $('ai-key-remove').classList.toggle('hidden', !present || st.source === 'env');
+function renderAiCliStatus(data) {
+  for (const provider of ['claude', 'codex']) {
+    const st = data?.providers?.[provider];
+    const node = $(`${provider}-cli-state`);
+    if (!node) continue;
+    node.textContent = !st?.installed ? 'Not installed'
+      : st.authenticated ? 'Signed in — ready'
+        : st.timedOut ? 'Status check timed out' : 'Installed — sign in needed';
+    node.classList.toggle('cli-ready', !!st?.authenticated);
+    const button = document.querySelector(`[data-ai-login="${provider}"]`);
+    if (button) button.textContent = st?.authenticated ? 'Sign in again' : 'Open login terminal';
+  }
 }
 
-async function loadAiKey() {
-  try { renderAiKey(await apiJson('/api/ai-key')); }
-  catch { $('ai-key-state').textContent = 'Could not read the key status.'; }
-}
-
-function wireAiKey() {
-  const msg = $('ai-key-msg');
-  const input = $('ai-key-input');
-
-  // A rejected key is a failure, and the rest of the app says failure in brick.
-  // This line used to print the bridge's "that does not look like an Anthropic
-  // API key" in the same grey as the hint two lines above it.
-  const say = (text, bad = false) => {
-    msg.textContent = text;
-    msg.classList.toggle('error', bad);
-    msg.classList.toggle('muted', !bad);
-  };
-
-  $('ai-key-save').addEventListener('click', async () => {
-    const key = input.value.trim();
-    say('Saving…');
-    const res = await fetch('/api/ai-key', {
-      method: 'POST',
-      headers: { 'X-Bridge-Secret': SECRET, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      // The bridge's 400 says exactly what is wrong with the paste; say it
-      // verbatim rather than replacing it with a generic failure.
-      say(body.error || `Could not save the key (${res.status}).`, true);
-      return;
+async function loadAiCliStatus() {
+  try {
+    renderAiCliStatus(await apiJson('/api/ai-cli'));
+  } catch {
+    for (const id of ['claude-cli-state', 'codex-cli-state']) {
+      if ($(id)) $(id).textContent = 'Could not check status';
     }
-    input.value = '';
-    say('Saved.');
-    renderAiKey(body);
-    setTimeout(() => say(''), 3000);
-  });
+  }
+}
 
-  $('ai-key-remove').addEventListener('click', async () => {
-    say('Removing…');
+function wireAiCli() {
+  $('ai-cli-refresh').addEventListener('click', async () => {
+    $('ai-cli-refresh').disabled = true;
+    await loadAiCliStatus();
+    $('ai-cli-refresh').disabled = false;
+  });
+  $('terminal-ai-card').addEventListener('click', async ev => {
+    const button = ev.target.closest('[data-ai-login]');
+    if (!button) return;
+    button.disabled = true;
+    $('ai-cli-msg').textContent = 'Opening Terminal…';
     try {
-      const body = await apiJson('/api/ai-key', { method: 'DELETE' });
-      input.value = '';
-      say(body.removed ? 'Removed.' : 'No stored key to remove.');
-      renderAiKey(body);
-      setTimeout(() => say(''), 3000);
+      const result = await apiJson('/api/ai-cli/login', {
+        method: 'POST', body: JSON.stringify({ provider: button.dataset.aiLogin }),
+      });
+      $('ai-cli-msg').textContent = result.message || 'Complete sign-in in Terminal, then refresh status.';
     } catch (err) {
-      say(`Could not remove the key: ${err.message}`, true);
+      $('ai-cli-msg').textContent = `Could not open login: ${err.message}`;
+    } finally {
+      button.disabled = false;
     }
   });
 }
@@ -4884,6 +5155,7 @@ async function loadSettings() {
   const env = settings?.env || {};
   $('set-backend').value = env.CSYNC_AI_BACKEND || '';
   $('set-claude-model').value = env.CSYNC_CLAUDE_MODEL || '';
+  $('set-codex-model').value = env.CSYNC_CODEX_MODEL || '';
   $('set-local-model').value = env.CSYNC_LOCAL_MODEL || '';
   $('set-local-python').value = env.CSYNC_LOCAL_PYTHON || '';
   // Function switches. Absent = on: the toggles only ever WRITE "0", so a
@@ -4891,7 +5163,7 @@ async function loadSettings() {
   document.querySelectorAll('[data-fn]').forEach((el) => {
     el.checked = !STAGE_OFF_RE.test(String(env[el.dataset.fn] ?? ''));
   });
-  loadAiKey();
+  loadAiCliStatus();
   renderSubscriptions().catch(() => {});
 }
 
@@ -4925,7 +5197,7 @@ async function renderSubscriptions() {
 }
 
 function wireSettings() {
-  wireAiKey();
+  wireAiCli();
 
   // Copy, and select the field as well — a URL you can see selected is one you
   // can paste even when the clipboard API is unavailable.
@@ -4953,6 +5225,7 @@ function wireSettings() {
     const env = {
       CSYNC_AI_BACKEND: $('set-backend').value,
       CSYNC_CLAUDE_MODEL: $('set-claude-model').value.trim(),
+      CSYNC_CODEX_MODEL: $('set-codex-model').value.trim(),
       CSYNC_LOCAL_MODEL: $('set-local-model').value.trim(),
       CSYNC_LOCAL_PYTHON: $('set-local-python').value.trim(),
     };

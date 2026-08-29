@@ -25,3 +25,16 @@ test('list rows, grid chips, and dense stacks expose their category', () => {
   assert.match(APP, /class="cal-kind category-label"/);
   assert.match(APP, /class="chip-kind"/);
 });
+
+test('timed cards give metadata and titles separate rows, including narrow lanes', () => {
+  assert.match(APP, /Math\.max\(y\(endMin\) - top, 32\)/,
+    'short deadlines need enough height to show both rows');
+  assert.match(APP, /slot-compact[^\n]+lane-narrow/,
+    'the renderer should mark short and side-by-side cards for responsive formatting');
+  assert.match(CSS,
+    /grid-template-areas:\s*"check kind when action"\s*"title title title title"/,
+    'task controls and metadata belong above a full-width title');
+  assert.match(CSS,
+    /\.cal-chip\.placed\.meeting\s*\{[^}]*grid-template-areas:\s*"kind when"\s*"title title"/s,
+    'meetings should not reserve empty checkbox space');
+});

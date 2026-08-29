@@ -33,13 +33,13 @@
         <button data-view="classes" class="nav-btn active">Classes</button>
         <button data-view="calendar" class="nav-btn">Calendar</button>
         <button data-view="settings" class="nav-btn">Settings</button>
+      </div>
+      <div class="topbar-actions">
         <!-- An anchor, not a data-view button: progress.html is a standalone
              page, so it needs nothing from app.js's navTo(). Without this the
              page is unreachable — the Electron shell loads /app/ in a window
              with no URL bar. -->
         <a class="nav-btn" href="/app/progress.html">Status</a>
-      </div>
-      <div>
         <button id="run-pipeline-btn" title="Run every stale pipeline part over synced data">Rebuild summaries</button>
       </div>
     </nav>
@@ -173,12 +173,14 @@
           </header>
           <div class="tabs">
             <button data-tab="tasks" class="tab active">Tasks</button>
+            <button data-tab="textbooks" class="tab">Textbooks</button>
             <button data-tab="overview" class="tab">Overview</button>
             <button data-tab="grades" class="tab">Grades</button>
             <button data-tab="files" class="tab">Files</button>
             <button data-tab="pack" class="tab">Class Summarized</button>
           </div>
           <div id="tab-tasks" class="tab-panel"></div>
+          <div id="tab-textbooks" class="tab-panel hidden"></div>
           <div id="tab-overview" class="tab-panel hidden">
             <!-- When this class meets, and the only place to correct it. A
                  syllabus that never states a time is common — two of six here —
@@ -347,18 +349,20 @@
             </div>
           </div>
 
-          <div class="card">
-            <h3>Anthropic API key</h3>
-            <div id="ai-key-state" class="muted mono"></div>
-            <div class="form-row">
-              <label for="ai-key-input">API key</label>
-              <input id="ai-key-input" type="password" autocomplete="off" spellcheck="false"
-                     placeholder="sk-ant-…" />
+          <div class="card" id="terminal-ai-card">
+            <h3>Terminal AI</h3>
+            <p class="muted settings-note">Sign in with a Claude or ChatGPT subscription. CANVASync uses the CLI login already stored on this Mac — no API key.</p>
+            <div class="cli-provider-row">
+              <div><strong>Claude Code</strong><div id="claude-cli-state" class="muted">Checking…</div></div>
+              <button type="button" data-ai-login="claude">Open login terminal</button>
+            </div>
+            <div class="cli-provider-row">
+              <div><strong>Codex</strong><div id="codex-cli-state" class="muted">Checking…</div></div>
+              <button type="button" data-ai-login="codex">Open login terminal</button>
             </div>
             <div class="row-actions">
-              <button id="ai-key-save">Save key</button>
-              <button id="ai-key-remove" class="danger hidden">Remove</button>
-              <span id="ai-key-msg" class="muted"></span>
+              <button type="button" id="ai-cli-refresh" class="linky">Refresh status</button>
+              <span id="ai-cli-msg" class="muted"></span>
             </div>
           </div>
 
@@ -367,14 +371,19 @@
             <div class="form-row">
               <label for="set-backend">Backend</label>
               <select id="set-backend">
-                <option value="">auto — claude CLI, local fallback</option>
-                <option value="claude">claude CLI only</option>
+                <option value="">auto — signed-in CLI, local fallback</option>
+                <option value="claude">Claude Code CLI only</option>
+                <option value="codex">Codex CLI only</option>
                 <option value="local">local model only</option>
               </select>
             </div>
             <div class="form-row">
               <label for="set-claude-model">Claude model</label>
-              <input id="set-claude-model" placeholder="claude-opus-5" />
+              <input id="set-claude-model" placeholder="use CLI default" />
+            </div>
+            <div class="form-row">
+              <label for="set-codex-model">Codex model</label>
+              <input id="set-codex-model" placeholder="use CLI default" />
             </div>
             <div class="form-row">
               <label for="set-local-model">Local model</label>

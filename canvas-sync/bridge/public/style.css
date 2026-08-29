@@ -737,10 +737,48 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .cp-add input[type=text] { flex: 1; min-width: 180px; }
 
 .task-desc { font-size: var(--t-small); margin-top: var(--s-2); max-width: 72ch; }
-.task-materials { font-size: var(--t-legend); color: var(--muted); margin-top: var(--s-2); }
-.task-materials li { margin-left: var(--s-6); }
+.task-materials, .task-textbooks { font-size: var(--t-legend); color: var(--muted); margin-top: var(--s-2); }
+.task-materials li, .task-textbooks li { margin-left: var(--s-6); }
 .material-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .material-link:hover { color: var(--accent-2); }
+
+/* --- Textbooks — extracted titles with student-owned links. --------------- */
+.textbook-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-6);
+  margin-bottom: var(--s-5);
+}
+.textbook-intro h3 { margin-bottom: var(--s-2); }
+.textbook-intro p { max-width: 72ch; }
+.textbook-count {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--t-legend);
+}
+.textbook-list {
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.textbook-row {
+  display: grid;
+  grid-template-columns: minmax(220px, .9fr) minmax(300px, 1.25fr);
+  align-items: center;
+  gap: var(--s-7);
+  padding: var(--s-6);
+  border-bottom: 1px solid var(--rule);
+}
+.textbook-row:last-child { border-bottom: 0; }
+.textbook-title-line { display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap; }
+.textbook-title-line h3 { font-size: var(--t-body); line-height: 1.35; }
+.textbook-meta { margin-top: var(--s-2); color: var(--muted); font-size: var(--t-legend); }
+.textbook-link-form { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.textbook-link-form input { flex: 1 1 280px; min-width: 0; }
+.textbook-link-form .note-state { flex-basis: 100%; min-height: 1em; }
+.textbook-clear { font-size: var(--t-legend); }
 
 .task-source-note {
   margin-bottom: var(--s-6);
@@ -1435,6 +1473,13 @@ table.files tr:hover td { background: var(--sunk); }
    cal-notes says why underneath. */
 .filter-chip.empty:not(.on) { color: var(--muted); border-color: var(--rule); }
 .filter-chip.empty .chip-count { color: var(--muted); }
+/* AI-added: dashed frame borrows the provenance idiom .ai-added already uses
+   for mined items. Off is said in ink — muted name and a lighter rule, the
+   same way .filter-chip.empty and .class-chip.off say it. Never opacity:
+   fading a control on cream walks it into the paper (spec 3.6). */
+.filter-chip.ai-filter { border-style: dashed; }
+.filter-chip.ai-filter:not(.on) { color: var(--muted); border-color: var(--rule); }
+.filter-chip.ai-filter:not(.on) .chip-count { color: var(--muted); }
 
 /* --- Meeting times --------------------------------------------------------
    On the class's own Overview tab, where "when does this meet" is asked. */
@@ -1812,9 +1857,64 @@ table.files tr:hover td { background: var(--sunk); }
 }
 .file-prose .source-points { columns: 2 18rem; column-gap: var(--s-8); }
 .file-prose .source-points li { break-inside: avoid; }
+.file-prose .source-alpha { list-style-type: upper-alpha; }
 .file-prose .source-reference { font-size: var(--t-legend); color: var(--muted); }
+.file-prose .source-line { margin-bottom: var(--s-1); }
+.file-view-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin-bottom: var(--s-4);
+  font-size: var(--t-legend);
+}
+.file-pdf-shell {
+  overflow: auto;
+  border: 1px solid var(--rule-2);
+  border-radius: 9px;
+  background: #525659;
+  box-shadow: var(--sit);
+  max-height: calc(100vh - 220px);
+  min-height: 560px;
+}
+.file-pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-5);
+  min-height: 558px;
+  padding: var(--s-5);
+}
+.file-pdf-page {
+  width: 100%;
+  margin: 0;
+  background: #fff;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 38%);
+}
+.file-pdf-page canvas { display: block; width: 100%; height: auto; }
+.file-pdf-page figcaption {
+  padding: var(--s-2) var(--s-3);
+  border-top: 1px solid #ddd;
+  color: #555;
+  background: #f7f7f7;
+  font-size: var(--t-small);
+  text-align: center;
+}
+.file-pdf-loading, .file-pdf-error {
+  align-self: stretch;
+  margin: auto;
+  padding: var(--s-8) var(--s-5);
+  color: #fff;
+  text-align: center;
+}
+.file-pdf-error .mono { color: #eee; }
 .compact-prose { margin-bottom: var(--s-5); }
 .file-view-img { max-width: 100%; height: auto; border: 1px solid var(--rule); border-radius: var(--r-1); }
+
+@media (max-width: 760px) {
+  .file-view-toolbar { align-items: flex-start; flex-direction: column; }
+  .file-pdf-shell { max-height: 70vh; min-height: 440px; }
+  .file-pdf-pages { min-height: 438px; padding: var(--s-3); }
+}
 
 /* --- Notices + toast ------------------------------------------------------ */
 .notice {
@@ -2520,19 +2620,54 @@ body { overflow-x: hidden; }
 
 /* A placed chip owns its box, so it drops the flex-column rules the stacked
    week gives it and clips rather than pushing the grid taller. */
-.cal-chip.placed {
+.cal-chip.placed,
+.cal-chip[data-kind].placed {
   position: absolute;
+  grid-template-columns: 12px auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "check kind when action"
+    "title title title title";
+  align-content: start;
+  align-items: start;
+  column-gap: 4px;
+  row-gap: 2px;
   overflow: hidden;
   margin: 0;
-  padding: var(--s-1) var(--s-2);
+  padding: 3px 5px;
+  line-height: 1.2;
   /* A hairline of the day underneath still shows between neighbours. */
   outline: 1px solid var(--panel);
 }
-.cal-chip.placed .chip-title { -webkit-line-clamp: 2; }
-/* Under ~34px there is only room for one line, and a clamped second line
-   renders as a sliver of cut-off text. */
-.cal-chip.placed[style*="height:18px"] .chip-title,
-.cal-chip.placed[style*="height:2"] .chip-title { -webkit-line-clamp: 1; }
+.cal-chip.placed .cal-check,
+.cal-chip.placed .cal-check-gap { grid-area: check; }
+.cal-chip.placed .cal-check { align-self: center; margin-top: 0; }
+.cal-chip.placed .chip-kind { grid-area: kind; align-self: center; margin-top: 0; }
+.cal-chip.placed .chip-when { grid-area: when; align-self: center; min-width: 0; }
+.cal-chip.placed .chip-title { grid-area: title; }
+.cal-chip.placed .cal-submit,
+.cal-chip.placed .cal-nolink { grid-area: action; align-self: center; }
+
+/* Meetings have no checkbox or action. Do not spend a fifth of a narrow lane
+   on an empty checkbox column: their kind and time own the first line, and the
+   title gets the entire second line. */
+.cal-chip.placed.meeting {
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "kind when"
+    "title title";
+}
+.cal-chip.placed.meeting .cal-check-gap { display: none; }
+
+/* Tall appointments can use the room they actually have. One-hour and
+   half-hour cards keep one clean title line rather than exposing a clipped
+   fragment of the next one. */
+.cal-chip.placed .chip-title,
+.cal-chip.placed .chip-title a,
+.cal-chip.placed .chip-title button { -webkit-line-clamp: 3; line-height: 1.25; }
+.cal-chip.placed.slot-compact .chip-title,
+.cal-chip.placed.slot-compact .chip-title a,
+.cal-chip.placed.slot-compact .chip-title button { -webkit-line-clamp: 1; }
 
 /* Three or more items at one exact time become one expandable stack. Six
    checkbox/title/submit grids cannot fit into six lanes without turning into
@@ -2681,6 +2816,12 @@ input:hover, select:hover, textarea:hover { border-color: var(--edge); }
 .brand:active { transform: none; }
 .brand::before { background-color: var(--panel); }
 .topnav { gap: 4px; }
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
 .nav-btn {
   padding: 7px 11px;
   border-radius: 7px;
@@ -2854,9 +2995,11 @@ input:hover, select:hover, textarea:hover { border-color: var(--edge); }
 .task-due { font-family: var(--sans); font-size: 12px; }
 .task-badges { margin-left: 20px; }
 .badge { font-family: var(--sans); border-color: var(--rule-2); background: #FAFBF9; }
-.task-desc, .task-materials, .task-toggle { margin-left: 20px; }
+.task-desc, .task-materials, .task-textbooks, .task-toggle { margin-left: 20px; }
 .task-materials { margin-top: 7px; }
+.task-textbooks { margin-top: 7px; }
 .task-materials > ul { margin-top: 2px; }
+.task-textbooks > ul { margin-top: 2px; }
 .task-editor { border-radius: 7px; }
 .search-hidden { display: none !important; }
 .empty-state {
@@ -2942,6 +3085,18 @@ table.files tr:last-child td { border-bottom: 0; }
 .page-intro { max-width: 66ch; margin: -2px 0 22px; color: var(--muted); }
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
 .settings-grid .card { height: 100%; margin: 0; }
+.settings-note { margin: 0 0 14px; line-height: 1.45; }
+.cli-provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+}
+.cli-provider-row:first-of-type { border-top: 0; }
+.cli-provider-row .cli-ready { color: var(--accent); }
+.cli-provider-row button { flex: 0 0 auto; }
 .card {
   padding: 18px;
   border-color: var(--rule);
@@ -3175,5 +3330,7 @@ table.files tr:last-child td { border-bottom: 0; }
   .search-control { width: 100%; }
   .task-top { flex-wrap: wrap; }
   .task-due { width: 100%; padding-left: 20px; }
+  .textbook-row { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
+  .textbook-link-form input { flex-basis: 100%; }
   .settings-grid { grid-template-columns: 1fr; }
 }

@@ -78,3 +78,14 @@ export function pruneSelection(sel, vocabulary) {
   const cur = Array.isArray(sel) ? sel : [];
   return cur.filter(s => list.includes(s));
 }
+
+/**
+ * Whether one calendar item survives the independent AI-added display toggle.
+ *
+ * This is deliberately separate from the kind selection: an AI-mined reading
+ * and a Canvas-backed reading share a kind, and hiding the former must not hide
+ * the latter. Non-AI items are therefore always visible through this filter.
+ */
+export function isAiItemVisible(showAiAdded, aiAdded) {
+  return Boolean(showAiAdded) || !aiAdded;
+}

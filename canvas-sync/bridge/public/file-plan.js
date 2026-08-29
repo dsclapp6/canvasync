@@ -11,6 +11,27 @@ export function fileName(file) {
   return file?.displayName || file?.filename || 'Untitled';
 }
 
+/**
+ * Pick the layout-preserving PDF the browser can show inline.
+ *
+ * PDFs use their original download. Office files use the PDF derivative that
+ * extract-course-files.js creates with LibreOffice, when one is available.
+ * Text remains a separate optional mode; it must not be mistaken for the
+ * source document's actual layout.
+ */
+export function filePreviewPlan(file) {
+  const name = fileName(file);
+  const ext = (/\.[a-z0-9]+$/i.exec(String(file?.localPath || name))?.[0] || '').toLowerCase();
+  if (ext === '.pdf' && file?.localPath) {
+    return { path: file.localPath, label: 'Original', source: 'original' };
+  }
+  if (!file?.pdfPath) return null;
+  const label = ['.ppt', '.pptx'].includes(ext) ? 'Slides'
+    : ['.xls', '.xlsx'].includes(ext) ? 'Sheets'
+    : 'Pages';
+  return { path: file.pdfPath, label, source: 'converted' };
+}
+
 export function primaryOrigin(file) {
   return (file?.origins && file.origins[0])
     || { kind: 'files-tab', label: 'Files tab', group: 'files-tab' };

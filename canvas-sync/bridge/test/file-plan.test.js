@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  groupFilesBySource, originDetail, sourceSectionKey,
+  filePreviewPlan, groupFilesBySource, originDetail, sourceSectionKey,
 } from '../public/file-plan.js';
 
 const file = (name, origin) => ({ displayName: name, origins: [origin] });
@@ -49,4 +49,17 @@ test('the exact originating item remains visible under a bunched file', () => {
   const f = file('Deck.pptx', quiz(10, 'S2a Concept Check'));
   f.origins.push({ kind: 'module', label: 'Week 2', group: 'module:2' });
   assert.equal(originDetail(f), 'S2a Concept Check · +1 more place');
+});
+
+test('PDFs keep their original pages while Office files use their PDF derivative', () => {
+  assert.deepEqual(filePreviewPlan({
+    displayName: 'Syllabus.pdf', localPath: 'files/Syllabus.pdf',
+  }), { path: 'files/Syllabus.pdf', label: 'Original', source: 'original' });
+  assert.deepEqual(filePreviewPlan({
+    displayName: 'Lecture.pptx', localPath: 'files/Lecture.pptx',
+    pdfPath: 'materials/pdf/Lecture.pptx.pdf',
+  }), { path: 'materials/pdf/Lecture.pptx.pdf', label: 'Slides', source: 'converted' });
+  assert.equal(filePreviewPlan({
+    displayName: 'Notes.docx', localPath: 'files/Notes.docx',
+  }), null, 'without a converted PDF the text fallback remains available');
 });

@@ -473,6 +473,72 @@ three of the six real classes state no time anywhere on disk; hiding the repair
 behind the filter would make a wrong class time unfixable. Deliberate
 asymmetry, recorded so it is not "fixed" later.
 
+### §6.16–6.21 — the AI-added toggle, and which control gets blamed for an empty view
+
+Added 2026-08-26, adopted from an ended session and verified before landing (its
+author's session closed with the work uncommitted and unspecified). Provenance
+itself is not new — §2.13 already marks AI-mined items — but until now there was
+no way to *stop drawing* them.
+
+It is a binary toggle, not a selection, and deliberately so: AI-added is
+orthogonal to kind and class. An AI-mined reading and a Canvas-backed reading
+share a kind, so hiding the former through the kind chips would take the latter
+with it. `isAiItemVisible()` is therefore its own filter stage, and non-AI items
+pass it unconditionally.
+
+| # | Requirement | Check | Built | Live | User |
+| ---: | --- | --- | :---: | :---: | :---: |
+| 6.16 | An `AI-added` chip carries the count of mined items and toggles them in every view. | Chip reads `AI-added 78`; clicking it drops the list from 341 to 263 | x | x | |
+| 6.17 | The choice persists across reloads, like every other calendar control. | Toggle off, reload: `localStorage.calShowAiAdded === '0'`, `aria-pressed="false"`, 263 items | x | x | |
+| 6.18 | **A filter for an empty category is not drawn.** With no AI-mined items at all, the chip does not exist. | Strip every `origin: 'syllabus'` op from the worklist: `[data-ai-added-filter]` count === 0, while 7 kind chips and 6 class chips still draw | x | x | |
+| 6.19 | The summary **attributes** what it withheld, per cause. | With AI off and past hidden: `91 hidden (78 AI-added, 13 past schedule)` | x | x | |
+| 6.20 | **Each empty view names the control that emptied it** — never a control that is innocent. AI-emptied says AI; past-emptied says past; otherwise the class chips. | `reading` is 100% AI here (33/33): AI off + Readings gives 0 rows and "All matching items are AI-added…", not the class message | x | x | |
+| 6.21 | The chip's off state is said in **ink, not opacity** (§3.6). | `getComputedStyle` on the chip: `opacity === '1'` in both states; off is `color: rgb(98,108,100)` with a lighter rule, on is `rgb(36,72,61)` | x | x | |
+
+**Measured live 2026-08-26** on the fixture bridge (`:3849`), six real classes:
+
+```
+default (AI shown)          chip "AI-added 78"   341 items · 13 hidden (13 past schedule)
+click AI-added (off)        aria-pressed=false   263 items · 91 hidden (78 AI-added, 13 past schedule)
+reload                      still off            263 items, calShowAiAdded='0'
+AI off + Readings only                             0 items · 33 hidden (33 AI-added)
+AI on  + Readings only                            33 items
+worklist stripped of AI                            chip absent, 7 kind + 6 class chips still drawn
+```
+
+**6.20 needs no precedence rule, because the branches are disjoint by
+construction.** `hiddenPast` is computed from `selectedOps`, `selectedOps` from
+`byOrigin`. The AI branch is guarded by `!byOrigin.length`, and when `byOrigin`
+is empty `selectedOps` is empty, so `hiddenPast` is necessarily `0`. The two
+messages therefore cannot both be eligible, whatever order they are written in —
+this is a property of the filter chain, not a choice about which to prefer, and
+it should not be "fixed" later by reordering the ternary.
+
+**The past-items branch is the defect this adoption surfaced.** The past filter
+runs *after* the class filter, so before this row existed a view emptied by
+hidden past meetings fell through to the class message and told the user to
+deselect a class that was in fact selected and did have items — they were merely
+behind. That is a 3.10 violation: it named an innocent control. Verified by
+injecting a class whose only two ops are past meetings, selecting it, and
+reading back "Everything here has already happened — turn on past items above to
+show them." with `0 items · 356 hidden (2 past schedule)`; the injected data was
+then removed and the fixture restored to 354 ops.
+
+**`User` is blank across 6.16–6.21 on purpose.** At the time of writing this
+feature is uncommitted and is being staged by another session; nothing has
+reached the user's bridge, so a `User` tick would be a tick for something
+unobservable. 6.18 additionally was driven against a deliberately stripped
+fixture worklist, a state the user's own data does not have.
+
+**Adoption note.** `.filter-chip.ai-filter:not(.on) { opacity: .72; }` shipped in
+the inherited working copy and violated 3.6 — an off-state opacity rule on a
+control that is not disabled, against a convention the stylesheet states in its
+own voice twice (`style.css`: "On, in ink weight and a border — never opacity",
+and "ink says off, not opacity" above `.class-chip.off`). Replaced with the
+muted-ink treatment `.filter-chip.empty` already uses. The dashed border is
+kept: it echoes the `.ai-added` provenance idiom, so the control looks like the
+thing it governs.
+
 ## §7 — Class times: set, change, and undo
 
 Added 2026-08-25. The user's request: *"add ability to input/modify a class

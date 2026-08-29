@@ -137,3 +137,41 @@ export function linkRelatedMaterials(item, sources = []) {
     })),
   };
 }
+
+/**
+ * Add files Canvas itself links from the resolved assignment/quiz.
+ *
+ * Model-authored `related_materials` are useful topic matches, but a rubric or
+ * template linked directly in the assignment description is authoritative and
+ * must not depend on the model remembering to repeat it. `files` is the
+ * filesWithOrigins() result, so this stays a deterministic join on Canvas ids.
+ */
+export function addDirectTaskMaterials(item, files = [], assignments = []) {
+  if (!item || typeof item !== 'object') return item;
+  const assignmentIds = new Set([
+    item.canvas_assignment_id,
+    ...(Array.isArray(item.canvas_assignment_ids) ? item.canvas_assignment_ids : []),
+    ...(Array.isArray(item.covers) ? item.covers : []),
+  ].filter(value => value != null).map(String));
+  if (assignmentIds.size === 0) return item;
+  const matchedAssignments = (Array.isArray(assignments) ? assignments : [])
+    .filter(row => assignmentIds.has(String(row?.id ?? '')));
+  const quizIds = new Set(matchedAssignments
+    .map(row => row?.quiz_id).filter(value => value != null).map(String));
+  const direct = (Array.isArray(files) ? files : []).filter(file =>
+    file && !file.duplicateOf && file.supersededBy == null && file.localPath
+      && (Array.isArray(file.origins) ? file.origins : []).some(origin =>
+        (origin?.kind === 'assignment' && assignmentIds.has(String(origin.itemId ?? '')))
+        || (origin?.kind === 'quiz' && quizIds.has(String(origin.itemId ?? '')))));
+
+  const related = Array.isArray(item.related_materials)
+    ? item.related_materials.map(material => ({ ...material })) : [];
+  for (const file of direct) {
+    const label = file.displayName ?? file.filename ?? file.name;
+    if (!label) continue;
+    const key = materialKey(label);
+    if (related.some(material => materialKey(material?.file) === key)) continue;
+    related.push({ file: String(label), why: 'Linked directly from a Canvas assignment represented by this task.' });
+  }
+  return { ...item, related_materials: related };
+}

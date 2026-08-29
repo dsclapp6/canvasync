@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  linkRelatedMaterials, materialKey, materialSources, resolveMaterial,
+  addDirectTaskMaterials, linkRelatedMaterials, materialKey, materialSources, resolveMaterial,
 } from '../public/material-links.js';
 
 const files = [
@@ -81,4 +81,44 @@ test('linkRelatedMaterials preserves labels and marks unavailable guesses as unr
   assert.equal(linked.related_materials[0].source.type, 'file');
   assert.equal(linked.related_materials[0].why, 'read it');
   assert.equal(linked.related_materials[1].source, null);
+});
+
+test('files linked by the real Canvas assignment are added without model help', () => {
+  const directFiles = [{
+    displayName: 'Project rubric.pdf',
+    localPath: 'files/Project rubric.pdf',
+    origins: [{ kind: 'assignment', itemId: '71' }],
+  }, {
+    displayName: 'Quiz review.pdf',
+    localPath: 'files/Quiz review.pdf',
+    origins: [{ kind: 'quiz', itemId: '900' }],
+  }];
+  const assignments = [
+    { id: 71, name: 'Project' },
+    { id: 72, name: 'Quiz', quiz_id: 900 },
+  ];
+  const project = addDirectTaskMaterials({ canvas_assignment_id: 71 }, directFiles, assignments);
+  assert.deepEqual(project.related_materials, [{
+    file: 'Project rubric.pdf', why: 'Linked directly from a Canvas assignment represented by this task.',
+  }]);
+  const quiz = addDirectTaskMaterials({ canvas_assignment_id: 72 }, directFiles, assignments);
+  assert.equal(quiz.related_materials[0].file, 'Quiz review.pdf');
+});
+
+test('an aggregate task gets direct files from every Canvas assignment it covers', () => {
+  const linked = addDirectTaskMaterials({
+    canvas_assignment_id: 71,
+    canvas_assignment_ids: [71, 72],
+  }, [{
+    displayName: 'Part A rubric.pdf',
+    localPath: 'files/a.pdf',
+    origins: [{ kind: 'assignment', itemId: 71 }],
+  }, {
+    displayName: 'Part B template.docx',
+    localPath: 'files/b.docx',
+    origins: [{ kind: 'assignment', itemId: 72 }],
+  }], [{ id: 71 }, { id: 72 }]);
+  assert.deepEqual(linked.related_materials.map(material => material.file), [
+    'Part A rubric.pdf', 'Part B template.docx',
+  ]);
 });
