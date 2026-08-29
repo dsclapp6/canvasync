@@ -6,6 +6,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataRoot as syncHome } from '../data-root.js';
+import { withFilesIndexLock } from '../file-lock.js';
 
 export function slugifyCourseCode(code) {
   if (!code || typeof code !== 'string') return null;
@@ -266,70 +267,80 @@ export async function writeCourseFile(payload = {}) {
   const safeBase = path.basename(chosenName);
   let safeFilename = safeBase;
 
-  // Load existing index to detect collisions and skip-if-unchanged.
-  const index = await readFilesIndex(classDir);
-  const existingEntry = index.find(e => e && e.canvasId === fileId);
+  // files_index.json is read here and written at the end of this function,
+  // with a binary write in between — a read-modify-write across two awaits.
+  // The in-process lock alone is not enough: the spawned extract stage rewrites
+  // the same file from a DIFFERENT process, so there is no temp collision and
+  // no error, just a write that silently is not there. withFilesIndexLock takes
+  // both layers, in-process first. See file-lock.js and WRITE-SAFETY-AUDIT.md
+  // "Site 1". The deadline is short on purpose: this serves an HTTP request,
+  // and the extension retries a 503 rather than waiting on a held-open socket.
+  return withFilesIndexLock(classDir, async () => {
+    // Load existing index to detect collisions and skip-if-unchanged.
+    const index = await readFilesIndex(classDir);
+    const existingEntry = index.find(e => e && e.canvasId === fileId);
 
-  // Skip if size + canvasUpdatedAt match (plan 1b step 6).
-  if (existingEntry
-      && existingEntry.size === size
-      && existingEntry.canvasUpdatedAt === canvasUpdatedAt) {
-    return { changed: false, localPath: existingEntry.localPath };
-  }
+    // Skip if size + canvasUpdatedAt match (plan 1b step 6).
+    if (existingEntry
+        && existingEntry.size === size
+        && existingEntry.canvasUpdatedAt === canvasUpdatedAt) {
+      return { changed: false, localPath: existingEntry.localPath };
+    }
 
-  // Collision with a different canvasId → append -<canvasId> before extension.
-  const collision = index.find(e =>
-    e && e.canvasId !== fileId &&
-    path.basename(e.localPath || '') === safeBase
-  );
-  if (collision) {
-    const ext = path.extname(safeBase);
-    const stem = safeBase.slice(0, safeBase.length - ext.length);
-    safeFilename = `${stem}-${fileId}${ext}`;
-  }
+    // Collision with a different canvasId → append -<canvasId> before extension.
+    const collision = index.find(e =>
+      e && e.canvasId !== fileId &&
+      path.basename(e.localPath || '') === safeBase
+    );
+    if (collision) {
+      const ext = path.extname(safeBase);
+      const stem = safeBase.slice(0, safeBase.length - ext.length);
+      safeFilename = `${stem}-${fileId}${ext}`;
+    }
 
-  // Atomic binary write.
-  const buffer = Buffer.from(dataBase64, 'base64');
-  const destPath = path.join(filesDir, safeFilename);
-  await atomicWriteBinary(destPath, buffer);
+    // Atomic binary write.
+    const buffer = Buffer.from(dataBase64, 'base64');
+    const destPath = path.join(filesDir, safeFilename);
+    await atomicWriteBinary(destPath, buffer);
 
-  // Upsert index entry with extraction pending.
-  const localPath = path.join('files', safeFilename);
-  const now = new Date().toISOString();
-  const upserted = {
-    canvasId: fileId,
-    displayName: chosenName,
-    filename: filename ?? chosenName,
-    contentType: contentType ?? null,
-    size: size ?? buffer.length,
-    canvasUpdatedAt: canvasUpdatedAt ?? null,
-    localPath,
-    materialsPath: null,
-    extractionStatus: 'pending',
-    extractionError: null,
-    textSha256: null,
-    duplicateOf: null,
-    skipped: null,
-    lastSyncedAt: now,
-  };
-
-  const idx = index.findIndex(e => e && e.canvasId === fileId);
-  if (idx >= 0) {
-    // Preserve any fields the extractor may have set we don't want to clobber.
-    // OPEN: on re-download we deliberately reset extractionStatus to 'pending'
-    // so downstream extractor re-processes. Preserving materialsPath so the
-    // old .txt isn't orphaned during the extract job.
-    index[idx] = {
-      ...index[idx],
-      ...upserted,
-      materialsPath: index[idx].materialsPath ?? null,
+    // Upsert index entry with extraction pending.
+    const localPath = path.join('files', safeFilename);
+    const now = new Date().toISOString();
+    const upserted = {
+      canvasId: fileId,
+      displayName: chosenName,
+      filename: filename ?? chosenName,
+      contentType: contentType ?? null,
+      size: size ?? buffer.length,
+      canvasUpdatedAt: canvasUpdatedAt ?? null,
+      localPath,
+      materialsPath: null,
+      extractionStatus: 'pending',
+      extractionError: null,
+      textSha256: null,
+      duplicateOf: null,
+      skipped: null,
+      lastSyncedAt: now,
     };
-  } else {
-    index.push(upserted);
-  }
-  await writeFilesIndex(classDir, index);
 
-  return { changed: true, localPath };
+    const idx = index.findIndex(e => e && e.canvasId === fileId);
+    if (idx >= 0) {
+      // Preserve any fields the extractor may have set we don't want to clobber.
+      // OPEN: on re-download we deliberately reset extractionStatus to 'pending'
+      // so downstream extractor re-processes. Preserving materialsPath so the
+      // old .txt isn't orphaned during the extract job.
+      index[idx] = {
+        ...index[idx],
+        ...upserted,
+        materialsPath: index[idx].materialsPath ?? null,
+      };
+    } else {
+      index.push(upserted);
+    }
+    await writeFilesIndex(classDir, index);
+
+    return { changed: true, localPath };
+  });
 }
 
 // --- v1.1: safe delete (per plan 3a) ---

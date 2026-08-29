@@ -19,8 +19,12 @@ gained its missing try/catch; site 4's five routes unified through one
 mutateConfig(fn) reading inside the lock; key normalization added to
 write-lock.js via lockKey(scope, target) — fast-follow on v1.8.7, latent
 there, reachable once slice B added global keys). Site 8 locks by CLASS DIR:
-each mutator touches both override and stash files. Site 1 implementation in
-flight (canvasync-96, accepted design below). Site 2 follow-up. Site 9 safe.
+each mutator touches both override and stash files. Site 1 LANDED v1.8.9
+(canvasync-96, per the accepted design below: canvas-sync/file-lock.js,
+real child-process control+treatment race tests, 7 of 8 mutations bite, the
+eighth — rm-by-path reclaim — accepted-silent and documented at the reclaim
+line as verified by provenance, not CI). Site 2 follow-up. Site 9 safe.
+CAMPAIGN COMPLETE: 8 of 9 sites resolved across v1.8.5–v1.8.9.
 
 ## Verdict table
 

@@ -34,6 +34,7 @@ import {
 } from './_util.js';
 import { extractTextFromHtml } from './parse-syllabus.js';
 import { spawn } from 'node:child_process';
+import { withFilesIndexLock } from '../file-lock.js';
 
 // --- Optional LibreOffice → PDF conversion ---------------------------------
 
@@ -616,44 +617,68 @@ async function main() {
   // and an entry the bridge re-downloaded mid-pass (newer lastSyncedAt) keeps
   // the DISK copy — its 'pending' status is about the new bytes, which this
   // pass's results do not describe.
-  const mergedIndex = await (async () => {
-    const diskNow = await readJsonSafe(indexPath);
-    if (!Array.isArray(diskNow)) return index;
-    const memById = new Map(index.map(e => [String(e?.canvasId), e]));
-    const out = [];
-    const seen = new Set();
-    for (const d of diskNow) {
-      const id = String(d?.canvasId);
-      const m = memById.get(id);
-      seen.add(id);
-      if (!m) { out.push(d); continue; }
-      const newerOnDisk = (d?.lastSyncedAt ?? '') > (m?.lastSyncedAt ?? '');
-      out.push(newerOnDisk ? d : m);
+  // The merge below is a read-modify-write, and the bridge writes this same
+  // file from another process. The merge alone narrowed that race but could not
+  // close it: there is a real await between the disk read and the index write
+  // (the marker write, in the leftoverPending branch), and a file ingested in
+  // that window still vanished. The lock closes it; the merge STAYS as the
+  // semantic guard, correct for any writer that predates the lock.
+  //
+  // Scoped to the finalize ONLY — never the extraction pass above, which runs
+  // for minutes. A lock held that long would need a stale threshold that cannot
+  // tell a slow holder from a dead one. See file-lock.js.
+  const finalize = async () => {
+    const mergedIndex = await (async () => {
+      const diskNow = await readJsonSafe(indexPath);
+      if (!Array.isArray(diskNow)) return index;
+      const memById = new Map(index.map(e => [String(e?.canvasId), e]));
+      const out = [];
+      const seen = new Set();
+      for (const d of diskNow) {
+        const id = String(d?.canvasId);
+        const m = memById.get(id);
+        seen.add(id);
+        if (!m) { out.push(d); continue; }
+        const newerOnDisk = (d?.lastSyncedAt ?? '') > (m?.lastSyncedAt ?? '');
+        out.push(newerOnDisk ? d : m);
+      }
+      for (const m of index) {
+        if (!seen.has(String(m?.canvasId))) out.push(m);
+      }
+      return out;
+    })();
+    // Write ORDER decides whether a mid-run ingest ever gets extracted. Every
+    // re-run gate (trigger.js isStale, sync-all needsExtract) is a pure mtime
+    // comparison of files_index.json against the marker — so when the merge
+    // kept entries this pass never processed, the marker must land FIRST and
+    // the index after, leaving the stage stale and the next trigger pass to
+    // pick the pending work up. Marker-last would stamp completion over
+    // unprocessed work, and since neither the extension's diff nor the
+    // bridge's skip-if-unchanged path ever rewrites an unchanged file, nothing
+    // would re-fire the stage: the file would sit pending — invisible to
+    // _combined, mining and the context pack — forever.
+    const leftoverPending = mergedIndex.some(e => e && e.extractionStatus === 'pending');
+    if (leftoverPending) {
+      await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
+      await atomicWriteJson(indexPath, mergedIndex);
+      process.stderr.write(`Updated ${indexPath} (mid-run ingest detected — stage left stale so the next pass extracts it)\n`);
+    } else {
+      await atomicWriteJson(indexPath, mergedIndex);
+      await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
+      process.stderr.write(`Updated ${indexPath}\n`);
     }
-    for (const m of index) {
-      if (!seen.has(String(m?.canvasId))) out.push(m);
-    }
-    return out;
-  })();
-  // Write ORDER decides whether a mid-run ingest ever gets extracted. Every
-  // re-run gate (trigger.js isStale, sync-all needsExtract) is a pure mtime
-  // comparison of files_index.json against the marker — so when the merge
-  // kept entries this pass never processed, the marker must land FIRST and
-  // the index after, leaving the stage stale and the next trigger pass to
-  // pick the pending work up. Marker-last would stamp completion over
-  // unprocessed work, and since neither the extension's diff nor the
-  // bridge's skip-if-unchanged path ever rewrites an unchanged file, nothing
-  // would re-fire the stage: the file would sit pending — invisible to
-  // _combined, mining and the context pack — forever.
-  const leftoverPending = mergedIndex.some(e => e && e.extractionStatus === 'pending');
-  if (leftoverPending) {
-    await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
-    await atomicWriteJson(indexPath, mergedIndex);
-    process.stderr.write(`Updated ${indexPath} (mid-run ingest detected — stage left stale so the next pass extracts it)\n`);
-  } else {
-    await atomicWriteJson(indexPath, mergedIndex);
-    await atomicWriteText(join(materialsDir, 'last_extracted.txt'), new Date().toISOString());
-    process.stderr.write(`Updated ${indexPath}\n`);
+  };
+  try {
+    // Generous: this is a batch job with nobody waiting on a socket.
+    await withFilesIndexLock(classDir, finalize, { timeoutMs: 30000 });
+  } catch (err) {
+    // A 30s wait for a lock held in milliseconds means something is wedged.
+    // Finishing unlocked re-exposes the narrow race the merge already covers;
+    // exiting would throw away a pass that costs minutes. Take the merge, and
+    // say so loudly rather than letting it look like a clean run.
+    process.stderr.write(`WARNING: files_index lock unavailable (${err.message}); `
+      + 'finalizing with the merge alone — a concurrent ingest could still be lost.\n');
+    await finalize();
   }
   process.exit(0);
 }
