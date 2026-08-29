@@ -37,6 +37,7 @@
 // custom-items.js and bridge/user-state.js, so the pattern has one home.
 
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import crypto from 'node:crypto';
 
 // Keyed by whatever the caller decides identifies "the thing being mutated".
@@ -49,6 +50,41 @@ import crypto from 'node:crypto';
 const QUEUES = new Map();
 
 /**
+ * Build a lock key. Use this rather than passing a path directly.
+ *
+ * The key is a Map key, so two spellings of one path are two queues and no
+ * serialization at all — and it would report success while doing nothing,
+ * which is the exact failure mode this module exists to kill. `a/b/`, `a//b`
+ * and `a/c/../b` are the same file and three different strings.
+ *
+ * `scope` keeps two concerns on one directory apart: the meeting override and
+ * the textbook links both live under a class dir, and they should not queue
+ * behind each other.
+ *
+ * WHAT THIS NORMALIZES: relative-vs-absolute, redundant separators, `.` and
+ * `..`. WHAT IT DOES NOT: symlink identity. realpath is async and this is not,
+ * so two symlinks to one directory would still be two locks. That is a
+ * deliberate limit rather than an oversight — resolving costs an fs call on
+ * every acquisition, and the keys here name class-directory roots, which this
+ * project's fixture rule copies rather than symlinks. A caller that genuinely
+ * can be handed two paths to one directory must realpath before calling.
+ */
+export function lockKey(scope, target) {
+  return `${scope}@${path.resolve(target)}`;
+}
+
+// Normalizes the path half of a `scope@path` key, so a hand-written key is as
+// safe as one from lockKey(). A key with no `@` is left exactly as given:
+// resolving it would make it depend on process.cwd(), and a key that changes
+// when the working directory does is worse than one that is merely unnormalized.
+function normalizeKey(key) {
+  const raw = String(key);
+  const at = raw.indexOf('@');
+  if (at === -1) return raw;
+  return `${raw.slice(0, at + 1)}${path.resolve(raw.slice(at + 1))}`;
+}
+
+/**
  * Run `fn` with nothing else holding `key`, and hand back what it returns.
  *
  * Mutations queue; reads do not, and that is deliberate rather than an
@@ -58,8 +94,15 @@ const QUEUES = new Map();
  * every in-flight PUT. A read that needs a snapshot CONSISTENT WITH its own
  * write is a different matter — that one belongs inside the lock, as part of
  * the mutation that depends on it, which is how every caller here uses it.
+ *
+ * NOT REENTRANT. Taking the same key again inside `fn` deadlocks: the inner
+ * call queues behind the outer one, which is waiting for the inner one to
+ * finish. Keep the lock at the call site and let the locked body call only
+ * unlocked helpers — every caller here is shaped that way, with a `…Locked`
+ * function holding the work.
  */
-export function withPathLock(key, fn) {
+export function withPathLock(rawKey, fn) {
+  const key = normalizeKey(rawKey);
   // The stored tail never rejects, so one failed mutation cannot poison the
   // queue behind it. The caller still sees its own rejection, through `run`.
   const tail = QUEUES.get(key) ?? Promise.resolve();

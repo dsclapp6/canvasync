@@ -10,14 +10,17 @@ promise chain + crypto.randomBytes temp suffix). -->
 
 # Write-safety audit — pid-temp and read-modify-write sites
 
-STATUS: conversion assigned (canvasync-0e), split by risk: slice A = shared
-helper canvas-sync/write-lock.js (in-process only, node builtins only, package
-root per the canvas-tasks.js convention) proven against custom-items.js and
-user-state.js, then sites 3+8 (complete fixes — single-caller by construction,
-verified). Slice B = the four global-file server.js sites (4,5,6,7). Site 8
-locks by CLASS DIR: each mutator touches both override and stash files, so a
-per-file lock would leave the double-click-clear stash destruction standing.
-Site 1's cross-process half and site 2 are follow-up items. Site 9 safe.
+STATUS: slice A LANDED v1.8.7 (write-lock.js; custom-items + user-state
+converted behavior-preserving; site 3 fixed, lock load-bearing; site 8
+defence-in-depth only — prediction falsified, see below). Slice B LANDED
+v1.8.8 (sites 4,5,6,7 all load-bearing — per-site lock-removal mutations fail
+3/2/2/4 of 10; the app-vs-extension intent race reproduced and closed; site 7
+gained its missing try/catch; site 4's five routes unified through one
+mutateConfig(fn) reading inside the lock; key normalization added to
+write-lock.js via lockKey(scope, target) — fast-follow on v1.8.7, latent
+there, reachable once slice B added global keys). Site 8 locks by CLASS DIR:
+each mutator touches both override and stash files. Site 1 implementation in
+flight (canvasync-96, accepted design below). Site 2 follow-up. Site 9 safe.
 
 ## Verdict table
 
@@ -56,13 +59,12 @@ Site 1's cross-process half and site 2 are follow-up items. Site 9 safe.
 
 ## Follow-up items (not in the sites-3–8 conversion)
 
-- **files_index.json cross-process race**: bridge (storage.js:330 via
-  /ingest/course-file) vs spawned extract stage
-  (scripts/extract-course-files.js:326,604). Different pids → no temp
-  collision, but the same lost update; POST /api/pipeline/run can start the
-  stage mid-sync. Needs a design (route-level gate or cross-process lock),
-  not just the in-process mutex. scripts/index-progress.js:208-210 already
-  notes the rewrite.
+- **files_index.json cross-process race**: SUPERSEDED — the accepted design
+  is the "Site 1" section below (cross-process file lock, RMW-scoped,
+  canvasync-96). Kept here only as the original finding: bridge
+  (storage.js:330 via /ingest/course-file) vs spawned extract stage
+  (scripts/extract-course-files.js:326,604); pid suffixes hide the temp
+  collision but not the lost update.
 - **#2** collision-only path becomes reachable with any second extension
   instance (second Chrome profile) or future parallel ingest.
   bridge/test/ingest-idempotency.test.js:129-136 documents why its retries

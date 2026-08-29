@@ -22,6 +22,8 @@ import {
 } from './trigger.js';
 import { brokenPipelinePlan } from './broken-pipeline.js';
 import { dataRoot } from '../data-root.js';
+import { withPathLock, atomicWrite, atomicWriteJson as lockedWriteJson, lockKey }
+  from '../write-lock.js';
 import { readSyncScope, readEnrolledCourses, isInScope, SCOPE_FILE, CLASS_DIR_RE } from '../scope.js';
 import { readUserState, patchTask, UserStateError } from './user-state.js';
 import {
@@ -123,11 +125,37 @@ async function loadConfigOrExit() {
   }
 }
 
+function configPath() {
+  return path.join(syncHome(), 'config.json');
+}
+
 async function saveConfig(config) {
-  const configPath = path.join(syncHome(), 'config.json');
-  const tmp = configPath + '.tmp.' + process.pid;
-  await fs.writeFile(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
-  await fs.rename(tmp, configPath);
+  await atomicWrite(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 });
+}
+
+/**
+ * Read config.json, let `fn` change it, write it back — with nothing else
+ * doing the same in between.
+ *
+ * Five routes mutate config.json (pairing, force-unpair, secret rotation,
+ * scope, install-token), and every one of them was loadConfig -> mutate ->
+ * saveConfig with an await in the middle. Two together lost one of the two
+ * changes and reported success — and this is the file holding bridgeSecret and
+ * extensionId, so the change lost could be a re-pair.
+ *
+ * The read is INSIDE the lock deliberately: a snapshot taken before another
+ * writer's save is the stale read the lock exists to prevent. `fn` may return
+ * false to abandon the write without an error, which is what the routes that
+ * decide-then-write need.
+ */
+function mutateConfig(fn) {
+  return withPathLock(lockKey('config', configPath()), async () => {
+    const fresh = await loadConfig();
+    const result = await fn(fresh);
+    if (result === false) return result;
+    await saveConfig(fresh);
+    return result;
+  });
 }
 
 // Cap on how many course ids either side may push at us. A Canvas account
@@ -139,10 +167,36 @@ const MAX_SCOPE_IDS = 500;
 // as the scope mirror: config.json holds the pairing secret.
 const DASHBOARD_STATE_FILE = 'dashboard-state.json';
 
-async function atomicWriteJson(filePath, obj) {
-  const tmp = `${filePath}.tmp.${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify(obj, null, 2));
-  await fs.rename(tmp, filePath);
+const atomicWriteJson = lockedWriteJson;
+
+function dashboardStatePath() {
+  return path.join(syncHome(), DASHBOARD_STATE_FILE);
+}
+
+/**
+ * Read dashboard-state.json, let `fn` change it, write it back, serialized.
+ *
+ * THE marquee case of this audit. Two routes read-modify-write this file from
+ * opposite ends of the system: POST /api/scope, where the app records a new
+ * class selection, and POST /config/intent/ack, where the extension reports it
+ * has applied the previous one. The ack's whole job is to NOT clear an intent
+ * newer than the one it applied, and it enforces that with an id comparison —
+ * against a snapshot taken before the read. Unserialized, the app can write a
+ * new intent between the ack's read and its write, and the ack then saves a
+ * state that never contained it. The user changes their class selection while a
+ * sync is running and the change is silently gone.
+ *
+ * `fn` returning false abandons the write, which is what the ack needs when the
+ * ids do not match — no write at all beats a no-op rewrite that could clobber.
+ */
+function mutateDashboardState(fn) {
+  return withPathLock(lockKey('dashboard-state', dashboardStatePath()), async () => {
+    const state = await readDashboardState();
+    const result = await fn(state);
+    if (result === false) return result;
+    await writeDashboardState(state);
+    return result;
+  });
 }
 
 async function readDashboardState() {
@@ -323,8 +377,14 @@ export function buildApp(config) {
         return res.status(403).json({ error: 'invalid token' });
       }
 
-      config.extensionId = extensionId;
-      await saveConfig(config);
+      await mutateConfig((fresh) => {
+        fresh.extensionId = extensionId;
+        // Keep the long-lived in-memory copy in step, inside the lock: other
+        // routes read from it, and this used to SAVE it rather than a fresh
+        // read — so a pairing landing between an untracked route's save and
+        // its in-memory update wrote back a config without that change.
+        config.extensionId = extensionId;
+      });
       await fs.unlink(tokenPath).catch(() => {});
 
       res.json({ ok: true, secret: config.bridgeSecret });
@@ -543,13 +603,15 @@ export function buildApp(config) {
 
     // On success: push folderName into config.untracked (idempotent) + save.
     try {
-      const freshConfig = await loadConfig();
-      const untracked = Array.isArray(freshConfig.untracked) ? freshConfig.untracked : [];
-      if (!untracked.includes(folderName)) untracked.push(folderName);
-      freshConfig.untracked = untracked;
-      await saveConfig(freshConfig);
-      // Mutate in-memory config too so subsequent requests see it.
-      config.untracked = untracked;
+      await mutateConfig((fresh) => {
+        const untracked = Array.isArray(fresh.untracked) ? fresh.untracked : [];
+        if (!untracked.includes(folderName)) untracked.push(folderName);
+        fresh.untracked = untracked;
+        // In-memory config too, so subsequent requests see it — inside the
+        // lock, or another writer's fresh read can land between the save and
+        // this assignment and carry a stale list back to disk.
+        config.untracked = untracked;
+      });
     } catch (err) {
       console.error('[bridge] /class/delete: config update failed:', err.message);
       // Don't fail the response — deletion already succeeded.
@@ -582,12 +644,12 @@ export function buildApp(config) {
       return res.status(400).json({ error: 'invalid folderName' });
     }
     try {
-      const fresh = await loadConfig();
-      const untracked = Array.isArray(fresh.untracked) ? fresh.untracked : [];
-      if (!untracked.includes(folderName)) untracked.push(folderName);
-      fresh.untracked = untracked;
-      await saveConfig(fresh);
-      config.untracked = untracked;
+      await mutateConfig((fresh) => {
+        const untracked = Array.isArray(fresh.untracked) ? fresh.untracked : [];
+        if (!untracked.includes(folderName)) untracked.push(folderName);
+        fresh.untracked = untracked;
+        config.untracked = untracked;
+      });
       res.json({ ok: true });
       logRequest(req, res, null);
     } catch (err) {
@@ -603,12 +665,12 @@ export function buildApp(config) {
       return res.status(400).json({ error: 'invalid folderName' });
     }
     try {
-      const fresh = await loadConfig();
-      const untracked = Array.isArray(fresh.untracked) ? fresh.untracked : [];
-      const filtered = untracked.filter(f => f !== folderName);
-      fresh.untracked = filtered;
-      await saveConfig(fresh);
-      config.untracked = filtered;
+      await mutateConfig((fresh) => {
+        const untracked = Array.isArray(fresh.untracked) ? fresh.untracked : [];
+        const filtered = untracked.filter(f => f !== folderName);
+        fresh.untracked = filtered;
+        config.untracked = filtered;
+      });
       res.json({ ok: true });
       logRequest(req, res, null);
     } catch (err) {
@@ -648,20 +710,33 @@ export function buildApp(config) {
 
     const scopePath = path.join(syncHome(), SCOPE_FILE);
     try {
-      if (courseIds === null && enrolled === null) {
-        await fs.rm(scopePath, { force: true });
+      // Read-modify-write, and locked for it: this request carries ONE of the
+      // two halves and keeps the other from what is on disk, so two of them
+      // together — the extension publishing its enrolment list while the app
+      // saves a selection — would each write back the other's half as it stood
+      // before, and one of the two updates would vanish. The delete path takes
+      // the lock too, so a removal cannot land between another writer's read
+      // and its write.
+      const cleared = await withPathLock(lockKey('sync-scope', scopePath), async () => {
+        if (courseIds === null && enrolled === null) {
+          await fs.rm(scopePath, { force: true });
+          return true;
+        }
+        // Keep whichever half this request did not carry.
+        let existing = null;
+        try { existing = JSON.parse(await fs.readFile(scopePath, 'utf8')); } catch { /* first write */ }
+        await atomicWriteJson(scopePath, {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          courseIds: courseIds ?? existing?.courseIds ?? null,
+          enrolled: enrolled ?? existing?.enrolled ?? [],
+        });
+        return false;
+      });
+      if (cleared) {
         res.json({ ok: true, courseIds: null });
         return logRequest(req, res, null);
       }
-      // Keep whichever half this request did not carry.
-      let existing = null;
-      try { existing = JSON.parse(await fs.readFile(scopePath, 'utf8')); } catch { /* first write */ }
-      await atomicWriteJson(scopePath, {
-        version: 1,
-        updatedAt: new Date().toISOString(),
-        courseIds: courseIds ?? existing?.courseIds ?? null,
-        enrolled: enrolled ?? existing?.enrolled ?? [],
-      });
       res.json({ ok: true, courseIds });
       logRequest(req, res, null);
     } catch (err) {
@@ -688,12 +763,16 @@ export function buildApp(config) {
   v11Router.post('/config/intent/ack', async (req, res) => {
     const id = typeof req.body?.id === 'string' ? req.body.id : null;
     try {
-      const state = await readDashboardState();
-      if (id && state.intent && state.intent.id === id) {
+      // Compare and clear INSIDE the lock. The id check is the whole safety
+      // rule here — "a newer intent must survive this ack" — and comparing
+      // against a snapshot the app can overwrite before this writes is what
+      // defeated it.
+      const cleared = await mutateDashboardState((state) => {
+        if (!(id && state.intent && state.intent.id === id)) return false;
         state.intent = null;
-        await writeDashboardState(state);
-        return res.json({ ok: true, cleared: true });
-      }
+        return true;
+      });
+      if (cleared === true) return res.json({ ok: true, cleared: true });
       res.json({ ok: true, cleared: false });
       logRequest(req, res, null);
     } catch (err) {
@@ -963,14 +1042,15 @@ export function buildApp(config) {
     const courseIds = raw === null ? null
       : [...new Set(raw.map(id => String(id).trim()).filter(id => /^[0-9]+$/.test(id)))];
     try {
-      const state = await readDashboardState();
-      state.intent = {
-        id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
-        courseIds,
-      };
-      await writeDashboardState(state);
-      res.json({ ok: true, intent: state.intent });
+      const intent = await mutateDashboardState((state) => {
+        state.intent = {
+          id: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+          courseIds,
+        };
+        return state.intent;
+      });
+      res.json({ ok: true, intent });
     } catch (err) {
       console.error('[bridge] /api/scope POST error:', err.message);
       res.status(500).json({ error: 'write failed' });
@@ -1839,14 +1919,24 @@ export function buildApp(config) {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       return res.status(400).json({ error: 'body must be { colors: { slug: "#rrggbb" | null } }' });
     }
-    const stored = (await readJsonOrNull(colorsPath())) ?? {};
-    const { overrides, rejected } = applyColorPatch(stored, patch);
-    const tmp = colorsPath() + '.tmp.' + process.pid;
+    // ONE global file holds every class's colour, and the dashboard fires these
+    // without awaiting — clicking two swatches, or two tabs, sends two
+    // concurrent read-merge-writes and one colour was simply not saved.
+    //
+    // The old catch also did `fs.unlink(tmp)` on a temp path built from the
+    // pid, so under exactly the collision it was cleaning up after it could
+    // delete the OTHER writer's in-flight file. atomicWrite's temp name is
+    // random per call, so that hazard is gone by construction rather than by
+    // being handled.
+    let overrides, rejected;
     try {
-      await fs.writeFile(tmp, JSON.stringify(overrides, null, 2));
-      await fs.rename(tmp, colorsPath());
+      ({ overrides, rejected } = await withPathLock(lockKey('class-colors', colorsPath()), async () => {
+        const stored = (await readJsonOrNull(colorsPath())) ?? {};
+        const applied = applyColorPatch(stored, patch);
+        await atomicWriteJson(colorsPath(), applied.overrides);
+        return applied;
+      }));
     } catch (err) {
-      await fs.unlink(tmp).catch(() => {});
       console.error('[bridge] /api/class-colors write failed:', err.message);
       return res.status(500).json({ error: 'could not save colours' });
     }
@@ -1927,16 +2017,33 @@ export function buildApp(config) {
     // override the user set out-of-band (CSYNC_MAX_JOBS, CSYNC_SOFFICE, …).
     // Sending an explicit empty string/null deletes that one key.
     const settingsPath = path.join(syncHome(), 'settings.json');
-    const stored = await readJsonOrNull(settingsPath);
-    const env = { ...(stored?.env && typeof stored.env === 'object' ? stored.env : {}) };
-    for (const [k, v] of Object.entries(incoming)) {
-      if (!/^CSYNC_[A-Z0-9_]+$/.test(k)) continue;      // only our namespace
-      if (v === null || v === '' || v === undefined) { delete env[k]; continue; }
-      env[k] = String(v).slice(0, 500);
+    // The merge above IS the lost-update shape: this route reads what is stored
+    // precisely so it can keep the keys the form did not send, so two saves
+    // together write back each other's pre-merge state and one set of settings
+    // is quietly discarded. Read and merge inside the lock.
+    //
+    // This was also the one site of the nine with no try/catch at all: a failed
+    // rename rejected into Express with no handler, so the client got no
+    // response and an orphaned settings.json.tmp.<pid> stayed behind. Both
+    // halves are fixed here — the catch answers, and atomicWrite removes its
+    // own temp.
+    let env;
+    try {
+      env = await withPathLock(lockKey('settings', settingsPath), async () => {
+        const stored = await readJsonOrNull(settingsPath);
+        const merged = { ...(stored?.env && typeof stored.env === 'object' ? stored.env : {}) };
+        for (const [k, v] of Object.entries(incoming)) {
+          if (!/^CSYNC_[A-Z0-9_]+$/.test(k)) continue;      // only our namespace
+          if (v === null || v === '' || v === undefined) { delete merged[k]; continue; }
+          merged[k] = String(v).slice(0, 500);
+        }
+        await atomicWrite(settingsPath, JSON.stringify({ env: merged }, null, 2), { mode: 0o600 });
+        return merged;
+      });
+    } catch (err) {
+      console.error('[bridge] /api/settings write failed:', err.message);
+      return res.status(500).json({ error: 'could not save settings' });
     }
-    const tmp = settingsPath + '.tmp.' + process.pid;
-    await fs.writeFile(tmp, JSON.stringify({ env }, null, 2), { mode: 0o600 });
-    await fs.rename(tmp, settingsPath);
     res.json({ ok: true, settings: { env } });
   });
 
@@ -2029,10 +2136,10 @@ export function buildApp(config) {
         return res.status(409).json({ error: 'already paired', paired: true });
       }
       if (config.extensionId && req.body?.force) {
-        const fresh = await loadConfig();
-        delete fresh.extensionId;
-        await saveConfig(fresh);
-        delete config.extensionId;
+        await mutateConfig((fresh) => {
+          delete fresh.extensionId;
+          delete config.extensionId;
+        });
       }
       const token = crypto.randomBytes(16).toString('hex');
       const tokenPath = path.join(syncHome(), 'install-token.txt');

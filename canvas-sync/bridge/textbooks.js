@@ -7,7 +7,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { withPathLock, atomicWriteJson } from '../write-lock.js';
+import { withPathLock, atomicWriteJson, lockKey } from '../write-lock.js';
 
 export const TEXTBOOK_LINKS_FILE = 'textbook_links.json';
 export const TEXTBOOK_SCHEMA_VERSION = 2;
@@ -420,7 +420,7 @@ export async function patchTextbookLink(classDir, syllabusParsed, textbookId, va
   if (typeof textbookId !== 'string' || !BOOK_ID_RE.test(textbookId)) {
     throw new TextbookError('invalid textbook id');
   }
-  return withPathLock(linksPath(classDir),
+  return withPathLock(lockKey('textbook-links', linksPath(classDir)),
     () => patchTextbookLinkLocked(classDir, syllabusParsed, textbookId, value));
 }
 

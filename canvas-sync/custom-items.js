@@ -16,7 +16,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { withPathLock, atomicWriteJson } from './write-lock.js';
+import { withPathLock, atomicWriteJson, lockKey } from './write-lock.js';
 
 export const CUSTOM_ITEMS_FILE = 'custom_items.json';
 
@@ -112,7 +112,7 @@ async function writeCustomItems(calDir, state) {
 // Cross-process safety is not claimed and is not needed — only the bridge
 // writes this file, and the pipeline never does.
 function withItemsLock(calDir, fn) {
-  return withPathLock(itemsPath(calDir), fn);
+  return withPathLock(lockKey('custom-items', itemsPath(calDir)), fn);
 }
 
 function str(value, max, field) {

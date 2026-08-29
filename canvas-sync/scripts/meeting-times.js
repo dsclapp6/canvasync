@@ -44,7 +44,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { withPathLock, atomicWrite } from '../write-lock.js';
+import { withPathLock, atomicWrite, lockKey } from '../write-lock.js';
 import {
   parseDayCodes, parseTimeRange, parseRoom, parseWeeklyPatterns, meetingsFromCanvasEvents, NO_CLASS_RE,
 } from './cal-meetings.js';
@@ -466,7 +466,7 @@ function writeJsonAtomic(file, value) {
  * half of one.
  */
 function withMeetingLock(classDir, fn) {
-  return withPathLock(`meeting:${classDir}`, fn);
+  return withPathLock(lockKey('meeting', classDir), fn);
 }
 
 async function stashPrevious(classDir, previous, action) {

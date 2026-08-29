@@ -8,7 +8,8 @@
 // WHAT THIS PINS: that concurrent read-modify-write through withPathLock keeps
 // every write; that a rejection does not wedge the queue behind it; that two
 // keys do not serialize against each other; that atomicWrite leaves no orphan
-// temp on failure and can only ever remove its own.
+// temp on failure and can only ever remove its own; and that two spellings of
+// one path are ONE lock rather than two silently-independent queues.
 //
 // WHAT IT DOES NOT PIN, and cannot: cross-process safety, which the helper
 // explicitly does not offer. Two node processes writing one file will still
@@ -19,7 +20,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { withPathLock, atomicWrite, atomicWriteJson } from '../../write-lock.js';
+import { withPathLock, atomicWrite, atomicWriteJson, lockKey } from '../../write-lock.js';
 
 async function tmpFile(name = 'state.json') {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'write-lock-'));
@@ -162,4 +163,80 @@ test('atomicWrite passes options through — mode survives', async () => {
   await atomicWrite(file, 'secret', { mode: 0o600 });
   const { mode } = await fs.stat(file);
   assert.equal(mode & 0o777, 0o600, 'config.json and settings.json rely on this');
+});
+
+// --- Key normalization ------------------------------------------------------
+//
+// A key is a Map key, so two spellings of one path would be two queues and no
+// serialization AT ALL — while still reporting success, which is the failure
+// mode this module exists to kill. Raised by canvasync-96 while reviewing the
+// composition boundary with the cross-process file lock; latent at the time,
+// because every caller then routed through one path-builder per file.
+
+test('two spellings of one path are one lock', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'write-lock-'));
+  const file = path.join(dir, 'state.json');
+  await fs.writeFile(file, '{}');
+
+  const spellings = [
+    file,                                          // canonical
+    `${dir}//state.json`,                          // doubled separator
+    path.join(dir, '.', 'state.json'),             // a dot segment
+    path.join(dir, 'sub', '..', 'state.json'),     // a parent segment
+  ];
+  const keys = new Set(spellings.map(s => lockKey('t', s)));
+  assert.equal(keys.size, 1, 'every spelling must produce the same key');
+
+  // And they really do queue together, not merely compare equal.
+  const mutate = (spelling, k) => withPathLock(lockKey('t', spelling), async () => {
+    const state = JSON.parse(await fs.readFile(file, 'utf8'));
+    state[k] = true;
+    await atomicWrite(file, JSON.stringify(state));
+  });
+  await Promise.all(spellings.map((sp, i) => mutate(sp, `k${i}`)));
+  assert.equal(Object.keys(JSON.parse(await fs.readFile(file, 'utf8'))).length, 4);
+});
+
+test('a relative and an absolute spelling of one path are one lock', async () => {
+  const abs = path.join(process.cwd(), 'some', 'file.json');
+  const rel = path.join('some', 'file.json');
+  assert.equal(lockKey('t', abs), lockKey('t', rel));
+});
+
+test('scope keeps two concerns on one directory apart', () => {
+  const dir = '/tmp/classes/92294-busi-305-001';
+  assert.notEqual(lockKey('meeting', dir), lockKey('textbook-links', dir),
+    'the meeting override and the textbook links must not queue behind each other');
+});
+
+test('a hand-written scope@path key is normalized too', async () => {
+  // withPathLock normalizes the path half itself, so a key not built by
+  // lockKey() is still safe.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'write-lock-'));
+  const file = path.join(dir, 'state.json');
+  await fs.writeFile(file, '{}');
+  const order = [];
+  await Promise.all([
+    withPathLock(`t@${file}`, async () => {
+      await new Promise(r => setTimeout(r, 30));
+      order.push('first');
+    }),
+    withPathLock(`t@${dir}//state.json`, async () => { order.push('second'); }),
+  ]);
+  assert.deepEqual(order, ['first', 'second'], 'the doubled separator queued behind');
+});
+
+test('a key with no @ is left exactly as given', async () => {
+  // Resolving it would make the key depend on process.cwd(), and a lock that
+  // changes identity when the working directory does is worse than one that is
+  // merely unnormalized. Pinned so nobody "improves" it into a resolve.
+  const order = [];
+  await Promise.all([
+    withPathLock('bare-key', async () => {
+      await new Promise(r => setTimeout(r, 20));
+      order.push('first');
+    }),
+    withPathLock('bare-key', async () => { order.push('second'); }),
+  ]);
+  assert.deepEqual(order, ['first', 'second'], 'identical bare keys still serialize');
 });

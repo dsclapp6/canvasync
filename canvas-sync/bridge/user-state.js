@@ -16,7 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataRoot as syncHome } from '../data-root.js';
-import { withPathLock, atomicWriteJson } from '../write-lock.js';
+import { withPathLock, atomicWriteJson, lockKey } from '../write-lock.js';
 
 export const USER_STATE_FILE = 'user_state.json';
 
@@ -90,7 +90,7 @@ async function writeUserState(classDir, state) {
 // Cross-process safety is not claimed and is not needed — only the bridge
 // writes this file, and the pipeline never does.
 function withStateLock(classDir, fn) {
-  return withPathLock(statePath(classDir), fn);
+  return withPathLock(lockKey('user-state', statePath(classDir)), fn);
 }
 
 function str(value, max, field) {
