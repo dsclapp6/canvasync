@@ -73,8 +73,18 @@ const STALE_MS = 15_000;
  */
 async function reclaim(dir) {
   const tomb = `${dir}.stale-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  try { await fs.rename(dir, tomb); } catch { return; } // lost the race — fine
+  try {
+    await fs.rename(dir, tomb);
+  } catch (err) {
+    // ENOENT is the benign case: another waiter won, or the holder released
+    // cleanly. Anything else (EIO, EPERM) means the dir is STILL THERE, and the
+    // caller has to know — a release that silently did nothing leaves the lock
+    // behind a LIVE pid, which no staleness rule can ever clear. Swallowing
+    // these was how a released lock could outlive the request that held it.
+    return err?.code === 'ENOENT';
+  }
   await fs.rm(tomb, { recursive: true, force: true }).catch(() => {});
+  return true;
 }
 
 /**
@@ -85,76 +95,149 @@ async function reclaim(dir) {
  * request must fail fast and let the client retry, because a request held open
  * for minutes is indistinguishable from a hang.
  */
-export async function withFileLock(lockDir, fn, { timeoutMs = 2000 } = {}) {
+export async function withFileLock(lockDir, fn, {
+  timeoutMs = 2000,
+  // The caller asserting that no OTHER holder in this process is possible for
+  // this lock — true only when an in-process lock already serialises the key.
+  // It licenses one extra reclaim (see below) that would otherwise steal a
+  // live sibling's lock, so it is opt-in rather than the default.
+  inProcessExclusive = false,
+} = {}) {
   const ownerFile = path.join(lockDir, 'owner.json');
   // Proves the dir we tear down at the end is the one we created, not a
   // successor a reclaiming waiter put there while we were working.
   const token = crypto.randomBytes(8).toString('hex');
   const deadline = Date.now() + timeoutMs;
+  let lastError = null;
   await fs.mkdir(path.dirname(lockDir), { recursive: true });
+
+  /**
+   * The ONLY exit from an iteration that did not acquire. Every retry funnels
+   * through here on purpose.
+   *
+   * A `continue` that skips the deadline check and the sleep is how a retry
+   * loop becomes an unbounded busy loop, and this one had three of them. Delete
+   * a class dir while the bridge is serving — safe-delete does exactly that —
+   * and every step fails: mkdir ENOENT, readFile ENOENT, stat ENOENT, straight
+   * back to the top without sleeping and without ever looking at the deadline.
+   * A pinned core, the bridge's 2s 503 unreachable, and extract's 30s fallback
+   * unreachable with it, because withFileLock never threw. The contract above
+   * says the deadline is real; this is what makes it true.
+   */
+  const waitOrGiveUp = async () => {
+    if (Date.now() > deadline) {
+      const err = new Error(`timed out waiting for file lock: ${lockDir}`
+        + (lastError ? ` (last error: ${lastError.code || lastError.message})` : ''));
+      // Typed, so a caller can tell "the lock was busy" from "the filesystem
+      // failed". extract-course-files falls back to an UNLOCKED merge on this
+      // code and only this code.
+      err.code = 'ELOCKTIMEOUT';
+      throw err;
+    }
+    await new Promise(r => setTimeout(r, POLL_MS));
+  };
+
+  /** Reclaim the held dir if — and only if — its holder is provably gone. */
+  const considerReclaim = async () => {
+    let staleByAge = false;
+    try {
+      const owner = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
+      const pid = Number(owner?.pid);
+      if (pid > 0) {
+        // OUR OWN pid on the lock is the wreckage of an earlier release that
+        // failed: when the caller guarantees in-process exclusion there cannot
+        // be a live second holder here, and process.kill(self, 0) would say
+        // "alive" forever, so nothing else would ever clear it.
+        if (inProcessExclusive && pid === process.pid) { await reclaim(lockDir); return; }
+        // EPERM means the holder EXISTS and simply is not ours to signal.
+        // Only ESRCH — no such process — licenses a reclaim. Collapsing the
+        // two reads a live holder as dead; _util.js:269-275 records what
+        // that cost.
+        let holderAlive = true;
+        try { process.kill(pid, 0); } catch (err) { holderAlive = err?.code === 'EPERM'; }
+        if (!holderAlive) { await reclaim(lockDir); return; }
+      } else {
+        staleByAge = true; // corrupt owner file — identity unknowable
+      }
+    } catch {
+      // No owner file yet. Either the holder is between mkdir and write
+      // (sub-millisecond) or it died in that gap. Age disambiguates.
+      staleByAge = true;
+    }
+    if (staleByAge) {
+      try {
+        const st = await fs.stat(lockDir);
+        if (Date.now() - st.mtimeMs > STALE_MS) await reclaim(lockDir);
+      } catch { /* vanished — the next mkdir settles it */ }
+    }
+  };
+
+  /** Tear down a lock we still own — loudly if it will not go. */
+  const release = async () => {
+    let ours = false;
+    try {
+      const owner = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
+      ours = owner?.token === token;
+    } catch (err) {
+      // Already gone or already reclaimed: nothing of ours to tear down.
+      // Any OTHER read failure and we cannot prove it is not ours — and
+      // abandoning a dir we own is precisely how one strands. Tear it down.
+      if (err?.code === 'ENOENT') return;
+      ours = true;
+    }
+    if (!ours) return;
+    if (await reclaim(lockDir)) return;
+    if (await reclaim(lockDir)) return;   // one retry: a transient EIO deserves it
+    // Still there, holding OUR live pid — which no staleness rule can clear,
+    // because process.kill(pid, 0) keeps succeeding until this process exits.
+    // Drop the owner file so the age path reclaims it within STALE_MS, and say
+    // so out loud: a release that quietly failed while the request reported
+    // success is the silent-failure shape this module exists to prevent.
+    await fs.rm(ownerFile, { force: true }).catch(() => {});
+    console.error(`[file-lock] could not release ${lockDir}; dropped owner.json`
+      + ` so it ages out in ${STALE_MS}ms`);
+  };
 
   for (;;) {
     let acquired = false;
     try {
       await fs.mkdir(lockDir, { recursive: false }); // atomic: fails if held
       acquired = true;
-    } catch {
-      // Held. Reclaim only if the holder is provably gone, then wait our turn.
-      let staleByAge = false;
-      try {
-        const owner = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
-        const pid = Number(owner?.pid);
-        if (pid > 0) {
-          // EPERM means the holder EXISTS and simply is not ours to signal.
-          // Only ESRCH — no such process — licenses a reclaim. Collapsing the
-          // two reads a live holder as dead; _util.js:269-275 records what
-          // that cost.
-          let holderAlive = true;
-          try { process.kill(pid, 0); } catch (err) { holderAlive = err?.code === 'EPERM'; }
-          if (!holderAlive) { await reclaim(lockDir); continue; }
-        } else {
-          staleByAge = true; // corrupt owner file — identity unknowable
-        }
-      } catch {
-        // No owner file yet. Either the holder is between mkdir and write
-        // (sub-millisecond) or it died in that gap. Age disambiguates.
-        staleByAge = true;
-      }
-      if (staleByAge) {
-        try {
-          const st = await fs.stat(lockDir);
-          if (Date.now() - st.mtimeMs > STALE_MS) { await reclaim(lockDir); continue; }
-        } catch { continue; } // dir vanished — retry acquire
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for file lock: ${lockDir}`);
-      }
-      await new Promise(r => setTimeout(r, POLL_MS));
-      continue;
+    } catch (err) {
+      lastError = err;
+      // EEXIST is "held" and may be reclaimable. Anything else is an fs fault —
+      // a deleted class dir, EACCES, a read-only mount — and the honest answer
+      // is a bounded retry, not a guess and not a spin. Both paths fall through
+      // to the same mandatory wait.
+      if (err?.code === 'EEXIST') await considerReclaim();
     }
 
-    if (acquired) {
-      await fs.writeFile(ownerFile, JSON.stringify({ pid: process.pid, token, at: Date.now() }), 'utf8');
-      // A waiter that judged us stale between the mkdir and the write above
-      // would have renamed our dir aside and created its own. Reading our own
-      // token back is what tells us the dir we hold is still ours.
-      try {
-        const back = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
-        if (back?.token !== token) continue;
-      } catch { continue; }
+    if (!acquired) { await waitOrGiveUp(); continue; }
 
-      try {
-        return await fn();
-      } finally {
-        // Tear down only a lock we still own, and tear it down with the same
-        // atomic rename the reclaim path uses.
-        let ours = false;
-        try {
-          const owner = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
-          ours = owner?.token === token;
-        } catch { /* already gone */ }
-        if (ours) await reclaim(lockDir);
-      }
+    await fs.writeFile(ownerFile, JSON.stringify({ pid: process.pid, token, at: Date.now() }), 'utf8');
+    // A waiter that judged us stale between the mkdir and the write above
+    // would have renamed our dir aside and created its own. Reading our own
+    // token back is what tells us the dir we hold is still ours.
+    let mine = false;
+    try {
+      const back = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
+      mine = back?.token === token;
+    } catch (err) {
+      // We hold a dir whose owner file we cannot read. Walking away from it
+      // here is a second way to strand one, so release before retrying.
+      lastError = err;
+      await release();
+      await waitOrGiveUp();
+      continue;
+    }
+    // Not ours any more: someone reclaimed and re-created it. Theirs to hold,
+    // so do NOT release it — just wait our turn.
+    if (!mine) { await waitOrGiveUp(); continue; }
+
+    try {
+      return await fn();
+    } finally {
+      await release();
     }
   }
 }
@@ -212,5 +295,8 @@ export function filesIndexLockDir(classDir) {
  */
 export async function withFilesIndexLock(classDir, fn, opts = {}) {
   const key = await filesIndexKey(classDir);
-  return withPathLock(key, () => withFileLock(filesIndexLockDir(classDir), fn, opts));
+  // inProcessExclusive AFTER the spread: withPathLock above makes the
+  // guarantee structural, so a caller must not be able to switch it off.
+  return withPathLock(key, () => withFileLock(
+    filesIndexLockDir(classDir), fn, { ...opts, inProcessExclusive: true }));
 }

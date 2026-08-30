@@ -74,6 +74,19 @@ from the same campaign: mutation testing's value is that it tells you which of
 your tests are load-bearing — including the ones it cannot close, which get
 documented instead of faked.
 
+## Follow-up items from the post-ship lock review (Codex F1/F2/F5, fixed v1.8.11)
+
+- **scripts/_util.js:296 latent busy-loop**: `_acquireModelLock`'s
+  dir-vanished `continue` skips its deadline check — the same shape fixed in
+  file-lock.js (F1). Unreachable today only because `<dataRoot>/locks/` is
+  never deleted. Owned by the item-1 pass (d8's file); take it in the same
+  edit, do not orphan it.
+- **F5's second half — orchestrator stderr discard**: extract's lock-timeout
+  fallback warning is still effectively silent because trigger.js and
+  sync-all-contexts.js discard successful-stage stderr. Needs a durable
+  signal (stage marker field or a status-page-readable record), not a bigger
+  log line. Open ticket; the fault-vs-contention rethrow itself IS fixed.
+
 ## Follow-up items (not in the sites-3–8 conversion)
 
 - **files_index.json cross-process race**: SUPERSEDED — the accepted design

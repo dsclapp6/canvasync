@@ -296,3 +296,138 @@ test('writeCourseFile actually goes through the lock', async () => {
     await fs.rm(home, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// The deadline has to be real (F1), a release has to be loud (F2), and a
+// storage fault must not be mistaken for contention (F5). All three shipped in
+// v1.8.9 and were found by an independent review of the lock layer.
+// ---------------------------------------------------------------------------
+
+test('a class dir deleted mid-wait times out instead of spinning forever', async () => {
+  // The shipped bug: every retry path `continue`d back to mkdir BEFORE the
+  // deadline check and the sleep. Delete the class dir while a caller waits —
+  // safe-delete does exactly that while the bridge serves — and every step
+  // fails ENOENT, so the loop pinned a core and never once looked at the
+  // deadline. The bridge's 2s 503 and extract's 30s fallback were both
+  // unreachable because withFileLock never threw.
+  const dir = await tmp();
+  const classDir = path.join(dir, '101-doomed');
+  const lockDir = path.join(classDir, '.files_index.lock');
+  await fs.mkdir(lockDir, { recursive: true });   // held, no owner file
+
+  const started = Date.now();
+  const attempt = withFileLock(lockDir, async () => 'ran', { timeoutMs: 300 })
+    .then(v => ({ value: v }), e => ({ err: e }));
+  // Pull the ground out from under it.
+  setTimeout(() => { fs.rm(classDir, { recursive: true, force: true }).catch(() => {}); }, 40);
+
+  // A watchdog, so a spin fails an assertion instead of hanging the runner.
+  const outcome = await Promise.race([
+    attempt,
+    new Promise(r => setTimeout(() => r({ watchdog: true }), 6000)),
+  ]);
+  assert.ok(!outcome.watchdog,
+    'withFileLock never returned — the retry loop is spinning without checking its deadline');
+  assert.equal(outcome.err?.code, 'ELOCKTIMEOUT', `expected a typed timeout, got ${outcome.err}`);
+  assert.ok(Date.now() - started >= 300, 'returned before the deadline it was given');
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('the timeout error is typed so a fault can be told from contention', async () => {
+  // F5 depends on this: extract falls back to an unlocked merge on
+  // ELOCKTIMEOUT and on nothing else, so the code has to be there to check.
+  const dir = await tmp();
+  const lockDir = path.join(dir, '.lock');
+  await fs.mkdir(lockDir, { recursive: true });
+  await fs.writeFile(path.join(lockDir, 'owner.json'),
+    JSON.stringify({ pid: 1, token: 'someone-else', at: Date.now() }), 'utf8');
+  const err = await withFileLock(lockDir, async () => {}, { timeoutMs: 200 }).catch(e => e);
+  assert.equal(err.code, 'ELOCKTIMEOUT');
+  assert.match(err.message, /timed out waiting for file lock/);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('a lock stranded under OUR OWN pid is reclaimed — but only when exclusion is guaranteed', async () => {
+  // A release whose rename failed leaves owner.json holding a LIVE pid: ours.
+  // process.kill(self, 0) always succeeds, so the liveness path calls it alive
+  // and the age path never runs — stranded until the bridge restarts.
+  const dir = await tmp();
+  const classDir = path.join(dir, '101-stranded');
+  await fs.mkdir(classDir, { recursive: true });
+  const lockDir = filesIndexLockDir(classDir);
+
+  const strand = async () => {
+    await fs.mkdir(lockDir, { recursive: true });
+    await fs.writeFile(path.join(lockDir, 'owner.json'),
+      JSON.stringify({ pid: process.pid, token: 'from-a-failed-release', at: Date.now() }), 'utf8');
+  };
+
+  // Without the guarantee, a same-pid owner might be a LIVE sibling holder, so
+  // stealing it would be a bug. It must wait, and time out.
+  await strand();
+  await assert.rejects(
+    () => withFileLock(lockDir, async () => {}, { timeoutMs: 200 }),
+    (e) => e.code === 'ELOCKTIMEOUT',
+    'a bare withFileLock must not assume a same-pid owner is dead');
+
+  // withFilesIndexLock takes the in-process lock first, so no live same-process
+  // holder can exist for this key — a self-owned lock there is provably wreckage.
+  let ran = false;
+  await withFilesIndexLock(classDir, async () => { ran = true; }, { timeoutMs: 2000 });
+  assert.ok(ran, 'a provably stranded self-owned lock was not reclaimed');
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('a release that cannot rename drops owner.json so the lock still ages out', async (t) => {
+  // The worst case F2 describes: the rename fails, the dir survives, and it
+  // holds our live pid. Even then it must not be stranded forever — removing
+  // the owner file hands it to the age path, bounded by STALE_MS.
+  const dir = await tmp();
+  const classDir = path.join(dir, '101-readonly');
+  await fs.mkdir(classDir, { recursive: true });
+  const lockDir = path.join(classDir, '.files_index.lock');
+
+  const errors = [];
+  const realError = console.error;
+  console.error = (...a) => errors.push(a.join(' '));
+  let mode = null;
+  try {
+    await withFileLock(lockDir, async () => {
+      // Make the PARENT unwritable so the release rename cannot succeed.
+      mode = (await fs.stat(classDir)).mode;
+      await fs.chmod(classDir, 0o500);
+    }, { timeoutMs: 1000 });
+  } finally {
+    console.error = realError;
+    if (mode !== null) await fs.chmod(classDir, mode).catch(() => {});
+  }
+
+  const stillThere = await fs.access(lockDir).then(() => true, () => false);
+  if (!stillThere) {
+    // chmod does not stop root, and some filesystems ignore it. Say so out
+    // loud: a conditional assertion that silently skips is indistinguishable
+    // from one that passed, which is the whole failure this suite guards.
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    t.skip('could not block the release rename in this environment (running as root?)');
+    return;
+  }
+  // The rename really was blocked — then the contract is: loud, and no owner
+  // file left behind to hold the lock under a live pid.
+  assert.ok(errors.some(l => l.includes('could not release')),
+    `release failed silently; console.error saw ${JSON.stringify(errors)}`);
+  assert.equal(await fs.access(path.join(lockDir, 'owner.json')).then(() => true, () => false),
+    false, 'owner.json survived, so the age path can never reclaim this lock');
+  await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+});
+
+test('extract takes the unlocked fallback for a lock timeout and nothing else', async () => {
+  // Structural: the fallback catch used to wrap finalize() too, so a transient
+  // EIO on the marker rename was retried WITHOUT the lock — a storage fault
+  // handled by reopening the race — and then exited 0 as a clean pass.
+  const src = await fs.readFile(
+    path.join(HERE, '..', '..', 'scripts', 'extract-course-files.js'), 'utf8');
+  const guard = src.indexOf("if (err?.code !== 'ELOCKTIMEOUT') throw err;");
+  assert.ok(guard > 0, 'extract no longer rethrows non-timeout failures — this test is stale');
+  const fallback = src.indexOf('await finalize();', guard);
+  assert.ok(fallback > guard, 'the rethrow guard must come BEFORE the unlocked fallback');
+});

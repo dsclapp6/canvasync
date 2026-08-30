@@ -672,6 +672,13 @@ async function main() {
     // Generous: this is a batch job with nobody waiting on a socket.
     await withFilesIndexLock(classDir, finalize, { timeoutMs: 30000 });
   } catch (err) {
+    // ONLY a lock timeout earns the unlocked fallback. This catch used to
+    // surround finalize() as well, so a failure INSIDE the merge — a transient
+    // EIO on the marker rename, a full disk — was swallowed here and the merge
+    // retried with the lock released: a storage fault retried with the race
+    // reopened, then exit 0 as though the pass had been clean. A fault is not
+    // contention and must not be treated as it.
+    if (err?.code !== 'ELOCKTIMEOUT') throw err;
     // A 30s wait for a lock held in milliseconds means something is wedged.
     // Finishing unlocked re-exposes the narrow race the merge already covers;
     // exiting would throw away a pass that costs minutes. Take the merge, and
