@@ -3121,6 +3121,39 @@ function calSubmitHtml(m, { dense = false } = {}) {
   return '';
 }
 
+const RRULE_DAYS = { MO: 'Mon', TU: 'Tue', WE: 'Wed', TH: 'Thu', FR: 'Fri', SA: 'Sat', SU: 'Sun' };
+
+/**
+ * "weekly Mon, Wed" — that an op REPEATS, which is otherwise invisible.
+ *
+ * Office hours and the weekly-pattern meeting fallback are emitted as ONE op
+ * carrying `recurrence`, anchored on its first occurrence
+ * (sync-calendar.js:683-690). The tag that said so was dropped by the dashboard
+ * adoption commit with no replacement, and grep for `recurrence` across
+ * bridge/public/ returned nothing afterwards: a standing weekly commitment for
+ * the whole term rendered as a single event on one date, while classes.ics —
+ * built from the same op — emitted an RRULE and showed it every week. The
+ * dashboard and the calendar it advertises disagreed about the same op.
+ */
+function calRecurrenceLabel(op) {
+  const r = op?.recurrence;
+  if (!r || r.freq !== 'WEEKLY' || !Array.isArray(r.byday) || !r.byday.length) return '';
+  const days = r.byday.map(d => RRULE_DAYS[String(d).toUpperCase()] ?? d).join(', ');
+  return `weekly ${days}`;
+}
+
+/**
+ * The last day an op still happens — a recurrence's `until`, not its anchor.
+ *
+ * Past-ness for a repeat is about when the SERIES ends. Measured against the
+ * first occurrence, every office-hours block folded behind "Show past
+ * schedule" the week after term began, while it ran until December.
+ */
+function calLastDate(op) {
+  const until = op?.recurrence?.until;
+  return (typeof until === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(until)) ? until : op?.date;
+}
+
 function calOpRow(op, { showClass = false } = {}) {
   const m = calItemModel(op);
   // A past lecture is history, not a missed deadline — no overdue red.
@@ -3128,6 +3161,7 @@ function calOpRow(op, { showClass = false } = {}) {
   const when = calWhenLabel(op);
   const title = showClass ? op.title : stripClassPrefix(op.title, op.class || '');
   const pts = calPoints(op.description);
+  const recurs = calRecurrenceLabel(op);
   const kindLabel = calKindLabel(op.kind);
   const subcategory = !m.isMeeting && !m.isCustom && op.category && op.category !== 'other'
     && String(op.category).toLocaleLowerCase() !== String(op.kind).toLocaleLowerCase()
@@ -3143,6 +3177,7 @@ function calOpRow(op, { showClass = false } = {}) {
       <span class="cal-tags">
         <span class="cal-kind category-label">${esc(kindLabel)}</span>
         ${op.location ? `<span class="cal-loc">${esc(op.location)}</span>` : ''}
+        ${recurs ? `<span class="cal-loc" title="Repeats every week until ${esc(calLastDate(op))}">${esc(recurs)}</span>` : ''}
         ${subcategory ? `<span class="cal-cat ${esc(subcategory)}">${esc(subcategory)}</span>` : ''}
         ${pts ? `<span class="cal-pts">${esc(pts)} pts</span>` : ''}
         ${m.note && !m.isCustom ? '<span class="cal-kind note" title="You wrote a note on this">note</span>' : ''}
@@ -4754,6 +4789,42 @@ function seedCalDone() {
   }
 }
 
+/**
+ * Which control emptied the calendar — named, so the user is not sent to a
+ * toggle that is innocent. CALENDAR-SPEC 6.20.
+ *
+ * Pure, and separated from renderCalendarOps for the same reason
+ * brokenPipelinePlan is separated from its route: the decision is the part
+ * that was wrong, and inline in a DOM renderer it cannot be tested.
+ *
+ * `aiHidHere` is measured against the CLASS SELECTION, before the AI filter.
+ * The old guard asked whether AI-hidden items emptied the view GLOBALLY, which
+ * missed two real shapes: a selected class whose items are all AI-added (the
+ * message blamed the class chips, telling the user to deselect a class that
+ * was selected and did have items), and a selection whose only VISIBLE rows
+ * are past meetings while AI-hidden upcoming work sits behind them (the past
+ * message masked it). Both name the AI toggle now, and when the past toggle is
+ * also holding something back, both get named.
+ */
+function calEmptyReason({ shown, matching, aiHidHere, hiddenPast }) {
+  if (!matching) return `No ${shown ? `${shown} ` : ''}items in this window.`;
+  const n = aiHidHere;
+  if (n > 0) {
+    const are = n === 1 ? 'is' : 'are';
+    const plural = n === 1 ? '' : 's';
+    return hiddenPast
+      ? `${n} matching item${plural} ${are} AI-added and the rest have already happened — turn on AI-added, or past items, above.`
+      : `${n} matching item${plural} ${are} AI-added — turn on AI-added above to show ${n === 1 ? 'it' : 'them'}.`;
+  }
+  // Past meetings are dropped by their own toggle, AFTER the class filter.
+  // Blaming the class chips here would send the user to deselect a class that
+  // is in fact selected and does have items — they are simply behind.
+  if (hiddenPast) {
+    return `Everything here has already happened — turn on past items above to show ${hiddenPast === 1 ? 'it' : 'them'}.`;
+  }
+  return 'Nothing from the selected classes in this window — deselect one above to widen the view.';
+}
+
 function renderCalendarOps() {
   const el = $('cal-ops');
   const toolbar = $('cal-toolbar');
@@ -4787,13 +4858,27 @@ function renderCalendarOps() {
   // covers homework, readings and exams, and a filter that cannot tell them
   // apart is three chips pretending to be one.
   const byKind = all.filter(o => isSelected(CAL_KIND_SEL, o.kind));
-  const byOrigin = byKind.filter(o => isAiItemVisible(CAL_SHOW_AI_ADDED, calItemModel(o).aiAdded));
+  // A COMPLETED row bypasses the AI-origin filter. Completed records only
+  // enter `all` when the user has turned Show completed on, which is an
+  // explicit request to see finished work — and spec 2.5 calls that control
+  // the one thing that can resurrect a mis-ticked item. With the AI chip off,
+  // ticking an AI-added reading by mistake used to leave a button reading
+  // "Show 1 completed" that produced no row at all: the label counts the
+  // unfiltered done list, the filter then dropped the row again, and nothing
+  // named the second, unrelated chip you had to flip to get it back.
+  const byOrigin = byKind.filter(o =>
+    o._completed || isAiItemVisible(CAL_SHOW_AI_ADDED, calItemModel(o).aiAdded));
   const selectedOps = byOrigin.filter(o => isSelected(classSel, opClassSlug(o)));
   const hiddenPast = CAL_VIEW === 'list' && !CAL_SHOW_PAST
-    ? selectedOps.filter(o => daysUntil(o.date) < 0 && (o.kind === 'meeting' || o.kind === 'office_hours')).length
+    ? selectedOps.filter(o => daysUntil(calLastDate(o)) < 0 && (o.kind === 'meeting' || o.kind === 'office_hours')).length
     : 0;
   const ops = hiddenPast
-    ? selectedOps.filter(o => !(daysUntil(o.date) < 0 && (o.kind === 'meeting' || o.kind === 'office_hours')))
+    // calLastDate, not o.date: a weekly op is anchored on its FIRST occurrence,
+    // so measuring past-ness against it hid every office-hours block a week
+    // into term while the series still ran until December. The count above
+    // uses the same rule — a summary that disagrees with the filter is worse
+    // than either being wrong alone.
+    ? selectedOps.filter(o => !(daysUntil(calLastDate(o)) < 0 && (o.kind === 'meeting' || o.kind === 'office_hours')))
     : selectedOps;
 
   renderCalKinds(all);
@@ -4836,16 +4921,21 @@ function renderCalendarOps() {
     // "Every class is hidden" is unreachable now that the chips are a
     // selection — deselecting the last one shows everything. What remains
     // reachable is a selection of classes that have nothing in this window.
-    const why = !byKind.length
-      ? `No ${shown ? `${shown} ` : ''}items in this window.`
-      : !byOrigin.length && hiddenAi
-        ? 'All matching items are AI-added — turn on AI-added above to show them.'
-      // Past meetings are dropped by their own toggle, AFTER the class filter.
-      // Blaming the class chips here would send the user to deselect a class
-      // that is in fact selected and does have items — they are simply behind.
-      : hiddenPast
-        ? `Everything here has already happened — turn on past items above to show ${hiddenPast === 1 ? 'it' : 'them'}.`
-      : 'Nothing from the selected classes in this window — deselect one above to widen the view.';
+    // Measure the class filter PRE-AI. The old guard only caught the case where
+    // AI-hidden items emptied the view GLOBALLY (`!byOrigin.length`), so a
+    // selected class whose items are all AI-added would fall through and blame
+    // the class chips — telling the user to deselect a class that is selected
+    // and does have items. It also let the past branch mask AI-hidden upcoming
+    // work: a selection whose only VISIBLE rows are past meetings reported
+    // "everything has already happened" while AI-hidden future items existed.
+    // CALENDAR-SPEC 6.20: name the control that emptied it, never an innocent one.
+    const selectedPreAi = byKind.filter(o => isSelected(classSel, opClassSlug(o)));
+    const why = calEmptyReason({
+      shown,
+      matching: byKind.length,
+      aiHidHere: selectedPreAi.length - selectedOps.length,
+      hiddenPast,
+    });
     el.innerHTML = `<p class="muted">${esc(why)}</p>`;
     return;
   }
