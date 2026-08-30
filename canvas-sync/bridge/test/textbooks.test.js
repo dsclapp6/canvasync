@@ -239,3 +239,72 @@ test('the textbook route updates and clears a link', async () => {
   assert.equal(result.status, 200);
   assert.equal(result.body.textbook.url, null);
 });
+
+test('a corrupt textbook link store stays readable as empty but cannot be overwritten', async () => {
+  const [book] = textbooksFromSyllabus(SYLLABUS);
+  const linksPath = path.join(classDir, TEXTBOOK_LINKS_FILE);
+  const corrupt = '{"paid link":';
+  await fs.writeFile(linksPath, corrupt);
+
+  const view = await request('GET', `/api/class/${FOLDER}`);
+  assert.equal(view.status, 200);
+  assert.equal(view.body.textbooks.find(candidate => candidate.id === book.id).url, null);
+
+  const refused = await request('PUT', `/api/class/${FOLDER}/textbooks/${book.id}`, {
+    url: 'https://reader.example.edu/replacement',
+  });
+  assert.equal(refused.status, 500);
+  const preserved = (await fs.readdir(classDir))
+    .find(name => name.startsWith(`${TEXTBOOK_LINKS_FILE}.unreadable-`));
+  assert.ok(preserved, 'the unreadable link store must be preserved');
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), corrupt);
+  await assert.rejects(fs.access(linksPath), { code: 'ENOENT' });
+
+  const retry = await request('PUT', `/api/class/${FOLDER}/textbooks/${book.id}`, {
+    url: 'https://reader.example.edu/replacement',
+  });
+  assert.equal(retry.status, 200, 'ENOENT remains a legitimate empty link store');
+  assert.equal((await readTextbookLinks(classDir)).links[book.id].url,
+    'https://reader.example.edu/replacement');
+  assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), corrupt);
+});
+
+test('a valid-JSON textbook store with non-object links is preserved and refuses an update', async () => {
+  const [book] = textbooksFromSyllabus(SYLLABUS);
+  const linksPath = path.join(classDir, TEXTBOOK_LINKS_FILE);
+  const wrongShape = JSON.stringify({ version: 1, links: ['must not be erased'] });
+  const entriesBefore = new Set(await fs.readdir(classDir));
+  await fs.writeFile(linksPath, wrongShape);
+
+  assert.deepEqual((await readTextbookLinks(classDir)).links, {}, 'wrong-shape reads stay empty');
+  const refused = await request('PUT', `/api/class/${FOLDER}/textbooks/${book.id}`, {
+    url: 'https://reader.example.edu/wrong-shape-replacement',
+  });
+  assert.equal(refused.status, 500);
+  const preserved = (await fs.readdir(classDir))
+    .find(name => name.startsWith(`${TEXTBOOK_LINKS_FILE}.unreadable-`) && !entriesBefore.has(name));
+  assert.ok(preserved, 'the wrong-shape textbook store must be moved aside');
+  assert.match(refused.body.error, /could not be read \(shape\)/);
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), wrongShape);
+  await assert.rejects(fs.access(linksPath), { code: 'ENOENT' });
+});
+
+test('the written textbook links carry their contract keys and no reader sentinels', async () => {
+  // WHY THIS ASSERTS EXACT KEYS rather than just the payload: the reader now
+  // returns `unreadable` and `reason` alongside the data, so a writer that
+  // spreads the whole state persists those sentinels into the store. Reverting
+  // this writer to `{...state}` passed the entire bridge suite — 93/93 — which
+  // is how the hardening would quietly be undone. It matters because
+  // `unreadable` is already a live idiom in this repo (scripts/meeting-times.js
+  // uses it on its own file-state objects), so a future reader writing
+  // `if (parsed.unreadable)` would be reading a stale flag off disk.
+  const [book] = textbooksFromSyllabus(SYLLABUS);
+  await patchTextbookLink(classDir, SYLLABUS, book.id, 'https://books.example.edu/keys.pdf');
+  const written = JSON.parse(await fs.readFile(path.join(classDir, TEXTBOOK_LINKS_FILE), 'utf8'));
+  assert.deepEqual(Object.keys(written).sort(), ['links', 'updatedAt', 'version']);
+  assert.equal(Object.hasOwn(written, 'unreadable'), false, 'the unreadable sentinel reached disk');
+  assert.equal(Object.hasOwn(written, 'reason'), false, 'the reason sentinel reached disk');
+});
+

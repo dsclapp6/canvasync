@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { withPathLock, atomicWriteJson, lockKey } from '../write-lock.js';
+import { preserveUnreadable } from './store-safety.js';
 
 export const TEXTBOOK_LINKS_FILE = 'textbook_links.json';
 export const TEXTBOOK_SCHEMA_VERSION = 2;
@@ -300,14 +301,23 @@ export function textbooksFromSyllabus(syllabusParsed) {
 }
 
 export async function readTextbookLinks(classDir) {
+  const file = path.join(classDir, TEXTBOOK_LINKS_FILE);
+  let raw;
   try {
-    const parsed = JSON.parse(await fs.readFile(path.join(classDir, TEXTBOOK_LINKS_FILE), 'utf8'));
-    if (!parsed || typeof parsed !== 'object' || !parsed.links || typeof parsed.links !== 'object') {
-      return { version: 1, links: {} };
+    raw = await fs.readFile(file, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { version: 1, links: {}, unreadable: false };
+    return { version: 1, links: {}, unreadable: true, reason: err?.code ?? 'unreadable' };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+        || !parsed.links || typeof parsed.links !== 'object' || Array.isArray(parsed.links)) {
+      return { version: 1, links: {}, unreadable: true, reason: 'shape' };
     }
-    return { version: 1, links: parsed.links };
+    return { version: 1, links: parsed.links, unreadable: false };
   } catch {
-    return { version: 1, links: {} };
+    return { version: 1, links: {}, unreadable: true, reason: 'parse' };
   }
 }
 
@@ -431,6 +441,7 @@ async function patchTextbookLinkLocked(classDir, syllabusParsed, textbookId, val
 
   const url = normaliseUrl(value);
   const state = await readTextbookLinks(classDir);
+  await preserveUnreadable(state, linksPath(classDir));
   const legacyId = legacyIdFor(book);
   if (url) state.links[textbookId] = { url };
   else delete state.links[textbookId];

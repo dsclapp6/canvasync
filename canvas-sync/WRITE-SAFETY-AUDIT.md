@@ -80,12 +80,25 @@ documented instead of faked.
   dir-vanished `continue` skips its deadline check — the same shape fixed in
   file-lock.js (F1). Unreachable today only because `<dataRoot>/locks/` is
   never deleted. Owned by the item-1 pass (d8's file); take it in the same
-  edit, do not orphan it.
+  edit, do not orphan it. OBSERVED SYMPTOM 2026-08-30: under heavy load (two
+  concurrent full-suite runs + external profiling processes) model-lock.test's
+  "pid-less lock shell" case ran 192s against a 30s timeoutMs before failing —
+  the deadline is not being honored on some contended path. Alone: 8/8 in 10s,
+  every clean full-suite run green. Evidence for the fix, not a new ticket.
 - **F5's second half — orchestrator stderr discard**: extract's lock-timeout
   fallback warning is still effectively silent because trigger.js and
   sync-all-contexts.js discard successful-stage stderr. Needs a durable
   signal (stage marker field or a status-page-readable record), not a bigger
   log line. Open ticket; the fault-vs-contention rethrow itself IS fixed.
+
+## Store-safety notes (recorded, deliberately not done — v1.8.12 review)
+
+- `preserveUnreadable` naming: it either no-ops or throws — `refuseIfUnreadable`
+  would telegraph the control flow; renaming touches three call-site files, do
+  it whenever the module is next opened for real work.
+- The `.unreadable-<ISO ms>` stamp collides only within one millisecond on one
+  file, unreachable under the lock (first preserve removes the source). Same
+  analysis class as the reclaim window: verified by reasoning, not CI.
 
 ## Follow-up items (not in the sites-3–8 conversion)
 

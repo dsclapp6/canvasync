@@ -134,6 +134,52 @@ test('scope: a scope publish does not touch config.json', async () => {
   assert.equal(await fs.readFile(path.join(tmpHome, 'config.json'), 'utf8'), before);
 });
 
+test('scope: a corrupt published scope is preserved and ENOENT still starts empty', async () => {
+  const scopePath = path.join(tmpHome, 'sync-scope.json');
+  const corrupt = '{"selected courses":';
+  await fs.writeFile(scopePath, corrupt);
+  const refused = await request('POST', '/config/scope', asExt({
+    body: { courseIds: ['92294'] },
+  }));
+  assert.equal(refused.status, 500);
+  const preserved = (await fs.readdir(tmpHome))
+    .find(name => name.startsWith('sync-scope.json.unreadable-'));
+  assert.ok(preserved, 'the unreadable scope must be moved aside');
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(tmpHome, preserved), 'utf8'), corrupt);
+  await assert.rejects(fs.access(scopePath), { code: 'ENOENT' });
+
+  const retry = await request('POST', '/config/scope', asExt({
+    body: { courseIds: ['92294'] },
+  }));
+  assert.equal(retry.status, 200);
+  assert.deepEqual(JSON.parse(await fs.readFile(scopePath, 'utf8')).courseIds, ['92294']);
+  assert.equal(await fs.readFile(path.join(tmpHome, preserved), 'utf8'), corrupt);
+});
+
+test('scope: a valid-JSON scope with wrong field shapes is preserved and refused', async () => {
+  const scopePath = path.join(tmpHome, 'sync-scope.json');
+  const wrongShape = JSON.stringify({
+    version: 1,
+    courseIds: '92294',
+    enrolled: { courseId: '92294', name: 'must not be erased' },
+  });
+  const entriesBefore = new Set(await fs.readdir(tmpHome));
+  await fs.writeFile(scopePath, wrongShape);
+
+  const refused = await request('POST', '/config/scope', asExt({
+    body: { courseIds: ['92336'] },
+  }));
+  assert.equal(refused.status, 500);
+  const preserved = (await fs.readdir(tmpHome))
+    .find(name => name.startsWith('sync-scope.json.unreadable-') && !entriesBefore.has(name));
+  assert.ok(preserved, 'the wrong-shape scope must be moved aside');
+  assert.match(refused.body.error, /could not be read \(shape\)/);
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(tmpHome, preserved), 'utf8'), wrongShape);
+  await assert.rejects(fs.access(scopePath), { code: 'ENOENT' });
+});
+
 // --- /api/classes ----------------------------------------------------------
 
 test('classes: every class is flagged in-scope when the scope is unknown', async () => {

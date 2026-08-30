@@ -281,10 +281,43 @@ test('the class bundle carries user state', async () => {
 });
 
 test('a corrupt user_state.json reads as empty instead of breaking the class view', async () => {
-  await fs.writeFile(path.join(classDir, USER_STATE_FILE), '{not json');
+  const corrupt = '{not json';
+  await fs.writeFile(path.join(classDir, USER_STATE_FILE), corrupt);
   assert.deepEqual((await readUserState(classDir)).items, {});
   const res = await request('GET', `/api/class/${FOLDER}`);
   assert.equal(res.status, 200);
+
+  const refused = await patch({ done: true });
+  assert.equal(refused.status, 500);
+  const preserved = (await fs.readdir(classDir))
+    .find(name => name.startsWith(`${USER_STATE_FILE}.unreadable-`));
+  assert.ok(preserved, 'the unreadable state must be preserved');
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), corrupt);
+  await assert.rejects(fs.access(path.join(classDir, USER_STATE_FILE)), { code: 'ENOENT' });
+
+  const retry = await patch({ done: true });
+  assert.equal(retry.status, 200, 'ENOENT remains a legitimate empty state');
+  assert.equal((await readUserState(classDir)).items['essay-one'].done, true);
+  assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), corrupt);
+});
+
+test('a valid-JSON user state with non-object items is preserved and refuses a patch', async () => {
+  const statePath = path.join(classDir, USER_STATE_FILE);
+  const wrongShape = JSON.stringify({ version: 1, items: ['must not be erased'] });
+  const entriesBefore = new Set(await fs.readdir(classDir));
+  await fs.writeFile(statePath, wrongShape);
+
+  assert.deepEqual((await readUserState(classDir)).items, {}, 'wrong-shape reads stay empty');
+  const refused = await patch({ done: true });
+  assert.equal(refused.status, 500);
+  const preserved = (await fs.readdir(classDir))
+    .find(name => name.startsWith(`${USER_STATE_FILE}.unreadable-`) && !entriesBefore.has(name));
+  assert.ok(preserved, 'the wrong-shape user state must be moved aside');
+  assert.match(refused.body.error, /could not be read \(shape\)/);
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), wrongShape);
+  await assert.rejects(fs.access(statePath), { code: 'ENOENT' });
 });
 
 test('patching an unknown class 404s and writes nothing outside it', async () => {
@@ -301,3 +334,20 @@ test('patchTask rejects a non-object patch', async () => {
   await assert.rejects(() => patchTask(classDir, 'essay-one', 'done'), UserStateError);
   await assert.rejects(() => patchTask(classDir, '', { done: true }), UserStateError);
 });
+
+test('the written user state carries its contract keys and no reader sentinels', async () => {
+  // WHY THIS ASSERTS EXACT KEYS rather than just the payload: the reader now
+  // returns `unreadable` and `reason` alongside the data, so a writer that
+  // spreads the whole state persists those sentinels into the store. Reverting
+  // this writer to `{...state}` passed the entire bridge suite — 93/93 — which
+  // is how the hardening would quietly be undone. It matters because
+  // `unreadable` is already a live idiom in this repo (scripts/meeting-times.js
+  // uses it on its own file-state objects), so a future reader writing
+  // `if (parsed.unreadable)` would be reading a stale flag off disk.
+  await patchTask(classDir, 'essay-one', { done: true });
+  const written = JSON.parse(await fs.readFile(path.join(classDir, USER_STATE_FILE), 'utf8'));
+  assert.deepEqual(Object.keys(written).sort(), ['items', 'updatedAt', 'version']);
+  assert.equal(Object.hasOwn(written, 'unreadable'), false, 'the unreadable sentinel reached disk');
+  assert.equal(Object.hasOwn(written, 'reason'), false, 'the reason sentinel reached disk');
+});
+

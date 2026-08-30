@@ -56,6 +56,7 @@ import {
 } from '../custom-items.js';
 import { ICS_FILES } from '../scripts/cal-ics.js';
 import { indexProgressRouter } from './routes/index-progress.js';
+import { preserveUnreadable, UnreadableStoreError } from './store-safety.js';
 
 // From the manifest, never a copy: this is the number the UI footer and
 // /api/status report, and as a hardcoded literal it sat at 1.1.0 while
@@ -192,6 +193,7 @@ function dashboardStatePath() {
 function mutateDashboardState(fn) {
   return withPathLock(lockKey('dashboard-state', dashboardStatePath()), async () => {
     const state = await readDashboardState();
+    await preserveUnreadable(state, dashboardStatePath());
     const result = await fn(state);
     if (result === false) return result;
     await writeDashboardState(state);
@@ -200,19 +202,27 @@ function mutateDashboardState(fn) {
 }
 
 async function readDashboardState() {
+  let raw;
   try {
-    const raw = await fs.readFile(path.join(syncHome(), DASHBOARD_STATE_FILE), 'utf8');
+    raw = await fs.readFile(dashboardStatePath(), 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { version: 1, unreadable: false };
+    return { version: 1, unreadable: true, reason: err?.code ?? 'unreadable' };
+  }
+  try {
     const parsed = JSON.parse(raw);
-    return (parsed && typeof parsed === 'object') ? parsed : { version: 1 };
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      ? { ...parsed, unreadable: false }
+      : { version: 1, unreadable: true, reason: 'shape' };
   } catch {
-    // Missing or corrupt: an empty state is always a safe reading of "the user
-    // has not asked for anything", so this never needs to fail a request.
-    return { version: 1 };
+    // Corrupt stays an empty read for GET callers; mutators inspect the flag.
+    return { version: 1, unreadable: true, reason: 'parse' };
   }
 }
 
 async function writeDashboardState(state) {
-  await atomicWriteJson(path.join(syncHome(), DASHBOARD_STATE_FILE), { version: 1, ...state });
+  const { unreadable, reason, ...stored } = state;
+  await atomicWriteJson(path.join(syncHome(), DASHBOARD_STATE_FILE), { version: 1, ...stored });
 }
 
 // --- Constant-time secret compare ---
@@ -459,7 +469,7 @@ export function buildApp(config) {
       logRequest(req, res, courseId);
     } catch (err) {
       console.error('[bridge] /ingest/course-file error:', err.message, 'courseId:', courseId);
-      res.status(500).json({ error: 'write failed' });
+      res.status(500).json({ error: err instanceof UnreadableStoreError ? err.message : 'write failed' });
       logRequest(req, res, courseId);
     }
   });
@@ -718,18 +728,26 @@ export function buildApp(config) {
       // the lock too, so a removal cannot land between another writer's read
       // and its write.
       const cleared = await withPathLock(lockKey('sync-scope', scopePath), async () => {
+        const existing = await readObjectState(scopePath);
+        if (!existing.unreadable && existing.value
+            && ((Object.hasOwn(existing.value, 'courseIds')
+                && existing.value.courseIds !== null && !Array.isArray(existing.value.courseIds))
+              || (Object.hasOwn(existing.value, 'enrolled')
+                && !Array.isArray(existing.value.enrolled)))) {
+          existing.unreadable = true;
+          existing.reason = 'shape';
+        }
+        await preserveUnreadable(existing, scopePath);
         if (courseIds === null && enrolled === null) {
           await fs.rm(scopePath, { force: true });
           return true;
         }
         // Keep whichever half this request did not carry.
-        let existing = null;
-        try { existing = JSON.parse(await fs.readFile(scopePath, 'utf8')); } catch { /* first write */ }
         await atomicWriteJson(scopePath, {
           version: 1,
           updatedAt: new Date().toISOString(),
-          courseIds: courseIds ?? existing?.courseIds ?? null,
-          enrolled: enrolled ?? existing?.enrolled ?? [],
+          courseIds: courseIds ?? existing.value?.courseIds ?? null,
+          enrolled: enrolled ?? existing.value?.enrolled ?? [],
         });
         return false;
       });
@@ -741,7 +759,7 @@ export function buildApp(config) {
       logRequest(req, res, null);
     } catch (err) {
       console.error('[bridge] /config/scope error:', err.message);
-      res.status(500).json({ error: 'write failed' });
+      res.status(500).json({ error: err instanceof UnreadableStoreError ? err.message : 'write failed' });
     }
   });
 
@@ -777,7 +795,7 @@ export function buildApp(config) {
       logRequest(req, res, null);
     } catch (err) {
       console.error('[bridge] /config/intent/ack error:', err.message);
-      res.status(500).json({ error: 'write failed' });
+      res.status(500).json({ error: err instanceof UnreadableStoreError ? err.message : 'write failed' });
     }
   });
 
@@ -853,9 +871,31 @@ export function buildApp(config) {
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   };
 
-  const readJsonOrNull = async (p) => {
-    try { return JSON.parse(await fs.readFile(p, 'utf8')); } catch { return null; }
+  const readJsonState = async (p) => {
+    let raw;
+    try {
+      raw = await fs.readFile(p, 'utf8');
+    } catch (err) {
+      if (err?.code === 'ENOENT') return { value: null, unreadable: false, absent: true };
+      return { value: null, unreadable: true, reason: err?.code ?? 'unreadable', absent: false };
+    }
+    try {
+      return { value: JSON.parse(raw), unreadable: false, absent: false };
+    } catch {
+      return { value: null, unreadable: true, reason: 'parse', absent: false };
+    }
   };
+
+  const readObjectState = async (p) => {
+    const state = await readJsonState(p);
+    if (!state.unreadable && !state.absent
+        && (!state.value || typeof state.value !== 'object' || Array.isArray(state.value))) {
+      return { ...state, value: null, unreadable: true, reason: 'shape' };
+    }
+    return state;
+  };
+
+  const readJsonOrNull = async (p) => (await readJsonState(p)).value;
 
   // metadata.json stores Canvas's enrollment_term verbatim, so `term` is an
   // object ({id, name, start_at, ...}) — the sidebar was rendering it as
@@ -1053,7 +1093,7 @@ export function buildApp(config) {
       res.json({ ok: true, intent });
     } catch (err) {
       console.error('[bridge] /api/scope POST error:', err.message);
-      res.status(500).json({ error: 'write failed' });
+      res.status(500).json({ error: err instanceof UnreadableStoreError ? err.message : 'write failed' });
     }
   });
 
@@ -1370,6 +1410,7 @@ export function buildApp(config) {
       res.json({ ok: true, textbook });
     } catch (err) {
       if (err instanceof TextbookError) return res.status(400).json({ error: err.message });
+      if (err instanceof UnreadableStoreError) return res.status(500).json({ error: err.message });
       console.error('[bridge] textbook link error:', err.message);
       res.status(500).json({ error: 'write failed' });
     }
@@ -1605,6 +1646,7 @@ export function buildApp(config) {
       res.json({ ok: true, item });
     } catch (err) {
       if (err instanceof UserStateError) return res.status(400).json({ error: err.message });
+      if (err instanceof UnreadableStoreError) return res.status(500).json({ error: err.message });
       console.error('[bridge] task patch error:', err.message);
       res.status(500).json({ error: 'write failed' });
     }
@@ -1931,14 +1973,18 @@ export function buildApp(config) {
     let overrides, rejected;
     try {
       ({ overrides, rejected } = await withPathLock(lockKey('class-colors', colorsPath()), async () => {
-        const stored = (await readJsonOrNull(colorsPath())) ?? {};
+        const state = await readObjectState(colorsPath());
+        await preserveUnreadable(state, colorsPath());
+        const stored = state.value ?? {};
         const applied = applyColorPatch(stored, patch);
         await atomicWriteJson(colorsPath(), applied.overrides);
         return applied;
       }));
     } catch (err) {
       console.error('[bridge] /api/class-colors write failed:', err.message);
-      return res.status(500).json({ error: 'could not save colours' });
+      return res.status(500).json({
+        error: err instanceof UnreadableStoreError ? err.message : 'could not save colours',
+      });
     }
     const slugs = await listClassSlugs();
     res.json({
@@ -2030,7 +2076,15 @@ export function buildApp(config) {
     let env;
     try {
       env = await withPathLock(lockKey('settings', settingsPath), async () => {
-        const stored = await readJsonOrNull(settingsPath);
+        const state = await readObjectState(settingsPath);
+        if (!state.unreadable && Object.hasOwn(state.value ?? {}, 'env')
+            && (!state.value.env || typeof state.value.env !== 'object'
+              || Array.isArray(state.value.env))) {
+          state.unreadable = true;
+          state.reason = 'shape';
+        }
+        await preserveUnreadable(state, settingsPath);
+        const stored = state.value;
         const merged = { ...(stored?.env && typeof stored.env === 'object' ? stored.env : {}) };
         for (const [k, v] of Object.entries(incoming)) {
           if (!/^CSYNC_[A-Z0-9_]+$/.test(k)) continue;      // only our namespace
@@ -2042,7 +2096,9 @@ export function buildApp(config) {
       });
     } catch (err) {
       console.error('[bridge] /api/settings write failed:', err.message);
-      return res.status(500).json({ error: 'could not save settings' });
+      return res.status(500).json({
+        error: err instanceof UnreadableStoreError ? err.message : 'could not save settings',
+      });
     }
     res.json({ ok: true, settings: { env } });
   });

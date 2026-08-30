@@ -75,6 +75,55 @@ const readHomeJson = async (name) =>
 
 const tempsIn = async (dir) => (await fs.readdir(dir)).filter(n => n.includes('.tmp.'));
 
+async function preservedRefusal(name, mutate, contents = `{"recover ${name}":`, expectedReason = null) {
+  const file = path.join(tmpHome, name);
+  const entriesBefore = new Set(await fs.readdir(tmpHome));
+  await fs.writeFile(file, contents);
+  const refused = await mutate();
+  assert.equal(refused.status, 500);
+  const preserved = (await fs.readdir(tmpHome))
+    .find(entry => entry.startsWith(`${name}.unreadable-`) && !entriesBefore.has(entry));
+  assert.ok(preserved, `${name} must be moved aside`);
+  if (expectedReason) assert.match(refused.body.error, new RegExp(`could not be read \\(${expectedReason}\\)`));
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(tmpHome, preserved), 'utf8'), contents);
+  await assert.rejects(fs.access(file), { code: 'ENOENT' });
+  return { file, preserved, contents };
+}
+
+// --- Site 1: files_index.json through the real ingest route -----------------
+
+test('/ingest/course-file reports the preserved wrong-shape index instead of generic write failed', async () => {
+  const courseId = 77101;
+  const classDir = path.join(tmpHome, 'classes', `${courseId}-route-shape`);
+  const indexPath = path.join(classDir, 'files_index.json');
+  const wrongShape = JSON.stringify({ entries: [{ canvasId: 'must-not-be-lost' }] });
+  await fs.mkdir(classDir, { recursive: true });
+  await fs.writeFile(indexPath, wrongShape);
+  const entriesBefore = new Set(await fs.readdir(classDir));
+
+  const refused = await call('POST', '/ingest/course-file', {
+    courseId,
+    fileId: 7710101,
+    displayName: 'route-shape.pdf',
+    contentType: 'application/pdf',
+    size: 3,
+    canvasUpdatedAt: '2026-08-29T00:00:00Z',
+    dataBase64: Buffer.from('pdf').toString('base64'),
+  });
+
+  assert.equal(refused.status, 500);
+  assert.notEqual(refused.body.error, 'write failed');
+  const preserved = (await fs.readdir(classDir))
+    .find(name => name.startsWith('files_index.json.unreadable-') && !entriesBefore.has(name));
+  assert.ok(preserved, 'the route must preserve the wrong-shape index');
+  assert.match(refused.body.error, /could not be read \(shape\)/);
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), wrongShape);
+  await assert.rejects(fs.access(indexPath), { code: 'ENOENT' });
+  await assert.rejects(fs.access(path.join(classDir, 'files', 'route-shape.pdf')), { code: 'ENOENT' });
+});
+
 // --- Site 4: config.json ----------------------------------------------------
 
 test('two classes marked untracked at once are both recorded', async () => {
@@ -143,6 +192,21 @@ test('an ack for a stale id never clears a newer intent', async () => {
   assert.deepEqual(state.intent.courseIds, ['555']);
 });
 
+test('a corrupt dashboard state is preserved and a missing state can be created', async () => {
+  const kept = await preservedRefusal('dashboard-state.json',
+    () => call('POST', '/api/scope', { courseIds: ['601'] }));
+  assert.equal((await call('POST', '/api/scope', { courseIds: ['601'] })).status, 200);
+  assert.deepEqual((await readHomeJson('dashboard-state.json')).intent.courseIds, ['601']);
+  assert.equal(await fs.readFile(path.join(tmpHome, kept.preserved), 'utf8'), kept.contents);
+});
+
+test('a wrong-shape dashboard state is preserved and refuses the mutation', async () => {
+  const wrongShape = JSON.stringify([{ intent: { courseIds: ['do-not-erase'] } }]);
+  const kept = await preservedRefusal('dashboard-state.json',
+    () => call('POST', '/api/scope', { courseIds: ['602'] }), wrongShape, 'shape');
+  assert.equal(await fs.readFile(path.join(tmpHome, kept.preserved), 'utf8'), wrongShape);
+});
+
 // --- Site 6: class_colors.json ---------------------------------------------
 
 test('two colours picked at once are both saved', async () => {
@@ -164,6 +228,23 @@ test('a burst of colour changes leaves no orphan temp file', async () => {
   await Promise.all(Array.from({ length: 6 }, (_, i) =>
     call('POST', '/api/class-colors', { colors: { [`slug-${i}`]: '#112233' } })));
   assert.deepEqual(await tempsIn(tmpHome), []);
+});
+
+test('corrupt class colours are preserved and a missing store can be created', async () => {
+  const kept = await preservedRefusal('class_colors.json',
+    () => call('POST', '/api/class-colors', { colors: { recoverable: '#112233' } }));
+  assert.equal((await call('POST', '/api/class-colors', {
+    colors: { recoverable: '#112233' },
+  })).status, 200);
+  assert.equal((await readHomeJson('class_colors.json')).recoverable, '#112233');
+  assert.equal(await fs.readFile(path.join(tmpHome, kept.preserved), 'utf8'), kept.contents);
+});
+
+test('wrong-shape class colours are preserved and refuse the mutation', async () => {
+  const wrongShape = JSON.stringify(['#112233']);
+  const kept = await preservedRefusal('class_colors.json',
+    () => call('POST', '/api/class-colors', { colors: { recoverable: '#445566' } }), wrongShape, 'shape');
+  assert.equal(await fs.readFile(path.join(tmpHome, kept.preserved), 'utf8'), wrongShape);
 });
 
 // --- Site 7: settings.json --------------------------------------------------
@@ -199,6 +280,23 @@ test('a deletion racing a save does not resurrect the deleted key', async () => 
   assert.equal(env.CSYNC_OTHER, 'z', 'the concurrent add stuck');
 });
 
+test('corrupt settings are preserved and a missing store can be created', async () => {
+  const kept = await preservedRefusal('settings.json',
+    () => call('POST', '/api/settings', { env: { CSYNC_RECOVERABLE: '1' } }));
+  assert.equal((await call('POST', '/api/settings', {
+    env: { CSYNC_RECOVERABLE: '1' },
+  })).status, 200);
+  assert.equal((await readHomeJson('settings.json')).env.CSYNC_RECOVERABLE, '1');
+  assert.equal(await fs.readFile(path.join(tmpHome, kept.preserved), 'utf8'), kept.contents);
+});
+
+test('wrong-shape settings are preserved and refuse the mutation', async () => {
+  const wrongShape = JSON.stringify({ env: ['CSYNC_DO_NOT_ERASE'] });
+  const kept = await preservedRefusal('settings.json',
+    () => call('POST', '/api/settings', { env: { CSYNC_RECOVERABLE: '2' } }), wrongShape, 'shape');
+  assert.equal(await fs.readFile(path.join(tmpHome, kept.preserved), 'utf8'), wrongShape);
+});
+
 // --- Cross-file ------------------------------------------------------------
 
 test('different global files do not serialize against each other', async () => {
@@ -214,3 +312,20 @@ test('different global files do not serialize against each other', async () => {
   assert.equal((await readHomeJson('class_colors.json'))['entr-222'], '#7a4e12');
   assert.ok((await readHomeJson('config.json')).untracked.includes('92298-busi-395-001'));
 });
+
+test('the written dashboard state carries no reader sentinels', async () => {
+  // WHY THIS ASSERTS EXACT KEYS rather than just the payload: the reader now
+  // returns `unreadable` and `reason` alongside the data, so a writer that
+  // spreads the whole state persists those sentinels into the store. Reverting
+  // this writer to `{...state}` passed the entire bridge suite — 93/93 — which
+  // is how the hardening would quietly be undone. It matters because
+  // `unreadable` is already a live idiom in this repo (scripts/meeting-times.js
+  // uses it on its own file-state objects), so a future reader writing
+  // `if (parsed.unreadable)` would be reading a stale flag off disk.
+  assert.equal((await call('POST', '/api/scope', { courseIds: ['777'] })).status, 200);
+  const written = await readHomeJson('dashboard-state.json');
+  assert.equal(Object.hasOwn(written, 'unreadable'), false, 'the unreadable sentinel reached disk');
+  assert.equal(Object.hasOwn(written, 'reason'), false, 'the reason sentinel reached disk');
+  assert.deepEqual(written.intent.courseIds, ['777'], 'and the real payload still lands');
+});
+

@@ -17,6 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataRoot as syncHome } from '../data-root.js';
 import { withPathLock, atomicWriteJson, lockKey } from '../write-lock.js';
+import { preserveUnreadable } from './store-safety.js';
 
 export const USER_STATE_FILE = 'user_state.json';
 
@@ -46,21 +47,33 @@ export function classDirOf(folderName) {
 }
 
 export async function readUserState(classDir) {
+  let raw;
   try {
-    const parsed = JSON.parse(await fs.readFile(statePath(classDir), 'utf8'));
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.items !== 'object' || !parsed.items) {
-      return { version: 1, items: {} };
+    raw = await fs.readFile(statePath(classDir), 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { version: 1, items: {}, unreadable: false };
+    return { version: 1, items: {}, unreadable: true, reason: err?.code ?? 'unreadable' };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+        || typeof parsed.items !== 'object' || !parsed.items || Array.isArray(parsed.items)) {
+      return { version: 1, items: {}, unreadable: true, reason: 'shape' };
     }
-    return { version: 1, items: parsed.items };
+    return { version: 1, items: parsed.items, unreadable: false };
   } catch {
-    // Missing or corrupt reads as "the user has not marked anything", which is
-    // always a safe interpretation and never fails the class detail view.
-    return { version: 1, items: {} };
+    // Corrupt still reads as empty for GET/class-detail callers, but the flag is
+    // load-bearing for the locked read-modify-write path below.
+    return { version: 1, items: {}, unreadable: true, reason: 'parse' };
   }
 }
 
 async function writeUserState(classDir, state) {
-  await atomicWriteJson(statePath(classDir), { ...state, updatedAt: new Date().toISOString() });
+  await atomicWriteJson(statePath(classDir), {
+    version: 1,
+    items: state.items,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 // Every mutation is read-modify-write over the WHOLE class file — user_state
@@ -168,6 +181,7 @@ export async function patchTask(classDir, taskId, patch) {
 // is the whole point of the lock.
 async function patchTaskLocked(classDir, taskId, patch) {
   const state = await readUserState(classDir);
+  await preserveUnreadable(state, statePath(classDir));
   const current = state.items[taskId] ?? {};
   const next = { ...current };
 

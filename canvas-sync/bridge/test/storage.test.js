@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  slugifyCourseCode, classDirFor, writeCourse, writeCourseFile, writeFile,
+  slugifyCourseCode, classDirFor, readFilesIndex, writeCourse, writeCourseFile, writeFile,
   updateLastSync,
 } from '../storage.js';
 
@@ -182,6 +182,109 @@ test('writeCourse then writeCourseFile: correct order persists the file and its 
     assert.ok(entry, 'the ingested file should have an index entry');
     assert.equal(entry.localPath, path.join('files', 'lecture1.pdf'));
   } finally {
+    delete process.env.CANVAS_SYNC_HOME;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('writeCourseFile preserves a corrupt files index, refuses the ingest, then accepts the missing store', async () => {
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-test-'));
+  process.env.CANVAS_SYNC_HOME = tmpHome;
+  try {
+    const { classDir } = await writeCourse({ course: { id: 43, course_code: 'TC 103' } });
+    const indexPath = path.join(classDir, 'files_index.json');
+    const corrupt = '{"real entries survive":';
+    await fs.writeFile(indexPath, corrupt);
+    const payload = {
+      courseId: 43,
+      fileId: 1002,
+      displayName: 'lecture2.pdf',
+      contentType: 'application/pdf',
+      size: 3,
+      canvasUpdatedAt: '2026-01-02T00:00:00Z',
+      dataBase64: Buffer.from('def').toString('base64'),
+    };
+
+    let refusal;
+    try { await writeCourseFile(payload); } catch (err) { refusal = err; }
+    assert.ok(refusal, 'a corrupt index must refuse the ingest');
+    const preserved = (await fs.readdir(classDir))
+      .find(name => name.startsWith('files_index.json.unreadable-'));
+    assert.ok(preserved, 'the corrupt index must be moved aside');
+    assert.match(refusal.message, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), corrupt);
+    await assert.rejects(fs.access(indexPath), { code: 'ENOENT' });
+    await assert.rejects(fs.access(path.join(classDir, 'files', 'lecture2.pdf')), { code: 'ENOENT' });
+
+    const retry = await writeCourseFile(payload);
+    assert.equal(retry.changed, true, 'ENOENT remains a legitimate empty index');
+    assert.equal(JSON.parse(await fs.readFile(indexPath, 'utf8'))[0].canvasId, 1002);
+    assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), corrupt);
+  } finally {
+    delete process.env.CANVAS_SYNC_HOME;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('writeCourseFile refuses an EACCES index without treating it as empty', async (t) => {
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-test-'));
+  process.env.CANVAS_SYNC_HOME = tmpHome;
+  let indexPath;
+  let preservedPath;
+  let originalMode;
+  try {
+    // Keep this errno test load-bearing against the all-shape mutant too: the
+    // route-level test owns preserve/refuse coverage, while this direct probe
+    // makes the same site's classification an explicit precondition here.
+    const shapeProbe = path.join(tmpHome, 'shape-probe');
+    await fs.mkdir(shapeProbe);
+    await fs.writeFile(path.join(shapeProbe, 'files_index.json'), JSON.stringify({ entries: [] }));
+    const shapeState = await readFilesIndex(shapeProbe);
+    assert.equal(shapeState.unreadable, true);
+    assert.equal(shapeState.reason, 'shape');
+
+    const { classDir } = await writeCourse({ course: { id: 44, course_code: 'TC 104' } });
+    indexPath = path.join(classDir, 'files_index.json');
+    const original = JSON.stringify([{ canvasId: 4400, localPath: 'files/existing.pdf' }]);
+    await fs.writeFile(indexPath, original);
+    originalMode = (await fs.stat(indexPath)).mode & 0o777;
+    await fs.chmod(indexPath, 0o000);
+
+    const readError = await fs.readFile(indexPath, 'utf8').then(() => null, err => err);
+    if (!readError) {
+      t.skip('chmod 000 did not block reads in this environment (running as root or permissions ignored)');
+      return;
+    }
+    assert.equal(readError.code, 'EACCES', `expected chmod to produce EACCES, got ${readError.code}`);
+
+    const payload = {
+      courseId: 44,
+      fileId: 4401,
+      displayName: 'must-not-land.pdf',
+      contentType: 'application/pdf',
+      size: 3,
+      canvasUpdatedAt: '2026-08-29T00:00:00Z',
+      dataBase64: Buffer.from('new').toString('base64'),
+    };
+    let refusal;
+    try { await writeCourseFile(payload); } catch (err) { refusal = err; }
+    assert.ok(refusal, 'an EACCES index must refuse the ingest');
+    assert.match(refusal.message, /could not be read \(EACCES\)/);
+
+    const preserved = (await fs.readdir(classDir))
+      .find(name => name.startsWith('files_index.json.unreadable-'));
+    assert.ok(preserved, 'the EACCES index must be moved aside');
+    preservedPath = path.join(classDir, preserved);
+    assert.match(refusal.message, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    await fs.chmod(preservedPath, originalMode);
+    assert.equal(await fs.readFile(preservedPath, 'utf8'), original);
+    await assert.rejects(fs.access(indexPath), { code: 'ENOENT' });
+    await assert.rejects(fs.access(path.join(classDir, 'files', 'must-not-land.pdf')), { code: 'ENOENT' });
+  } finally {
+    if (originalMode !== undefined) {
+      if (indexPath) await fs.chmod(indexPath, originalMode).catch(() => {});
+      if (preservedPath) await fs.chmod(preservedPath, originalMode).catch(() => {});
+    }
     delete process.env.CANVAS_SYNC_HOME;
     await fs.rm(tmpHome, { recursive: true, force: true });
   }

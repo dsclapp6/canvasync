@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataRoot as syncHome } from '../data-root.js';
 import { withFilesIndexLock } from '../file-lock.js';
+import { preserveUnreadable } from './store-safety.js';
 
 export function slugifyCourseCode(code) {
   if (!code || typeof code !== 'string') return null;
@@ -207,15 +208,24 @@ export async function updateLastSync(coursesSeen) {
 
 // --- v1.1: files_index helpers ---
 
-// Read <classDir>/files_index.json as an array; return [] on missing/corrupt.
+// Read <classDir>/files_index.json. Missing is an empty first ingest; corrupt or
+// otherwise unreadable is not, and a writer must preserve it rather than
+// replacing an unknown snapshot with an empty one.
 export async function readFilesIndex(classDir) {
   const indexPath = path.join(classDir, 'files_index.json');
+  let raw;
   try {
-    const raw = await fs.readFile(indexPath, 'utf8');
+    raw = await fs.readFile(indexPath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { entries: [], unreadable: false };
+    return { entries: [], unreadable: true, reason: err?.code ?? 'unreadable' };
+  }
+  try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return { entries: [], unreadable: true, reason: 'shape' };
+    return { entries: parsed, unreadable: false };
   } catch {
-    return [];
+    return { entries: [], unreadable: true, reason: 'parse' };
   }
 }
 
@@ -277,7 +287,9 @@ export async function writeCourseFile(payload = {}) {
   // and the extension retries a 503 rather than waiting on a held-open socket.
   return withFilesIndexLock(classDir, async () => {
     // Load existing index to detect collisions and skip-if-unchanged.
-    const index = await readFilesIndex(classDir);
+    const state = await readFilesIndex(classDir);
+    await preserveUnreadable(state, path.join(classDir, 'files_index.json'));
+    const index = state.entries;
     const existingEntry = index.find(e => e && e.canvasId === fileId);
 
     // Skip if size + canvasUpdatedAt match (plan 1b step 6).
