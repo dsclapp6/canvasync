@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spanDates } from '../public/cal-grid.js';
 
 // fileURLToPath, never import.meta.url's raw pathname — a raw-pathname compare
 // silently no-ops when the path holds characters the URL form escapes.
@@ -46,9 +47,19 @@ function declaration(name) {
   throw new Error(`unbalanced braces in ${name}()`);
 }
 
-const NAMES = ['fmtTime12', 'fmtTimeSpan', 'calPoints', 'calUrl'];
-const { fmtTimeSpan, calPoints, calUrl } = new Function(
-  `${NAMES.map(declaration).join('\n')}\nreturn { ${NAMES.join(', ')} };`)();
+const NAMES = [
+  'esc', 'fmtTime12', 'fmtTimeChip', 'fmtTimeSpan', 'calPoints', 'calUrl',
+  'calDate', 'fmtDayLabel', 'calWhenLabel', 'calSubmitHtml', 'stripClassPrefix',
+  'calKindShort',
+];
+// calWhenLabel reads spanDates, which is a real import in app.js — hand it the
+// genuine one from cal-grid.js rather than a stub, so span behaviour under test
+// is the behaviour that ships.
+const {
+  fmtTimeChip, fmtTimeSpan, calPoints, calUrl, calWhenLabel, calSubmitHtml,
+  stripClassPrefix, calKindShort,
+} = new Function('spanDates',
+  `${NAMES.map(declaration).join('\n')}\nreturn { ${NAMES.join(', ')} };`)(spanDates);
 
 test('fmtTimeSpan never presents an end time as if it were a start', () => {
   // The defect: an unreadable start fell through to `return a || b`, so the
@@ -153,3 +164,155 @@ test('the .hu-rel column is a floor, not a cap, and says so honestly', () => {
   assert.match(block, /flex: none/, '.hu-rel must stay flex: none so the floor cannot clip');
 });
 
+
+// ---------------------------------------------------------------------------
+// Chip and row markers.
+//
+// A calendar chip is ~170px wide with a two-line title clamp, so every glyph in
+// it competes with the title. The rule these guard is that a marker must read
+// as a MARKER: punctuation standing alone in a cramped chip is indistinguishable
+// from a truncation artifact, and the calendar already spends dashes on time
+// ranges ("2:30–3:45 PM") and on day spans ("Mon 24 – Wed 26").
+// ---------------------------------------------------------------------------
+
+test('a no-submit marker is a word, never a bare dash', () => {
+  // The shipped bug: dense mode rendered `&mdash;`, and `.cal-chip .cal-nolink`
+  // strips the pill border that makes it legible in the list. 73 of 143 due ops
+  // in the live worklist carry one of these, so it was on half the chips.
+  const ai = calSubmitHtml({ aiAdded: true }, { dense: true });
+  const nolink = calSubmitHtml({ noLink: true }, { dense: true });
+
+  const strip = (html) => html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;/g, '');
+
+  for (const [name, html] of [['ai-added', ai], ['no-link', nolink]]) {
+    const text = strip(html);
+    assert.ok(/[A-Za-z]/.test(text), `${name} marker has no letters: ${JSON.stringify(html)}`);
+    assert.doesNotMatch(text, /^[\s–—-]*$/,
+      `${name} marker is punctuation only: ${JSON.stringify(text)}`);
+    assert.doesNotMatch(html, /&mdash;|&ndash;/,
+      `${name} marker still emits a dash entity: ${html}`);
+  }
+
+  // The other half, and the half with teeth. "It says a word" is satisfied by
+  // rendering the LIST form on a chip, which is the mistake this guards: the
+  // marker sits in an `auto` grid track beside a two-line-clamped title, so a
+  // long dense form steals the title's width and an internal space gives it
+  // somewhere to wrap. Sameness without discrimination proves nothing.
+  for (const [name, m] of [['ai-added', { aiAdded: true }], ['no-link', { noLink: true }]]) {
+    const dense = strip(calSubmitHtml(m, { dense: true }));
+    const full = strip(calSubmitHtml(m));
+    assert.notEqual(dense, full, `${name} dense form is just the list form — the ternary is gone`);
+    assert.ok(dense.length < full.length, `${name} dense form is not shorter: ${dense} vs ${full}`);
+    assert.ok(dense.length <= 4, `${name} dense form too wide for the chip track: ${dense}`);
+    assert.doesNotMatch(dense, /\s/, `${name} dense form has a space to wrap at: ${dense}`);
+  }
+});
+
+test('the marker element CALENDAR-SPEC 2.8 and 2.13 count is still emitted', () => {
+  // The fix changed the marker's TEXT, not its presence. 2.8 wants a
+  // `.cal-nolink` on an item with no URL; 2.13 wants `.cal-nolink.ai` on
+  // AI-added work, in all three views. Both verifications count the element.
+  assert.match(calSubmitHtml({ aiAdded: true }, { dense: true }), /class="cal-nolink ai"/);
+  assert.match(calSubmitHtml({ aiAdded: true }), /class="cal-nolink ai"/);
+  assert.match(calSubmitHtml({ noLink: true }, { dense: true }), /class="cal-nolink"/);
+  // …and an item that CAN be submitted gets a link, not a marker.
+  const submit = calSubmitHtml({ submitUrl: 'https://canvas.edu/s/1' }, { dense: true });
+  assert.match(submit, /class="cal-submit dense"/);
+  assert.doesNotMatch(submit, /cal-nolink/);
+  // A meeting is neither: no marker at all, so no dead control and no noise.
+  assert.equal(calSubmitHtml({}, { dense: true }), '');
+});
+
+test('the marker escapes nothing user-controlled into the chip', () => {
+  // submitUrl is the only caller-supplied value here; it must not break out.
+  const html = calSubmitHtml({ submitUrl: 'https://x.edu/a"onmouseover=alert(1)' }, { dense: true });
+  assert.doesNotMatch(html, /"onmouseover/, 'attribute broke out of its quotes');
+  assert.match(html, /&quot;onmouseover/);
+});
+
+test('calWhenLabel: every shape a row can be', () => {
+  assert.equal(calWhenLabel({ date: '2026-09-10', all_day: true }), 'All day');
+  assert.equal(calWhenLabel({ date: '2026-09-10' }), '—', 'no time and not all-day is genuinely unknown');
+  assert.equal(calWhenLabel({ date: '2026-09-10', time: '14:30', end_time: '15:45' }), '2:30–3:45 PM');
+  assert.equal(calWhenLabel({ date: '2026-09-10', time: '14:30' }), '2:30 PM');
+  // A multi-day run says so — "All day" over three days is a third of the truth.
+  assert.equal(calWhenLabel({ date: '2026-09-10', end_date: '2026-09-12' }), 'Thu 9/10 – Sat 9/12');
+  assert.equal(calWhenLabel({ date: '2026-09-10', end_date: '2026-09-12', time: '09:00' }),
+    '9a Thu 9/10 – Sat 9/12');
+  // An end before the start is not a span; spanDates degrades it to one day.
+  assert.equal(calWhenLabel({ date: '2026-09-10', end_date: '2026-09-08', all_day: true }), 'All day');
+});
+
+test('calWhenLabel never emits a dangling range dash', () => {
+  // The other half of the same rule: a range separator with nothing after it
+  // reads exactly like the bug above.
+  for (const op of [
+    { date: '2026-09-10', time: '14:30', end_time: '' },
+    { date: '2026-09-10', time: '14:30', end_time: null },
+    { date: '2026-09-10', time: '14:30', end_time: 'garbage' },
+    { date: '2026-09-10', time: '', end_time: '15:00' },
+    { date: '2026-09-10', time: 'noon', end_time: '15:00' },
+  ]) {
+    const out = calWhenLabel(op);
+    // A LONE em dash is the deliberate "no time known" placeholder, and in the
+    // list it owns its own column, so it reads as an empty cell rather than as
+    // stray punctuation beside text. That is the distinction: a dash may BE the
+    // value, but it may never dangle off one.
+    if (out === '—') continue;
+    assert.doesNotMatch(out, /[–—-]\s*$/, `trailing range dash in ${JSON.stringify(out)}`);
+    assert.doesNotMatch(out, /^\s*[–—]\s*\S/, `leading range dash in ${JSON.stringify(out)}`);
+  }
+  // The start we could not read must not be printed as if it were a start.
+  assert.equal(calWhenLabel({ date: '2026-09-10', time: 'noon', end_time: '15:00' }),
+    'until 3:00 PM');
+});
+
+test('stripClassPrefix removes the class only when it really is the prefix', () => {
+  assert.equal(stripClassPrefix('BUSI 380 · Read Ch 4', 'busi-380'), 'Read Ch 4');
+  assert.equal(stripClassPrefix('BUSI 380 002: Read ch. 4', 'busi-380-002'), 'Read ch. 4');
+  // A different class's name is not a prefix to strip.
+  assert.equal(stripClassPrefix('ECON 205 · Read Ch 4', 'busi-380'), 'ECON 205 · Read Ch 4');
+  // A separator that is not the class prefix survives — this is the case that
+  // would otherwise leave a title starting with a dangling separator.
+  assert.equal(stripClassPrefix('Read: chapter 4', 'busi-380'), 'Read: chapter 4');
+  assert.equal(stripClassPrefix('· leading dot', 'busi-380'), '· leading dot');
+  assert.equal(stripClassPrefix('BUSI 380', 'busi-380'), 'BUSI 380', 'nothing after the code to keep');
+  // Whatever it returns must never begin with a naked separator.
+  for (const t of ['BUSI 380 · Read Ch 4', 'BUSI 380 002: Read ch. 4', 'Read: chapter 4']) {
+    assert.doesNotMatch(stripClassPrefix(t, 'busi-380'), /^\s*[·:—–-]/,
+      `left a dangling separator on ${JSON.stringify(t)}`);
+  }
+});
+
+test('calKindShort is short, uppercase and never empty', () => {
+  assert.equal(calKindShort('meeting'), 'CLASS');
+  assert.equal(calKindShort('office_hours'), 'OH');
+  assert.equal(calKindShort('homework'), 'HW');
+  assert.equal(calKindShort('reading'), 'READ');
+  // Every kind the live worklist actually contains is mapped, so the truncating
+  // fallback below is a guard rather than a shipped path.
+  for (const kind of ['homework', 'meeting', 'checkpoint', 'reading', 'exam', 'office_hours']) {
+    assert.ok(calKindShort(kind).length <= 5, `${kind} badge too wide`);
+  }
+  // Unknown, absent and empty must still produce a readable badge.
+  for (const kind of [undefined, null, '', 'quiz', 'some_new_kind']) {
+    const out = calKindShort(kind);
+    assert.ok(out.length > 0 && out.length <= 5, `bad badge for ${JSON.stringify(kind)}: ${out}`);
+    assert.equal(out, out.toUpperCase());
+  }
+  assert.equal(calKindShort(undefined), 'ITEM');
+  assert.equal(calKindShort(''), 'ITEM');
+});
+
+test('fmtTimeChip: the compact form at both meridiem hinges', () => {
+  assert.equal(fmtTimeChip('00:00'), '12a');
+  assert.equal(fmtTimeChip('00:30'), '12:30a');
+  assert.equal(fmtTimeChip('12:00'), '12p');
+  assert.equal(fmtTimeChip('12:30'), '12:30p');
+  assert.equal(fmtTimeChip('23:59'), '11:59p');
+  assert.equal(fmtTimeChip('9:05'), '9:05a');
+  // Unreadable input yields nothing rather than a partial chip.
+  for (const bad of ['', null, undefined, 'noon', 'TBD', '2:3']) {
+    assert.equal(fmtTimeChip(bad), '', `expected empty for ${JSON.stringify(bad)}`);
+  }
+});

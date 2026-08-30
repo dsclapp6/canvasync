@@ -3075,11 +3075,25 @@ function calSubmitHtml(m, { dense = false } = {}) {
   // An AI-added deadline is real work but not a Canvas assignment — the pill
   // says so, so the user never hunts for a submit box that does not exist.
   // CALENDAR-SPEC 2.13.
+  // A WORD, never a bare dash. The dense form used to be `&mdash;`, and on a
+  // chip — where `.cal-chip .cal-nolink` strips the pill border that makes it
+  // read as a marker in the list — that left an unstyled em dash butted against
+  // a two-line-clamped title. It was indistinguishable from a truncation
+  // artifact, and it collided with the en dash that means a time RANGE
+  // ("2:30–3:45 PM"), so one glyph meant three things. 73 of 143 due ops in the
+  // live worklist carry one of these two markers, so it was on half the chips
+  // on screen. CALENDAR-SPEC 2.8 and 2.13 require the marker to be PRESENT in
+  // all three views; they do not require it to be punctuation.
+//
+// Both dense forms stay SHORT and space-free on purpose: the marker sits in
+// an `auto` grid track next to the two-line-clamped title, so every character
+// is taken off the title's lane and an internal space gives it somewhere to
+// wrap. 'AI' and 'none', not 'AI-added' and 'no link'.
   if (m.aiAdded) {
-    return `<span class="cal-nolink ai" title="Added by AI from the syllabus — not a Canvas assignment, nothing to submit on Canvas">${dense ? '&mdash;' : 'AI-added'}</span>`;
+    return `<span class="cal-nolink ai" title="Added by AI from the syllabus — not a Canvas assignment, nothing to submit on Canvas">${dense ? 'AI' : 'AI-added'}</span>`;
   }
   if (m.noLink) {
-    return `<span class="cal-nolink" title="Canvas has no page for it">${dense ? '&mdash;' : 'no link'}</span>`;
+    return `<span class="cal-nolink" title="Canvas has no page for it">${dense ? 'none' : 'no link'}</span>`;
   }
   return '';
 }
