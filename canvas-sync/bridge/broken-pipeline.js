@@ -59,3 +59,32 @@ export function brokenPipelinePlan(progress, {
 
   return { targets, calendar, targetCount };
 }
+
+/**
+ * How a failure inside the broken-run branch should be reported.
+ *
+ * Extracted for the same reason brokenPipelinePlan above is: the route's awaits
+ * cannot be made to reject from a test — indexProgress is defensive enough to
+ * survive an unreadable data root — so the decision is separated from the
+ * plumbing and tested directly.
+ *
+ * The distinction that matters is STALE BRIDGE vs everything else. That branch
+ * lazily imports scripts/index-progress.js, so it links against the modules
+ * THIS process loaded at startup; a bridge left running across an edit to that
+ * file fails with a SyntaxError whose message reads like a missing export
+ * rather than a stale process. runAsk already answers that case with the one
+ * instruction the user can act on, and this says the same thing.
+ */
+export function brokenRunFailure(err) {
+  const stale = err instanceof SyntaxError;
+  const message = err?.message ?? String(err);
+  return {
+    status: stale ? 503 : 500,
+    body: {
+      error: 'run broken failed',
+      detail: stale
+        ? `${message} — this bridge has been running since before that file changed. Quit CANVASync and open it again.`
+        : message,
+    },
+  };
+}

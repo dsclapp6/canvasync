@@ -20,7 +20,7 @@ import {
   runIfNeeded, runSelectedStages, runBrokenStages, pipelineStatus, pipelineStageAvailability,
   cancelPipeline, PIPELINE_STAGE_KEYS,
 } from './trigger.js';
-import { brokenPipelinePlan } from './broken-pipeline.js';
+import { brokenPipelinePlan, brokenRunFailure } from './broken-pipeline.js';
 import { dataRoot } from '../data-root.js';
 import { withPathLock, atomicWrite, atomicWriteJson as lockedWriteJson, lockKey }
   from '../write-lock.js';
@@ -2124,24 +2124,43 @@ export function buildApp(config) {
     }
 
     if (broken === true) {
-      const enabled = await pipelineStageAvailability();
-      const { indexProgress } = await import('../scripts/index-progress.js');
-      const progress = await indexProgress(syncHome(), {
-        pipelineStatus,
-        bridgePid: process.pid,
-      });
-      const plan = brokenPipelinePlan(progress, {
-        allowedStageKeys: PIPELINE_STAGE_KEYS,
-        enabled,
-      });
-      const result = runBrokenStages(plan.targets, {
-        retryCalendar: plan.calendar,
-        refreshCalendar: enabled.calendar !== false,
-      });
-      if (result.busy) {
-        return res.status(409).json({ error: 'pipeline already running', pipeline: pipelineStatus() });
+      // This is the only branch of /pipeline/run that awaits, and Express 4
+      // does not forward an async rejection to the terminal handler — so
+      // without this catch the request hangs and, on Node >= 15, the
+      // unhandled rejection takes the WHOLE BRIDGE down mid-request: every
+      // dashboard and the extension's ingest target, until the app is
+      // relaunched. routes/index-progress.js:356-362 states the same rule two
+      // files away; this branch shipped without it.
+      try {
+        const enabled = await pipelineStageAvailability();
+        const { indexProgress } = await import('../scripts/index-progress.js');
+        const progress = await indexProgress(syncHome(), {
+          pipelineStatus,
+          bridgePid: process.pid,
+        });
+        const plan = brokenPipelinePlan(progress, {
+          allowedStageKeys: PIPELINE_STAGE_KEYS,
+          enabled,
+        });
+        const result = runBrokenStages(plan.targets, {
+          retryCalendar: plan.calendar,
+          refreshCalendar: enabled.calendar !== false,
+        });
+        if (result.busy) {
+          return res.status(409).json({ error: 'pipeline already running', pipeline: pipelineStatus() });
+        }
+        return res.json({ ok: true, ...result, targetCount: plan.targetCount });
+      } catch (err) {
+        // index-progress.js is imported lazily here, so it links against the
+        // modules THIS process loaded at startup. A bridge left running across
+        // an edit to that file — or anything in its import graph — fails to
+        // link with a SyntaxError that reads like a missing export rather than
+        // a stale process. Same answer runAsk gives: name the thing the user
+        // can actually do.
+        console.error('[bridge] /api/pipeline/run {broken:true} failed:', err?.message);
+        const { status, body } = brokenRunFailure(err);
+        return res.status(status).json(body);
       }
-      return res.json({ ok: true, ...result, targetCount: plan.targetCount });
     }
 
     if (supplied !== undefined) {

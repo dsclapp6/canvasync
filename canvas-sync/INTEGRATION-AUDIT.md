@@ -9,7 +9,7 @@ territory) — two platforms, same defects. STATUS column tracks routing. -->
 
 | # | Sev | Finding | Anchor | Status |
 |---|-----|---------|--------|--------|
-| I1 | high | File viewer writes stale async responses over the newer file's view; render token checked only inside the PDF path | `canvas-sync/bridge/public/app.js:1617` | QUEUED (app.js custody unresolved) |
+| I1 | high | File viewer writes stale async responses over the newer file's view; render token checked only inside the PDF path | `canvas-sync/bridge/public/app.js:1617` | FIXED v1.8.13 (canvasync-96: 8 bail points incl. catch-first; guard definition pinned verbatim so `() => false` fails; structural tests, honestly labeled) |
 | I2 | medium | AI-added filter silently suppresses completed rows that the 'Show N completed' toggle claims to bring back | `canvas-sync/bridge/public/app.js:4753` | QUEUED (app.js custody unresolved) |
 | I3 | low | Preview-PDF fetch failure abandons the extracted-text fallback and misreports it as 'No extracted text for this file' | `canvas-sync/bridge/public/app.js:1676` | QUEUED (app.js custody unresolved) |
 | I4 | medium | Empty calendar blames class chips (or past toggle) when the AI-added filter is what hid the selected class's items | `/Users/tempadmin/CANVASync/canvas-sync/bridge/public/app.js:4811` | QUEUED (app.js custody unresolved) |
@@ -19,11 +19,13 @@ territory) — two platforms, same defects. STATUS column tracks routing. -->
 | I8 | medium | Calendar retry offered by the broken plan is silently refused by startPipeline when no class dirs are in scope | `canvas-sync/bridge/broken-pipeline.js:49` | QUEUED (broken-pipeline.js free) |
 | I9 | low | stageOff(d,'calendar') is dead code - the "Calendar only" button never disables when the calendar stage is switched off | `canvas-sync/bridge/public/progress.html:614` | QUEUED (progress.html free) |
 | I10 | low | Sub-1KB syllabus.pdf with no HTML: parse re-spawns and fails on every pass, is a permanent Run-broken target, while the same payload's syllabus category says n-a | `canvas-sync/bridge/trigger.js:403` | QUEUED (trigger.js free) |
-| I11 | high | POST /api/pipeline/run {broken:true} has no try/catch around its awaits — a rejection hangs the request and kills the bridge (Express 4, no unhandledRejection handler) | `/Users/tempadmin/CANVASync/canvas-sync/bridge/server.js:2072` | QUEUED (server.js busy under Codex F3) |
+| I11 | high | POST /api/pipeline/run {broken:true} has no try/catch around its awaits — a rejection hangs the request and kills the bridge (Express 4, no unhandledRejection handler) | `/Users/tempadmin/CANVASync/canvas-sync/bridge/server.js:2072` | FIXED v1.8.13 (canvasync-96: wrapped like siblings; failure mapping extracted to brokenRunFailure() in broken-pipeline.js as pure testable logic; stale-bridge 503 vs shape-stable 500) |
 | I12 | medium | v1.8.9 file-lock's 2s fail-fast deadline relies on 'the extension retries a 503', but the /ingest/course-file POST is the one ingest call not wrapped in _withRetry (and the bridge returns 500, not 503) | `/Users/tempadmin/CANVASync/canvas-sync/extension/background.js:1510` | = Codex F6, cross-confirmed; QUEUED (extension, 0e gated) |
 | I13 | medium | Settings Save button has no error handling — a failed POST /api/settings is completely silent, and the user's stage toggles are quietly lost | `/Users/tempadmin/CANVASync/canvas-sync/bridge/public/app.js:5255` | = Codex F11, cross-confirmed; QUEUED (app.js) |
 | I14 | medium | /api/ask ignores the CSYNC_LOCAL_PYTHON setting: localInvoke spawns the env-only LOCAL_PYTHON constant, so a custom python configured in Settings works for the pipeline but permanently breaks Ask | `/Users/tempadmin/CANVASync/canvas-sync/scripts/_util.js:425` | QUEUED (_util.js reserved for d8 / item 1) |
 | I15 | low | POST /api/ai-cli/login's spawned 'open' child has no 'error' listener — an async spawn failure raises an unhandled 'error' event and crashes the whole bridge | `/Users/tempadmin/CANVASync/canvas-sync/bridge/server.js:1990` | QUEUED (server.js busy) |
+
+NOTE 2026-08-30: the enabled[]-gate test reported untested in the orphan audit now exists ('a stage disabled in Settings is never offered as broken work', broken-pipeline.test.js) — closed during the F3 rounds; off all open lists.
 
 ## Details (scenario + verified fix direction)
 

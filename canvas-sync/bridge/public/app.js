@@ -1545,6 +1545,19 @@ async function renderFileView() {
   const ext = extOf(file.localPath || name);
   cancelFilePreview();
   const renderId = FILE_PREVIEW_RENDER;
+  // Every await below is a point at which the user can have gone Back and
+  // opened a different file: FILE_PREVIEW_RENDER advances on each open, and no
+  // caller awaits this function, so two renders overlap freely. A superseded
+  // render must therefore write NOTHING — not the body, not the subtitle, not
+  // the Open-original target.
+  //
+  // The token already existed but only renderPdfPages consumed it, which made
+  // the worst case the stuck one: a slow deck's fetch would paint its own
+  // toolbar and an eternal "Rendering document…" box over the file the user
+  // was actually looking at, then abort the page painting on the stale token
+  // BEFORE clearing that placeholder. The panel was left showing one file's
+  // content under another file's title, with no error and nothing to retry.
+  const stale = () => renderId !== FILE_PREVIEW_RENDER;
   $('file-title').textContent = name;
 
   const bits = [];
@@ -1564,6 +1577,7 @@ async function renderFileView() {
   try {
     if (isPage) {
       const page = await apiJson(`/api/class/${folder}/page/${encodeURIComponent(file.pageId)}`);
+      if (stale()) return;
       file.canvasUrl = page.canvas_url || file.canvasUrl;
       $('file-open').classList.toggle('hidden', !file.canvasUrl);
       if (page.updated_at) $('file-sub').textContent = `Canvas page  ·  updated ${page.updated_at.slice(0, 10)}`;
@@ -1575,6 +1589,7 @@ async function renderFileView() {
 
     if (IMAGE_EXT.has(ext)) {
       const blob = await (await api(fileUrl(folder, file.localPath))).blob();
+      if (stale()) return;
       body.innerHTML = '';
       const img = document.createElement('img');
       img.className = 'file-view-img';
@@ -1586,6 +1601,7 @@ async function renderFileView() {
 
     if (TEXT_EXT.has(ext)) {
       const text = await (await api(fileUrl(folder, file.localPath))).text();
+      if (stale()) return;
       body.innerHTML = `<article class="content-prose file-prose">${renderReadableText(text, ext)}</article>`;
       return;
     }
@@ -1597,6 +1613,7 @@ async function renderFileView() {
     const preview = filePreviewPlan(file);
     if (preview) {
       const blob = await (await api(fileUrl(folder, preview.path))).blob();
+      if (stale()) return;
 
       let extracted = '';
       const rel = materialsPathFor(file);
@@ -1604,6 +1621,7 @@ async function renderFileView() {
         try { extracted = await (await api(fileUrl(folder, rel))).text(); }
         catch { /* the page-preserving view still works without extracted text */ }
       }
+      if (stale()) return;
       const hasText = extracted.trim().length > 0;
       const viewControls = hasText
         ? `<div class="file-view-toolbar">
@@ -1643,6 +1661,7 @@ async function renderFileView() {
       const pages = body.querySelector('[data-pdf-pages]');
       try {
         await renderPdfPages(pages, blob, name, renderId);
+        if (stale()) return;
         pages?.setAttribute('aria-busy', 'false');
       } catch (renderErr) {
         if (renderId !== FILE_PREVIEW_RENDER) return;
@@ -1663,11 +1682,15 @@ async function renderFileView() {
     const rel = materialsPathFor(file);
     if (!rel) throw new Error('no extractable path');
     const text = await (await api(fileUrl(folder, rel))).text();
+    if (stale()) return;
     const label = ext === '.pdf' ? 'PDF' : ext === '.pptx' ? 'slide deck' : ext.replace('.', '').toUpperCase() || 'file';
     body.innerHTML =
       `<div class="notice">Readable text extracted from the ${esc(label)} — images and the original page layout are omitted.</div>
        <article class="content-prose file-prose extracted-prose">${renderReadableText(text, ext)}</article>`;
   } catch (err) {
+    // A superseded render's failure is not this file's failure: painting it
+    // would replace the current file's view with an error about another one.
+    if (stale()) return;
     if (isPage) {
       body.innerHTML = `<div class="notice alarm">Could not load this Canvas page.</div>
         <p class="muted mono">${esc(err.message)}</p>`;
