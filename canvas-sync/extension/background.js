@@ -2,6 +2,8 @@
 // No DOM access. Runs in the extension's isolated service-worker context.
 
 import { paginate, fetchBinary, canvasGetJson, canvasFetch, CANVAS_BASE, AuthError, NetworkError, ServerError, PermissionError } from './canvas-client.js';
+import { collectReplyMessages, stripHtml, rankTopicsForView, VIEW_TOPIC_CEILING }
+  from './discussion-view.js';
 import {
   bridgePost,
   bridgeHealth,
@@ -821,31 +823,45 @@ async function fullSync(reason) {
         if (firstRejection) throw firstRejection.reason;
         const [assignments, assignmentGroups, modules, discussions, announcements, pages, quizzes, calendarEvents, filesIndex, enrollments, tabs, courseGroups, externalTools] = settled.map(s => s.value);
 
-        // Discussion replies: instructor clarifications and task details often
-        // live in the thread, not the topic body. Pull the full view for the
-        // most relevant topics (graded first, then newest), capped to bound
-        // request count, and flatten reply text onto each topic.
-        const viewTargets = [...discussions]
-          .sort((a, b) => {
-            const ga = a?.assignment ? 1 : 0, gb = b?.assignment ? 1 : 0;
-            if (ga !== gb) return gb - ga;
-            return Date.parse(b?.posted_at ?? 0) - Date.parse(a?.posted_at ?? 0) || 0;
-          })
-          .slice(0, 20);
+        // Discussion replies: instructor clarifications, task details and —
+        // since the reply scan below — whole readings often live in the
+        // thread, not the topic body. Pull the full view for every topic up to
+        // a runaway ceiling, graded first then newest, and flatten reply text
+        // onto each topic. The old number here was 20, which quietly left a
+        // weekly-thread seminar mostly unread.
+        const { targets: viewTargets, skipped: unopenedTopics, total: topicCount } =
+          rankTopicsForView(discussions);
+        // Raw reply HTML, kept for the embedded-file scan below. A professor
+        // who answers "here is the reading" with an attachment puts that file
+        // in a REPLY, and the strip that produces replies_text destroys the
+        // href it lives in — so the link has to be captured before it, or the
+        // file is undiscoverable however the corpus is searched afterwards.
+        const replyHtml = [];
         for (const topic of viewTargets) {
           _checkCancel();
           try {
             const view = await canvasGetJson(`/api/v1/courses/${id}/discussion_topics/${topic.id}/view`);
-            const texts = [];
-            const walk = (entries) => {
-              for (const e of entries || []) {
-                if (e?.message) texts.push(String(e.message).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
-                walk(e?.replies);
-              }
-            };
-            walk(view?.view);
+            const messages = collectReplyMessages(view);
+            replyHtml.push(...messages);
+            // Same strip, same order, same truncation as before: replies_text
+            // is read downstream and this fix must not reshape it.
+            const texts = messages.map(stripHtml);
             if (texts.length) topic.replies_text = texts.slice(0, 50).join('\n---\n').slice(0, 20000);
           } catch { /* locked topic or require_initial_post — skip */ }
+        }
+        if (unopenedTopics.length) {
+          // Never silent. A ceiling that drops threads without saying so is
+          // indistinguishable from a course that simply had no more — which
+          // is exactly how the 60-file and 20-topic caps hid their own
+          // losses. Named threads, so the user can go read the tail by hand.
+          await _log('warn',
+            `${unopenedTopics.length} of ${topicCount} discussion topics in `
+            + `${course.name ?? id} were not opened for replies (ceiling `
+            + `${VIEW_TOPIC_CEILING}); files linked only inside those threads are `
+            + `not discovered: `
+            + unopenedTopics.slice(0, 3).map(t => t?.title ?? t?.id).join('; ')
+            + `${unopenedTopics.length > 3 ? '; …' : ''}`,
+            reason);
         }
 
         // Harvest file IDs embedded in HTML bodies across every scraped
@@ -859,6 +875,10 @@ async function fullSync(reason) {
           ...assignments.map(a => a?.description),
           ...announcements.map(a => a?.message),
           ...discussions.map(d => d?.message),
+          // The replies, not only the topic bodies. Bounded by the same
+          // relevance cap as the /view fetches above, so this adds no requests
+          // — only the ids that were already downloaded and then discarded.
+          ...replyHtml,
           ...quizzes.map(q => q?.description),
         ].filter(Boolean).join('\n');
         const knownFileIds = new Set(filesIndex.map(f => String(f.id)));
