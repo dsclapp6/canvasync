@@ -9,9 +9,20 @@ authoritative reading where they conflict with the body. -->
 STATUS: item 2's core LANDED in v1.8.6 (maxTokens 16384 on both repair sites,
 schema re-sent verbatim, shared salvage via the new scripts/json-repair.js,
 truncation signalled through notes + stderr on both paths; implemented by the
-Codex CLI, adversarially verified twice by canvasync-96). Item 2's
-same-or-stronger backend pinning is PARKED with item 1 (canvasync-d8, awaiting
-their user). Items 3-10 PROPOSED, none started.
+Codex CLI, adversarially verified twice by canvasync-96). Item 1's core
+LANDED v1.8.17 (canvasync-ff: scripts/model-profiles.js capability table;
+aiInvoke gains needs{tier,inputChars,tools} + info out-param, bare-string
+return preserved, info untouched-until-success; needs enforced in EXPLICIT
+backend mode too — a pin is a preference, not a capability claim; unknown
+local model resolves to light with assumed:true; assertNeeds rejects unknown
+keys so a typo cannot read as no-requirements; inputChars gates on the
+WORKING budget per §3). Also landed in the same pass: the _util.js model-lock
+deadline-skip fix (the F1 shape; poll clamped to remaining deadline;
+lockWaitMs knob with its 45-min default pinned by test) and I14's localInvoke
+half (CSYNC_LOCAL_PYTHON resolved per-call). OPEN: I14's readiness-card half
+(server.js ~:1817 spawns setup with a bare env — routed to canvasync-fc);
+call-site adoption of needs/info (items 2-pinning, 3, 5-10); budget numbers
+are policy-in-code, not measurements. Items 3-10 otherwise PROPOSED.
 Sequencing: 1 then the pinning remainder, then 3-4, then 5 and 7-10, item 6
 last behind a flag. Owner routing is the PM session's job.
 Cleanup ticket noted in passing: extractJsonFromResponse is duplicated in

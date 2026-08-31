@@ -20,7 +20,9 @@ before(async () => {
   await fs.writeFile(stubPath, '#!/bin/sh\nsleep 1\necho "gen-done pid=$$"\n', { mode: 0o755 });
   process.env.CSYNC_LOCAL_PYTHON = stubPath;
 
-  // LOCAL_PYTHON is captured at module load, so env must be set before import.
+  // The python is resolved per call now (resolveLocalPython), but the env is
+  // still set before the import so the module constant and the resolved value
+  // agree — this file is about the lock, not about which python runs.
   util = await import('../_util.js');
 });
 
@@ -146,4 +148,64 @@ test('no lock at all reads as free rather than throwing', async () => {
   await fs.rm(lockDir(), { recursive: true, force: true });
   const st = await util.modelLockStatus();
   assert.deepEqual(st, { held: false, pid: null, alive: false, heldForMs: 0, clockSkew: false });
+});
+
+// --- The wait is a deadline, not a suggestion --------------------------------
+
+test('a lock path that exists for mkdir but vanishes for stat must not spin', {
+  // Without the fix this test does not fail an assertion — it never returns.
+  // The timeout is what turns an unbounded busy loop into a red test.
+  timeout: 20000,
+}, async () => {
+  // A dangling symlink is the cheapest honest reproduction of the race the
+  // acquire loop mishandled: the name EXISTS for mkdir (EEXIST) and does NOT
+  // exist for readFile or stat (ENOENT), which is precisely the state a lock
+  // dir passes through while another waiter reclaims it. The old dir-vanished
+  // branch went `continue` straight back to the top — no poll sleep, and, the
+  // part that matters, no deadline check. maxWaitMs stopped meaning anything
+  // and the loop spun a core until the process was killed. Same defect class
+  // as file-lock.js F1, and the suspected cause of the 192s-against-a-30s-
+  // timeout run recorded in WRITE-SAFETY-AUDIT.md.
+  await fs.rm(lockDir(), { recursive: true, force: true });
+  await fs.mkdir(path.dirname(lockDir()), { recursive: true });
+  await fs.symlink(path.join(tmpHome, 'no-such-target'), lockDir());
+
+  const started = Date.now();
+  await assert.rejects(
+    util.localInvoke('hello', { timeoutMs: 5000, lockWaitMs: 1200 }),
+    /timed out waiting for local-model lock/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 10000, `acquire must give up on its deadline (took ${elapsed}ms)`);
+
+  await fs.unlink(lockDir()).catch(() => {});
+});
+
+test('a short wait behind a live holder gives up promptly, not one poll late', async () => {
+  // Guards the clamp, not the busy loop: the poll sleep is 5s and the caller
+  // asked for ~1.2s, so an unclamped sleep would overshoot by 4x. A bridge
+  // request that waits four times its own deadline is the hang the local-lock
+  // 503 pre-check exists to avoid.
+  await fs.rm(lockDir(), { recursive: true, force: true });
+  await fs.mkdir(lockDir(), { recursive: true });
+  // Our own pid: alive, so no staleness rule can reclaim it.
+  await fs.writeFile(path.join(lockDir(), 'pid'), String(process.pid), 'utf8');
+
+  const started = Date.now();
+  await assert.rejects(
+    util.localInvoke('hello', { timeoutMs: 5000, lockWaitMs: 1200 }),
+    /timed out waiting for local-model lock/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 1200, `must actually wait the requested time (took ${elapsed}ms)`);
+  assert.ok(elapsed < 4000, `must not sleep past its own deadline (took ${elapsed}ms)`);
+
+  await fs.rm(lockDir(), { recursive: true, force: true });
+});
+
+test('the default wait is still the 45 minutes the pipeline relies on', async () => {
+  // A regression to a short default would turn a queued stage — several
+  // minutes is normal — into a failed one.
+  const src = await fs.readFile(new URL('../_util.js', import.meta.url), 'utf8');
+  assert.match(src, /lockWaitMs = 45 \* 60 \* 1000/);
 });

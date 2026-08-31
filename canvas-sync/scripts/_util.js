@@ -7,6 +7,15 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { dataRoot } from '../data-root.js';
+import {
+  profileFor, satisfies, assertNeeds, tierUnavailable,
+} from './model-profiles.js';
+
+// Re-exported so a caller that already imports _util.js can catch the typed
+// error and read a profile without learning a second module path.
+export {
+  ModelTierUnavailable, profileFor, satisfies, tierAtLeast, PROFILE_KEYS,
+} from './model-profiles.js';
 
 export function classHome() {
   return join(dataRoot(), 'classes');
@@ -222,7 +231,10 @@ export async function codexInvoke(prompt, { timeoutMs = 300000, model = null } =
 // CSYNC_AI_BACKEND=local. Text-only — no tools/MCP, so calendar agent jobs
 // must not route here.
 export const LOCAL_MODEL_ID = process.env.CSYNC_LOCAL_MODEL || 'mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit';
-export const LOCAL_PYTHON = process.env.CSYNC_LOCAL_PYTHON || join(homedir(), 'mlx-env', 'bin', 'python');
+const DEFAULT_LOCAL_PYTHON = join(homedir(), 'mlx-env', 'bin', 'python');
+// Frozen from the environment at module load. Kept exported for compatibility,
+// but nothing in this file spawns it any more: see resolveLocalPython().
+export const LOCAL_PYTHON = process.env.CSYNC_LOCAL_PYTHON || DEFAULT_LOCAL_PYTHON;
 
 const __scriptsDir = dirname(fileURLToPath(import.meta.url));
 
@@ -245,59 +257,91 @@ function _lockDir() {
 // already re-acquired, allowing two simultaneous ~20 GB model loads.
 async function _reclaimLock(dir) {
   const tomb = `${dir}.stale-${process.pid}-${Date.now()}`;
-  try { await rename(dir, tomb); } catch { return; } // lost the race — fine
+  try { await rename(dir, tomb); } catch { return false; } // lost the race — fine
   await rm(tomb, { recursive: true, force: true }).catch(() => {});
+  return true;
 }
+
+// A 45-minute hold wants a lazy poll; file-lock.js's 25 ms is right for its
+// millisecond holds and absurd here.
+const MODEL_LOCK_POLL_MS = 5000;
 
 async function _acquireModelLock(maxWaitMs) {
   const dir = _lockDir();
   const pidFile = join(dir, 'pid');
   const deadline = Date.now() + maxWaitMs;
   await mkdir(dirname(dir), { recursive: true }); // parent locks/ must exist
+
+  /**
+   * The ONLY exit from an iteration that did not acquire. Every retry funnels
+   * through here on purpose.
+   *
+   * A `continue` that skips this is how a retry loop becomes an unbounded busy
+   * loop, and this function had one: the dir-vanished branch of the age check
+   * went straight back to the top without sleeping and without ever looking at
+   * the deadline. Leave a dangling symlink (or anything else that exists for
+   * mkdir but not for stat) at the lock path and the loop spins a core
+   * forever — maxWaitMs stops meaning anything. Suspected in the 2026-08-30
+   * symptom recorded in WRITE-SAFETY-AUDIT.md, where model-lock.test's
+   * pid-less case ran 192s under load against a 30s timeout. Same defect class
+   * as file-lock.js F1, same fix.
+   *
+   * The one path that legitimately retries without sleeping is a SUCCESSFUL
+   * reclaim: the dir we were waiting on has been renamed aside and deleted, so
+   * the next mkdir either wins outright or loses to a new, live holder that
+   * the next iteration will find and wait for. Bounded either way — and the
+   * "reclaimed immediately" tests would otherwise pay a 5s poll to prove it.
+   */
+  const waitOrGiveUp = async justReclaimed => {
+    if (Date.now() > deadline) throw new Error('timed out waiting for local-model lock');
+    if (justReclaimed) return;
+    // Clamped to what is left, so a caller that asked for a short wait gets a
+    // short wait rather than one final full poll past its deadline.
+    const remaining = deadline - Date.now();
+    await new Promise(r => setTimeout(r, Math.max(0, Math.min(MODEL_LOCK_POLL_MS, remaining))));
+  };
+
   for (;;) {
     try {
       await mkdir(dir, { recursive: false }); // atomic: fails if held
       await writeFile(pidFile, String(process.pid), 'utf8');
       _weHoldLock = true;
       return;
-    } catch {
-      // Held — reclaim if the holder is dead, otherwise wait our turn.
-      let staleByAge = false;
-      try {
-        const pid = parseInt(await readFile(pidFile, 'utf8'), 10);
-        if (pid > 0) {
-          // EPERM means the holder EXISTS and simply is not ours to signal
-          // (another user's job, a daemon). Only ESRCH — no such process —
-          // licenses a reclaim. modelLockStatus was fixed for this and says
-          // why; the READ-ONLY function got the fix while this one, the only
-          // one that actually tears a lock down, kept collapsing them: a live
-          // holder read as dead, its lock reclaimed, and two ~20 GB models
-          // loaded at once — the exact failure this lock exists to prevent.
-          let holderAlive = true;
-          try { process.kill(pid, 0); } catch (err) { holderAlive = err?.code === 'EPERM'; }
-          if (!holderAlive) { await _reclaimLock(dir); continue; }
-        } else {
-          // Corrupt/empty pid file — holder identity unknowable. Fall through
-          // to the age check so it can't wedge the lock forever.
-          staleByAge = true;
-        }
-      } catch {
-        // No pid file. Either the holder is between mkdir and writeFile
-        // (sub-second) or it crashed in that gap. Age disambiguates.
+    } catch { /* held, or the write faulted — decide below, never spin */ }
+
+    // Held — reclaim if the holder is dead, otherwise wait our turn.
+    let reclaimed = false;
+    let staleByAge = false;
+    try {
+      const pid = parseInt(await readFile(pidFile, 'utf8'), 10);
+      if (pid > 0) {
+        // EPERM means the holder EXISTS and simply is not ours to signal
+        // (another user's job, a daemon). Only ESRCH — no such process —
+        // licenses a reclaim. modelLockStatus was fixed for this and says
+        // why; the READ-ONLY function got the fix while this one, the only
+        // one that actually tears a lock down, kept collapsing them: a live
+        // holder read as dead, its lock reclaimed, and two ~20 GB models
+        // loaded at once — the exact failure this lock exists to prevent.
+        let holderAlive = true;
+        try { process.kill(pid, 0); } catch (err) { holderAlive = err?.code === 'EPERM'; }
+        if (!holderAlive) reclaimed = await _reclaimLock(dir);
+      } else {
+        // Corrupt/empty pid file — holder identity unknowable. Fall through
+        // to the age check so it can't wedge the lock forever.
         staleByAge = true;
       }
-      if (staleByAge) {
-        try {
-          const st = await stat(dir);
-          if (Date.now() - st.mtimeMs > 10_000) {
-            await _reclaimLock(dir);
-            continue;
-          }
-        } catch { /* dir vanished — retry acquire */ continue; }
-      }
-      if (Date.now() > deadline) throw new Error('timed out waiting for local-model lock');
-      await new Promise(r => setTimeout(r, 5000));
+    } catch {
+      // No pid file. Either the holder is between mkdir and writeFile
+      // (sub-second) or it crashed in that gap. Age disambiguates.
+      staleByAge = true;
     }
+    if (staleByAge) {
+      try {
+        const st = await stat(dir);
+        if (Date.now() - st.mtimeMs > 10_000) reclaimed = await _reclaimLock(dir);
+      } catch { /* vanished mid-check — the next mkdir settles it */ }
+    }
+    await waitOrGiveUp(reclaimed);
   }
 }
 
@@ -414,15 +458,40 @@ export async function resolveLocalModel() {
   return LOCAL_MODEL_ID;
 }
 
-export async function localInvoke(prompt, { timeoutMs = 1200000, maxTokens = 8192, model = null } = {}) {
+/**
+ * Which python runs local_generate.py, resolved per call rather than at import.
+ *
+ * Same asymmetry resolveLocalModel() exists for, one field over. The pipeline
+ * spawns its stages with settings.json's CSYNC_* folded into the environment,
+ * so a python chosen in Settings reaches them; nothing folds it into the
+ * BRIDGE's own process, so anything the bridge runs in-process — /api/ask,
+ * above all — spawned the module constant instead. A user whose MLX venv is
+ * not at ~/mlx-env (the reason the Settings field exists) got working pipeline
+ * stages and an Ask sidebar that 500s on every question, after pointlessly
+ * taking and releasing the machine-wide model lock. INTEGRATION-AUDIT.md I14.
+ */
+export async function resolveLocalPython() {
+  return (await settingValue('CSYNC_LOCAL_PYTHON')) || DEFAULT_LOCAL_PYTHON;
+}
+
+export async function localInvoke(prompt, {
+  timeoutMs = 1200000,
+  maxTokens = 8192,
+  model = null,
+  // Wait up to 45 min for our turn by default (queued jobs each take minutes),
+  // then hold the lock for the whole generation. A caller serving an HTTP
+  // request should pass something far smaller: a request held open for minutes
+  // is indistinguishable from a hang, which is the reasoning behind the
+  // bridge's existing local-lock 503 pre-check.
+  lockWaitMs = 45 * 60 * 1000,
+} = {}) {
   const runner = join(__scriptsDir, 'local_generate.py');
   const modelId = model || await resolveLocalModel();
+  const python = await resolveLocalPython();
   const args = [runner, '--model', modelId, '--max-tokens', String(maxTokens)];
-  // Wait up to 45 min for our turn (queued jobs each take minutes), then hold
-  // the lock for the whole generation.
-  await _acquireModelLock(45 * 60 * 1000);
+  await _acquireModelLock(lockWaitMs);
   try {
-    const result = await _trySpawn(LOCAL_PYTHON, args, prompt, timeoutMs, 'local model');
+    const result = await _trySpawn(python, args, prompt, timeoutMs, 'local model');
     return result.trim();
   } finally {
     await _releaseModelLock();
@@ -434,31 +503,117 @@ export async function localInvoke(prompt, { timeoutMs = 1200000, maxTokens = 819
 // in subscription CLI first (Claude, then Codex) and loads the local model only
 // when neither CLI is authenticated or both fail. Jobs that need Claude tools
 // (calendar MCP) must call claudeInvoke directly.
+//
+// Two options beyond the invoke knobs, both opt-in — omit them and routing is
+// bit for bit what it always was, including the bare-string return every call
+// site depends on:
+//
+//   needs — { tier, inputChars, tools }: what the JOB requires, checked
+//     against scripts/model-profiles.js. A backend whose profile cannot
+//     satisfy it is SKIPPED rather than tried. This applies in explicit mode
+//     as well as auto: a user who pinned `local` still must not have the
+//     520K-char mining corpus silently extracted wrong by a 4-bit model, and
+//     "it answered" is not the same as "it answered correctly" — that is the
+//     whole failure this is for. When nothing available fits, it throws
+//     ModelTierUnavailable (code EMODELTIER) so the caller can choose between
+//     its deterministic path and deferring the stage with a reason a user can
+//     act on. An unsatisfiable `needs` is never quietly downgraded.
+//
+//   info — an out-param object, filled on SUCCESS with
+//     { backend, model, tier, profile }. Left EXACTLY as passed on every
+//     failure path, so a throw can never leave a caller reading the previous
+//     run's backend as this one's. `model` is null when the CLI's own default
+//     was used, because that is the honest answer.
 export async function aiInvoke(prompt, {
   timeoutMs = 300000,
   model = null,
   codexModel = null,
   maxTokens = 8192,
+  needs = null,
+  info = null,
 } = {}) {
-  const backend = await resolveAIBackend();
-  if (backend === 'local') {
-    return localInvoke(prompt, { timeoutMs: Math.max(timeoutMs, 1200000), maxTokens });
+  assertNeeds(needs);
+  if (info != null && (typeof info !== 'object' || Array.isArray(info))) {
+    throw new TypeError('info must be an object to fill, e.g. aiInvoke(p, { info: {} })');
   }
-  if (backend === 'claude') return claudeInvoke(prompt, { timeoutMs, model });
-  if (backend === 'codex') return codexInvoke(prompt, { timeoutMs, model: codexModel });
+  const backend = await resolveAIBackend();
+
+  // Resolved at most once per call, and only if a local profile or a local
+  // invoke actually needs it — localInvoke would otherwise read it again.
+  let localModelId;
+  const resolveLocal = async () => (localModelId ??= await resolveLocalModel());
+
+  const consider = async name => {
+    const profile = profileFor(name, name === 'local' ? await resolveLocal() : null);
+    return { name, profile, ...satisfies(profile, needs) };
+  };
+
+  // Filled only once the text is in hand. Everything above this line can throw
+  // without the caller's object being touched.
+  const fill = async profile => {
+    if (!info) return;
+    info.backend = profile.backend;
+    info.tier = profile.tier;
+    info.profile = profile.key;
+    info.model = profile.backend === 'local' ? profile.modelId
+      : profile.backend === 'codex' ? (codexModel || await settingValue('CSYNC_CODEX_MODEL'))
+        : (model || await settingValue('CSYNC_CLAUDE_MODEL'));
+  };
+
+  const runCli = async (name, profile) => {
+    const text = name === 'claude'
+      ? await claudeInvoke(prompt, { timeoutMs, model })
+      : await codexInvoke(prompt, { timeoutMs, model: codexModel });
+    await fill(profile);
+    return text;
+  };
+  const runLocal = async profile => {
+    const text = await localInvoke(prompt, {
+      timeoutMs: Math.max(timeoutMs, 1200000), maxTokens, model: profile.modelId,
+    });
+    await fill(profile);
+    return text;
+  };
+
+  if (backend === 'local' || backend === 'claude' || backend === 'codex') {
+    const only = await consider(backend);
+    if (!only.ok) throw tierUnavailable(needs, [only]);
+    return backend === 'local' ? runLocal(only.profile) : runCli(backend, only.profile);
+  }
 
   const statuses = await cliProviderStatuses();
-  const attempts = [];
-  if (statuses.claude.authenticated) attempts.push(['claude', () => claudeInvoke(prompt, { timeoutMs, model })]);
-  if (statuses.codex.authenticated) attempts.push(['codex', () => codexInvoke(prompt, { timeoutMs, model: codexModel })]);
-  for (const [name, invoke] of attempts) {
-    try { return await invoke(); }
+  const authenticated = [];
+  if (statuses.claude.authenticated) authenticated.push('claude');
+  if (statuses.codex.authenticated) authenticated.push('codex');
+
+  const rejected = [];
+  let lastError = null;
+  for (const name of authenticated) {
+    const candidate = await consider(name);
+    if (!candidate.ok) {
+      rejected.push(candidate);
+      process.stderr.write(`${name} backend skipped: ${candidate.reason}\n`);
+      continue;
+    }
+    try { return await runCli(name, candidate.profile); }
     catch (err) {
+      lastError = err;
       process.stderr.write(`${name} backend failed (${String(err.message).slice(0, 200)}); trying the next signed-in backend\n`);
     }
   }
-  process.stderr.write(`No signed-in terminal AI completed the request; falling back to local model ${LOCAL_MODEL_ID}\n`);
-  return localInvoke(prompt, { timeoutMs: Math.max(timeoutMs, 1200000), maxTokens });
+
+  const local = await consider('local');
+  if (!local.ok) {
+    rejected.push(local);
+    process.stderr.write(`local backend skipped: ${local.reason}\n`);
+    // A backend that FIT and then failed is a different fact from nothing
+    // fitting at all, and the caller's remedy differs — retry, versus sign in
+    // or fall back to the deterministic path. Report the one that happened.
+    if (lastError) throw lastError;
+    throw tierUnavailable(needs, rejected);
+  }
+  process.stderr.write(`No signed-in terminal AI completed the request; falling back to local model ${local.profile.modelId}\n`);
+  return runLocal(local.profile);
 }
 
 async function _trySpawn(cmd, args, stdinData, timeoutMs, label = 'claude', env = null) {
