@@ -403,15 +403,43 @@ export const DEFAULT_SLOT_MIN = 30;
 export const MIN_BLOCK_MIN = 55;
 
 /**
- * The most side-by-side lanes a column can hold and still be readable.
+ * The most side-by-side lanes a column is ALLOWED, before width is consulted.
  *
- * A timed chip's own controls — checkbox, kind badge, time, title, marker —
- * measure 84px of min-content. A week column is about 176px, so two lanes is
- * 88px each and three is 58px: below the floor, with the time collapsing to
- * zero and the marker overflowing the chip. Two is therefore not a preference,
- * it is what the chip's contents cost.
+ * This is a product ceiling, not a geometry one: past two lanes a week column
+ * reads as a wall of slivers even where the pixels technically fit, so a
+ * bigger pileup becomes one stack the user opens. `laneBudgetFor` may lower
+ * it — never raise it.
  */
 export const MAX_LANES = 2;
+
+/**
+ * How many lanes a column of `gridWidth` can actually AFFORD.
+ *
+ * The bug this exists for: the budget was a count (2 for a week, 4 for two
+ * days) chosen from a 1200px measurement, and count cannot know pixels. At a
+ * 375px viewport a day column is at its 120px floor, so even TWO lanes is 60px
+ * of chip against a 79px minimum — measured spill 9-10px per chip, on chips
+ * that had already hidden their clock time to try to fit. The same
+ * count-vs-width mistake the narrow-chip class made, one level up.
+ *
+ * CSS cannot answer this one: the lane count decides how many chips exist in
+ * the DOM at all, which is a render decision. So the renderer computes the
+ * column width the way CSS will resolve it — `minmax(--daycol-min, 1fr)` after
+ * the gutter, with the wrap scrolling rather than shrinking below the min —
+ * and divides by what one chip costs. All three numbers come from the
+ * stylesheet, so there is no second copy to drift.
+ *
+ * `gridWidth` of 0 or less means nothing has been laid out yet (a first render
+ * into a hidden panel). The cap is used unchanged then, which is the shipped
+ * behaviour: this function only ever narrows.
+ */
+export function laneBudgetFor(dayCount, gridWidth, geometry) {
+  const { daycolMin, gutter, laneMin, cap = MAX_LANES } = geometry;
+  if (!(dayCount > 0) || !(laneMin > 0)) return 1;
+  if (!(gridWidth > 0)) return cap;
+  const colW = Math.max(daycolMin, (gridWidth - gutter) / dayCount);
+  return Math.max(1, Math.min(cap, Math.floor(colW / laneMin)));
+}
 
 /** What an op actually OCCUPIES on screen: its own length, or the floor. */
 export function renderedEnd(startMin, endMin) {

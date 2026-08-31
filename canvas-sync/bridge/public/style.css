@@ -54,6 +54,22 @@
   --t-page:   24px;   /* the title of a view */
   --t-hero:   31px;   /* the standalone page headings */
 
+  /* Calendar grid geometry, in ONE place: the renderer computes its lane
+     budget from the column width these produce, so a number that lived only in
+     a CSS track would be a second copy JS could not see. It reads them back
+     with getComputedStyle. */
+  --gutter-w:   44px;   /* the hour-label column of a timed grid */
+  --daycol-min: 120px;  /* a day column stops here; the wrap scrolls instead */
+  --lane-min:    80px;  /* MEASURED: a placed chip's own controls — checkbox,
+                           kind, action — stop overflowing at 79px. Below this
+                           a chip cannot draw itself, whatever its title says. */
+
+  /* One metadata line: what a 12px label at the chip's own line-height draws.
+     A calendar chip's first row and every control sitting in it are this tall,
+     so the row cannot be inflated by whichever control an op happens to carry.
+     Derived, so it stays true if the legend size moves. */
+  --chip-meta-h: calc(var(--t-legend) * 1.2);
+
   /* Weight. Four with jobs: 400 text, 500 label, 600 heading, 700 emphasis. */
   --w-text:  400;
   --w-label: 500;
@@ -1174,10 +1190,13 @@ table.files tr:hover td { background: var(--sunk); }
 }
 
 /* --- Week: seven columns, Monday first, floor to ceiling --- */
+/* --daycols is set by the renderer (7 for Week, 2 for the 2-day view) and is
+   the ONLY thing it supplies: the track sizes and the minimum width are derived
+   here, so a view with fewer columns cannot inherit a seven-column scroll. */
 .cal-week {
   display: grid;
-  grid-template-columns: repeat(7, minmax(120px, 1fr));
-  min-width: 840px;
+  grid-template-columns: repeat(var(--daycols, 7), minmax(var(--daycol-min), 1fr));
+  min-width: calc(var(--daycols, 7) * var(--daycol-min));
   min-height: 100%;
 }
 .cal-daycol {
@@ -1364,6 +1383,13 @@ table.files tr:hover td { background: var(--sunk); }
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
+  /* A clamped box draws its ellipsis at the end of the last LINE, so it can
+     only tidy text that wrapped. A single unbreakable run — a pasted URL, or
+     "Entrepreneurship" in an 81px lane — overflows sideways instead and is cut
+     mid-glyph with no ellipsis at all: measured 97px of word in a 66px box.
+     Breaking it turns that horizontal overflow into a second line, which the
+     clamp already knows how to end. */
+  overflow-wrap: anywhere;
 }
 .chip-title a, .chip-title button {
   color: inherit;
@@ -1399,7 +1425,21 @@ table.files tr:hover td { background: var(--sunk); }
   letter-spacing: 0;
   border-color: var(--rule-2);
   box-shadow: none;
-  line-height: 1.4;
+  /* An icon glyph does not get to set the row's height. At `line-height: 1.4`
+     this box measured 18.8px — 16.8px of leading plus its 1px borders — against
+     the 14.4px line box every other item in the row draws. On a placed chip
+     that inflated row 1 by 4.4px and took it out of the TITLE, which is the
+     only flexible row: measured `grid-template-rows: 18.7969px 10.5312px`, so
+     a 15px line was drawn into 10.5px and cut mid-glyph. Every op with a
+     Canvas submit URL had it; the AI-added pill next door, which is
+     borderless, did not — which is why it read as an ai-added/real split.
+     The box is now the line box its neighbours draw, and the glyph centres
+     inside it. CALENDAR-SPEC 9.3. */
+  line-height: 1;
+  height: var(--chip-meta-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .cal-submit.dense:hover { border-color: var(--ink); }
 
@@ -2550,9 +2590,14 @@ body { overflow-x: hidden; }
 /* An hour is 44px. app.js's HOUR_PX is the same number and does the maths;
    nothing here may assume a different one. */
 .cal-week.timed {
-  grid-template-columns: 44px repeat(7, minmax(120px, 1fr));
+  grid-template-columns: var(--gutter-w) repeat(var(--daycols, 7), minmax(var(--daycol-min), 1fr));
+  min-width: calc(var(--gutter-w) + var(--daycols, 7) * var(--daycol-min));
   align-items: start;
 }
+/* No special case for two columns: the tracks are minmax(--daycol-min, 1fr), so a
+   2-day grid's columns simply take the free space a 7-day grid spreads over
+   seven. The 120px is a FLOOR, not a width — which is where the room the view
+   exists for comes from, with nothing to keep in sync. */
 
 /* The hour labels, in their own column so they never collide with a chip. */
 .cal-gutter { position: sticky; left: 0; z-index: 3; background: var(--panel); }
@@ -2647,7 +2692,12 @@ body { overflow-x: hidden; }
 .cal-chip[data-kind].placed {
   position: absolute;
   grid-template-columns: 12px auto minmax(0, 1fr) auto;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* Pinned, not `auto`. app.js's tier constants are arithmetic ON this row:
+     the title box starts 21.4px down = 2px border + 3px padding + 14.4px row +
+     2px gap, and SLOT_SNUG_PX/SLOT_ROOMY_PX are 21.4 + 15n. Under `auto` any
+     child with a taller box moved the title's ceiling without moving the
+     constants, and the tiers quietly became wrong. */
+  grid-template-rows: var(--chip-meta-h) minmax(0, 1fr);
   grid-template-areas:
     "check kind when action"
     "title title title title";
@@ -2692,25 +2742,20 @@ body { overflow-x: hidden; }
 }
 .cal-chip.placed.meeting .cal-check-gap { display: none; }
 
-/* A shared lane. `lane-narrow` was emitted by the renderer and had NO rule at
-   all — a dead class. Two lanes is the readable floor (the chip's own controls
-   measure 84px of min-content), and at that width the clock time is the one
-   thing already said by something else: the block's vertical position IS its
-   time, against a labelled gutter. Dropping it returns ~36px to the title. The
-   full time stays in the chip's title attribute. */
-.cal-chip.placed.lane-narrow {
-  grid-template-columns: 12px auto minmax(0, 1fr);
-  grid-template-areas:
-    "check kind action"
-    "title title title";
-  padding: 3px 4px;
-}
-.cal-chip.placed.lane-narrow .chip-when { display: none; }
-.cal-chip.placed.lane-narrow.meeting {
-  grid-template-columns: auto minmax(0, 1fr);
-  grid-template-areas:
-    "kind action"
-    "title title";
+/* THE CHIP DECIDES FROM ITS OWN WIDTH, not from how many lanes it shares.
+   `lane-narrow` was assigned when `lanes > 1`, which is not the same question:
+   a 2-lane chip is 82px at 375px and 288px at 1200px, and in the 2-day view it
+   is 149px — where the class still fired and hid a time that had room twice
+   over. Lane COUNT cannot know pixel WIDTH, so this asks the only thing that
+   can: a container query on the chip itself.
+   The threshold is the container's CONTENT box, so 88px here is ~100px of
+   chip. A timed row's own controls measure 84px, which leaves nothing for a
+   title below that — the time is the one thing already stated by something
+   else, since the block's vertical position IS its time against a labelled
+   gutter. The full time stays in the chip's title attribute either way. */
+.cal-chip.placed { container-type: inline-size; container-name: chip; }
+@container chip (max-width: 88px) {
+  .chip-when { display: none; }
 }
 
 /* Tall appointments can use the room they actually have. One-hour and

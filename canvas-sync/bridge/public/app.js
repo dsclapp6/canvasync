@@ -13,7 +13,7 @@ import {
   todayIso, weekDays, weekLabel, WEEKDAY_HEADS,
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   timeWindow, hourMarks, layoutDay,
-  partitionDenseSlots, MIN_BLOCK_MIN,
+  partitionDenseSlots, MIN_BLOCK_MIN, MAX_LANES, laneBudgetFor,
 } from './cal-grid.js';
 import { nextSelection, isSelected, pruneSelection, isAiItemVisible } from './cal-plan.js';
 import {
@@ -685,13 +685,44 @@ function wireNav() {
   });
 
   wireCalendarDrag();
+  wireCalendarResize();
   wireItemDialog();
+}
+
+/**
+ * A resized window can change how many lanes the grid can afford, and the lane
+ * count is baked into the DOM at render time — CSS cannot undo it. Without
+ * this, dragging a window from 1200px to 375px leaves the 2-lane chips that
+ * width chose, overflowing exactly as they did before the budget was measured.
+ *
+ * Re-render only when the BUDGET changes, not on every resize event: the
+ * fluid part of the layout is CSS's already, and re-rendering the grid on each
+ * pixel of a drag would drop the user's open collision stacks for nothing.
+ */
+function wireCalendarResize() {
+  let timer = null;
+  const check = () => {
+    if (CAL_LANE_BUDGET == null) return;   // no timed grid on screen
+    if ($('view-calendar').classList.contains('hidden')) return;
+    const days = CAL_VIEW === 'twoday' ? 2 : 7;
+    const budget = laneBudgetFor(days, calGridWidth(), {
+      ...calGridGeometry(),
+      cap: days <= 2 ? 4 : MAX_LANES,
+    });
+    if (budget === CAL_LANE_BUDGET) return;
+    renderCalendarOps();
+  };
+  window.addEventListener('resize', () => {
+    clearTimeout(timer);
+    timer = setTimeout(check, 150);
+  });
 }
 
 /** Which day a brand-new item should default to. */
 function addDayForNewItem() {
   const today = localTodayIso();
   if (CAL_VIEW === 'list' || !CAL_ANCHOR) return today;
+  if (CAL_VIEW === 'twoday') return today;
   const days = CAL_VIEW === 'week'
     ? weekDays(CAL_ANCHOR)
     : [startOfMonth(CAL_ANCHOR), addDays(addMonths(startOfMonth(CAL_ANCHOR), 1), -1)];
@@ -2742,7 +2773,26 @@ let CAL_CLASS_SEL = (() => {
 // The prompt the Copy button puts on the clipboard. Set once the calendar
 // loads and the real data-root path is known.
 
-const CAL_VIEWS = ['list', 'week', 'month'];
+// Ordered by span: the shortest answer first. '2 days' is deliberately not
+// steerable — see twoDayDays().
+const CAL_VIEWS = ['list', 'twoday', 'week', 'month'];
+
+/**
+ * The two days the 2-day view shows: today and tomorrow, always.
+ *
+ * LITERALLY tomorrow, even when tomorrow is empty. A view that skipped an empty
+ * day to show the next one with work on it could not answer "is tomorrow
+ * clear?" — the question it exists for — because an empty day and a hidden day
+ * would look identical.
+ *
+ * Derived from today rather than from CAL_ANCHOR, which is why the view has no
+ * prev/next: a 2-day window you can steer anywhere is Week with five columns
+ * missing. It also means the view can never be parked on a stale pair.
+ */
+function twoDayDays() {
+  const today = localTodayIso();
+  return [today, addDays(today, 1)];
+}
 let CAL_VIEW = CAL_VIEWS.includes(localStorage.getItem('calView'))
   ? localStorage.getItem('calView') : 'list';
 // The day whose week or month the grid is showing. Not persisted: coming back
@@ -3448,8 +3498,55 @@ const SLOT_ROOMY_PX = 67;   // 3 lines
  * rather than being given an invented time. That band is the honest place for
  * "this happens today, at an hour nobody knows".
  */
-function renderCalendarWeekTimed(ops) {
-  const days = weekDays(CAL_ANCHOR);
+/**
+ * The calendar grid's geometry, read from the stylesheet that will draw it.
+ *
+ * These are CSS's numbers — the day column's minimum, the hour gutter, and the
+ * width one chip costs. Copying them into JS is how the lane budget drifted
+ * from the layout in the first place, so they are read rather than restated.
+ * A missing token falls back to the value style.css declares, so a stylesheet
+ * that failed to load renders instead of dividing by NaN.
+ */
+function calGridGeometry() {
+  const cs = getComputedStyle(document.documentElement);
+  const px = (name, fallback) => {
+    const v = parseFloat(cs.getPropertyValue(name));
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  };
+  return {
+    daycolMin: px('--daycol-min', 120),
+    gutter: px('--gutter-w', 44),
+    laneMin: px('--lane-min', 80),
+  };
+}
+
+/**
+ * How wide the grid gets to be: the panel it mounts into, not the window.
+ * Measured before the write, because the element being measured is the one
+ * about to be replaced and its width does not depend on its contents — the
+ * wrap scrolls internally rather than growing.
+ */
+function calGridWidth() {
+  return $('cal-ops')?.clientWidth ?? 0;
+}
+
+// The lane budget the grid currently on screen was rendered with; null when no
+// timed grid is up. Read by the resize check.
+let CAL_LANE_BUDGET = null;
+
+function renderCalendarWeekTimed(ops, days = weekDays(CAL_ANCHOR), gridWidth = calGridWidth()) {
+  // Two days used to mean four lanes and a week two, both read off a 1200px
+  // screen. At 375px a day column sits at its 120px floor whatever the day
+  // count, so those same counts gave 60px lanes — chips overflowing their own
+  // boxes by 9-10px with the clock already hidden. The count is now a ceiling
+  // and the WIDTH decides, which is the only thing that can.
+  const laneBudget = laneBudgetFor(days.length, gridWidth, {
+    ...calGridGeometry(),
+    cap: days.length <= 2 ? 4 : MAX_LANES,
+  });
+  // What the DOM on screen was actually built with, so a resize can ask
+  // whether it is still right rather than guessing from its own history.
+  CAL_LANE_BUDGET = laneBudget;
   const buckets = bucketByDate(ops);
   const today = todayIso();
   const win = timeWindow(ops);
@@ -3491,7 +3588,12 @@ function renderCalendarWeekTimed(ops) {
   const cols = days.map((iso, i) => {
     const { allDay, timed } = laid[i];
     const past = iso < today;
-    const partitioned = partitionDenseSlots(timed);
+    // The budget is computed once above, from the measured grid width rather
+    // than from the day count. Collapsing a four-way pileup into a stack when
+    // there is room for it side by side would hide work behind a control the
+    // user has to open; giving it four lanes when there is not is how those
+    // chips came to overflow their own boxes.
+    const partitioned = partitionDenseSlots(timed, 3, { maxLanes: laneBudget });
     let ordinary = timed;
     let stacks = [];
 
@@ -3530,7 +3632,12 @@ function renderCalendarWeekTimed(ops) {
       return calChip(op, iso, {
         style: `top:${top}px;height:${h}px;left:${(lane * w).toFixed(3)}%;width:${w.toFixed(3)}%`,
         timed: true,
-        placedClass: `${tier}${lanes > 1 ? ' lane-narrow' : ''}`,
+        // No narrow-lane class: whether a chip is too narrow for its own
+        // time is a question about PIXELS, and the renderer does not know how
+        // wide a column resolves to. style.css asks the chip directly with a
+        // container query. What stays here is the lane BUDGET — how many lanes
+        // to create at all — because that changes the DOM and CSS cannot.
+        placedClass: tier,
       });
     }).join('');
     const collisionStacks = stacks.map(({ group, startMin, endMin, lane, lanes }) => {
@@ -3555,7 +3662,10 @@ function renderCalendarWeekTimed(ops) {
       </section>`;
   }).join('');
 
-  return `<div class="cal-gridwrap"><div class="cal-week timed" id="cal-week">${gutter}${cols}</div></div>`;
+  // --daycols, not an inline grid-template: the track sizes and the gutter width
+  // stay in one place (style.css) and JS supplies only how many days there are.
+  return `<div class="cal-gridwrap"><div class="cal-week timed" id="cal-week"`
+    + ` style="--daycols:${days.length}">${gutter}${cols}</div></div>`;
 }
 
 function renderCalendarMonth(ops) {
@@ -4393,6 +4503,14 @@ function renderCalPeriod() {
   const box = $('cal-period');
   if (CAL_VIEW === 'list') { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
+  if (CAL_VIEW === 'twoday') {
+    // The range says what it is; there is nothing to steer, so no arrows are
+    // drawn rather than drawn-and-inert.
+    const [a, b] = twoDayDays();
+    box.innerHTML = `<span class="period-label" id="cal-period-label">${
+      esc(`${fmtDayLabel(a)} – ${fmtDayLabel(b)}`)}</span>`;
+    return;
+  }
   const label = CAL_VIEW === 'week' ? weekLabel(CAL_ANCHOR) : monthLabel(CAL_ANCHOR);
   const unit = CAL_VIEW === 'week' ? 'week' : 'month';
   box.innerHTML = `
@@ -4523,6 +4641,7 @@ function renderCalNotes() {
 
 /** Move the grid one period, or back to the one containing today. */
 function stepCalPeriod(n) {
+  if (CAL_VIEW === 'twoday') return;   // the range is today+tomorrow by definition
   if (n === 0) CAL_ANCHOR = todayIso();
   else if (CAL_VIEW === 'week') CAL_ANCHOR = addDays(CAL_ANCHOR, 7 * n);
   else CAL_ANCHOR = addMonths(startOfMonth(CAL_ANCHOR), n);
@@ -4865,6 +4984,10 @@ function calEmptyReason({ shown, matching, aiHidHere, hiddenPast }) {
 function renderCalendarOps() {
   const el = $('cal-ops');
   const toolbar = $('cal-toolbar');
+  // Cleared on every path; only a timed grid sets it again. An empty week or a
+  // switch to List must not leave a stale budget behind for the resize check
+  // to act on — it would re-render a view that has no lanes at all.
+  CAL_LANE_BUDGET = null;
   // The worklist's own custom ops are dropped and re-derived from CAL_CUSTOM:
   // between an edit and the rebuild that follows it, this list is newer than
   // the worklist, and drawing both would show the item twice.
@@ -4977,7 +5100,14 @@ function renderCalendarOps() {
     return;
   }
 
-  if (CAL_VIEW === 'week') {
+  if (CAL_VIEW === 'twoday') {
+    // Scoped to the two days on screen, unlike Week: the clock window is
+    // computed from the ops it is given, and a 6am item next week has no
+    // business setting the scale of a view about today and tomorrow.
+    const days = twoDayDays();
+    const inView = ops.filter(o => spanDates(o).some(d => days.includes(d)));
+    el.innerHTML = renderCalendarWeekTimed(inView, days);
+  } else if (CAL_VIEW === 'week') {
     el.innerHTML = renderCalendarWeek(ops);
   } else if (CAL_VIEW === 'month') {
     el.innerHTML = renderCalendarMonth(ops);
@@ -5456,7 +5586,15 @@ function wireSettings() {
       const r = await window.canvasync.checkLocalModel($('set-local-model').value.trim());
       $('model-status').textContent = r.present
         ? `Model present (${r.sizeGb ? r.sizeGb + ' GB' : 'in HF cache'})`
-        : (r.pythonOk ? 'Model not downloaded yet.' : 'No MLX python found — install mlx-lm first (see README).');
+        // Name the python it actually looked for. "No MLX python found" made
+        // the user guess which path was tried, when the IPC response has
+        // carried the configured one all along (app/main.js:296 returns it
+        // whether or not it exists). Same wording as the download path's
+        // failure two handlers below, so the card does not describe one
+        // problem two ways.
+        : (r.pythonOk ? 'Model not downloaded yet.'
+          : `No python at ${r.python || '(none configured)'} — set "Local python" in Settings `
+            + `to your MLX venv's bin/python, or create that venv (see README).`);
       $('model-download-btn').classList.toggle('hidden', r.present || !r.pythonOk);
     });
 

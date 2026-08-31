@@ -15,7 +15,7 @@ import {
   minutesOf, opSlot, timeWindow, hourMarks, layoutDay, partitionDenseSlots, DEFAULT_SLOT_MIN,
   renderedEnd,
   MIN_BLOCK_MIN,
-  MAX_LANES} from '../public/cal-grid.js';
+  MAX_LANES, laneBudgetFor} from '../public/cal-grid.js';
 
 // --- ISO in, ISO out, always local --------------------------------------
 
@@ -607,4 +607,75 @@ test('the exact-slot rule still fires for identical pileups', () => {
   assert.equal(groups.length, 1);
   assert.equal(groups[0].length, 3);
   assert.equal(rest.length, 0);
+});
+
+// --- the lane budget is a WIDTH question, not a count question ------------
+//
+// Every number below was measured in a browser against the shipped stylesheet
+// (a `.cal-week.timed` grid at these mount widths), not chosen: the formula
+// predicted the real column width to within 0.29px at seven days and 1px at
+// two, and predicted the same lane count as the rendered grid in all 14
+// combinations tried.
+
+// The stylesheet's own values. The renderer reads these from getComputedStyle;
+// restating them here is what the tests are FOR — if a token moves, these
+// expectations should be re-measured rather than silently following it.
+const GEO = { daycolMin: 120, gutter: 44, laneMin: 80 };
+
+test('a narrow grid lowers the budget below the count that was shipped', () => {
+  // The bug. A 7-day column sits at its 120px floor from 375px all the way to
+  // ~950px of grid, so the shipped budget of 2 produced 59.5px chips — measured
+  // 19px of overflow out of each chip's own box, with the clock already hidden
+  // by the container query in a failed attempt to fit.
+  assert.equal(laneBudgetFor(7, 375, GEO), 1);
+  assert.equal(laneBudgetFor(7, 768, GEO), 1);
+  // Two days was worse: 4 lanes of 40.88px, measured 38px of overflow.
+  assert.equal(laneBudgetFor(2, 375, { ...GEO, cap: 4 }), 2);
+});
+
+test('a roomy grid does NOT raise the budget past its cap', () => {
+  // The other half, and the one a `return 1` would fail. The cap is a product
+  // ceiling — past two lanes a week column reads as a wall of slivers even
+  // where the pixels fit — so width may only ever narrow it.
+  // Measured: a 1920px grid resolves a 7-day column to 267.71px, which affords
+  // three 80px lanes. The budget must still be two.
+  assert.equal(laneBudgetFor(7, 1920, GEO), MAX_LANES);
+  assert.equal(laneBudgetFor(7, 1200, GEO), 2);
+  assert.equal(laneBudgetFor(2, 1920, { ...GEO, cap: 4 }), 4);
+  // and never more than the caller allows, at any width
+  for (const w of [375, 768, 1200, 1920, 4000]) {
+    assert.ok(laneBudgetFor(7, w, GEO) <= MAX_LANES, `${w}px exceeded the cap`);
+    assert.ok(laneBudgetFor(2, w, { ...GEO, cap: 4 }) <= 4, `${w}px exceeded the cap`);
+  }
+});
+
+test('the budget never reaches zero, whatever the width', () => {
+  // A column can be narrower than one chip — at which point the chip is too
+  // wide for the space, which is a clipping problem. Zero lanes would be a
+  // DISAPPEARING problem: the day's work would not be drawn at all.
+  for (const w of [0, -100, 1, 45, 46]) {
+    assert.ok(laneBudgetFor(7, w, GEO) >= 1, `${w}px gave no lanes`);
+  }
+  assert.equal(laneBudgetFor(0, 1200, GEO), 1, 'no days is not a division');
+  assert.equal(laneBudgetFor(7, 1200, { ...GEO, laneMin: 0 }), 1, 'a zero floor is not a division');
+});
+
+test('an unmeasured grid keeps the shipped behaviour rather than guessing', () => {
+  // A first render into a hidden panel measures 0. Narrowing to one lane there
+  // would collapse pileups into stacks on a grid nobody has laid out yet, and
+  // the resize check re-renders once it has a width.
+  assert.equal(laneBudgetFor(7, 0, GEO), MAX_LANES);
+  assert.equal(laneBudgetFor(2, 0, { ...GEO, cap: 4 }), 4);
+});
+
+test('the budget follows the COLUMN, so day count alone does not decide it', () => {
+  // The mistake this replaced, stated directly: two days used to mean four
+  // lanes and seven days two, at every width. Same day count, different width,
+  // must be able to give a different answer — and the same width with
+  // different day counts must too.
+  assert.notEqual(laneBudgetFor(7, 375, GEO), laneBudgetFor(7, 1200, GEO));
+  assert.notEqual(
+    laneBudgetFor(2, 375, { ...GEO, cap: 4 }),
+    laneBudgetFor(2, 1200, { ...GEO, cap: 4 }),
+  );
 });

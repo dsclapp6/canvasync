@@ -41,8 +41,16 @@ test('timed cards give metadata and titles separate rows, including narrow lanes
   for (const tier of ["'slot-compact'", "'slot-snug'", "'slot-roomy'"]) {
     assert.ok(APP.includes(tier), `the renderer must emit ${tier}`);
   }
-  assert.match(APP, /lane-narrow/,
-    'the renderer should mark side-by-side cards for responsive formatting');
+  // `lane-narrow` used to be asserted here, and by the end it was passing on a
+  // COMMENT: the class was retired when the narrow treatment moved to a
+  // container query (the renderer cannot know how wide a column resolves to),
+  // and the only `lane-narrow` left in app.js was the note explaining its
+  // absence. Rewording that note would have failed this test while the code
+  // was correct — and did. The invariant the assertion was reaching for is
+  // that side-by-side cards still get a responsive treatment; it now lives
+  // where the pixels are known.
+  assert.match(CSS, /@container chip \(max-width: \d+px\)/,
+    'side-by-side cards need a responsive treatment keyed to their real width');
   assert.match(CSS,
     /grid-template-areas:\s*"check kind when action"\s*"title title title title"/,
     'task controls and metadata belong above a full-width title');
