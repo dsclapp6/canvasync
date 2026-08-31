@@ -446,7 +446,7 @@ test('a stage that exited non-zero must read as failed, with the output block at
     'the reason a stage failed is the whole point of showing that it failed');
 });
 
-test('a stage cancelled by the user must not be reported as a failure', async () => {
+test('a cancelled forced re-run keeps a verified-current stage done', async () => {
   const root = await newRoot();
   const dir = await writeFullClass(root, '20001-busi-101-001');
   await mkdir(path.join(root, 'logs'), { recursive: true });
@@ -458,7 +458,61 @@ test('a stage cancelled by the user must not be reported as a failure', async ()
 
   const p = await indexProgress(root, NO_SCAN);
   const stage = stageOf(classOf(p, '20001-busi-101-001'), 'mine');
-  assert.equal(stage.state, 'cancelled', 'exit 143 is SIGTERM — the user did this, it is not a defect');
+  assert.equal(stage.state, 'done', 'the cancellation did not invalidate the verified-current output');
+  assert.match(stage.evidence, /forced re-run/);
+});
+
+test('a queued cancellation keeps a verified-current stage done', async () => {
+  const root = await newRoot();
+  const dir = await writeFullClass(root, '20001-busi-101-001');
+  await mkdir(path.join(root, 'logs'), { recursive: true });
+  await writeFile(path.join(root, 'logs', 'trigger.log'), [
+    `2026-08-24T18:04:00.000Z SKIP mine-assignments.js ${dir} (cancelled)`,
+    '',
+  ].join('\n'), 'utf8');
+
+  const p = await indexProgress(root, NO_SCAN);
+  const stage = stageOf(classOf(p, '20001-busi-101-001'), 'mine');
+  assert.equal(stage.state, 'done');
+  assert.match(stage.evidence, /verified current.*SKIP \(cancelled\)/);
+});
+
+test('cancelled stages without a valid current output stay cancelled', async () => {
+  const root = await newRoot();
+  const absentDir = await writeFullClass(root, '20001-busi-101-001');
+  const staleDir = await writeFullClass(root, '20002-busi-102-001');
+  await rm(path.join(absentDir, 'assignments_mined.json'));
+  await touch(path.join(staleDir, 'assignments.json'), at(60));
+  await mkdir(path.join(root, 'logs'), { recursive: true });
+  await writeFile(path.join(root, 'logs', 'trigger.log'), [
+    `2026-08-24T18:04:00.000Z SKIP mine-assignments.js ${absentDir} (cancelled)`,
+    `2026-08-24T18:04:01.000Z START mine-assignments.js ${staleDir}`,
+    `2026-08-24T18:04:02.000Z END mine-assignments.js ${staleDir} exit=143`,
+    '',
+  ].join('\n'), 'utf8');
+
+  const p = await indexProgress(root, NO_SCAN);
+  assert.equal(stageOf(classOf(p, '20001-busi-101-001'), 'mine').state, 'cancelled');
+  assert.equal(stageOf(classOf(p, '20002-busi-102-001'), 'mine').state, 'cancelled');
+});
+
+test('a cancelled calendar re-run keeps a parseable worklist complete', async () => {
+  const root = await newRoot();
+  await writeFullClass(root, '20001-busi-101-001');
+  const classesDir = path.join(root, 'classes');
+  await writeJson(path.join(root, 'calendar', 'worklist.json'), {
+    generated_at: '2026-08-24T17:00:00.000Z', counts: { homework: 1 }, ops: [],
+  });
+  await mkdir(path.join(root, 'logs'), { recursive: true });
+  await writeFile(path.join(root, 'logs', 'trigger.log'), [
+    `2026-08-24T18:00:00.000Z START sync-calendar.js ${classesDir}`,
+    `2026-08-24T18:00:01.000Z END sync-calendar.js ${classesDir} exit=143`,
+    '',
+  ].join('\n'), 'utf8');
+
+  const p = await indexProgress(root, NO_SCAN);
+  assert.equal(p.global.calendar.state, 'complete');
+  assert.match(p.global.calendar.note, /existing worklist is present and parseable/);
 });
 
 test('a failed global calendar run is retryable even when an older worklist still reads', async () => {
@@ -520,6 +574,27 @@ test('a syllabus error sidecar is a current failure, because parse deletes it on
   const c = classOf(p, '20001-busi-101-001');
   assert.equal(stageOf(c, 'parse').state, 'failed');
   assert.equal(catOf(c, 'syllabus').state, 'error');
+});
+
+test('an undersized syllabus document is named and excluded from parse work', async () => {
+  const root = await newRoot();
+  const dir = path.join(root, 'classes', '20003-busi-103-001');
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'syllabus.pdf'), 'x'.repeat(800), 'utf8');
+  await mkdir(path.join(root, 'logs'), { recursive: true });
+  await writeFile(path.join(root, 'logs', 'trigger.log'), [
+    `2026-08-24T18:00:00.000Z START parse-syllabus.js ${dir}`,
+    `2026-08-24T18:00:01.000Z END parse-syllabus.js ${dir} exit=1`,
+    '',
+  ].join('\n'), 'utf8');
+
+  const p = await indexProgress(root, NO_SCAN);
+  const cls = classOf(p, '20003-busi-103-001');
+  const parse = stageOf(cls, 'parse');
+  assert.equal(parse.state, 'n-a');
+  assert.equal(parse.inputsPresent, false);
+  assert.match(parse.evidence, /syllabus\.pdf is 800 bytes/);
+  assert.match(catOf(cls, 'syllabus').note, /1024 bytes or less/);
 });
 
 test('classes outside the sync scope must be listed but marked, never silently dropped', async () => {

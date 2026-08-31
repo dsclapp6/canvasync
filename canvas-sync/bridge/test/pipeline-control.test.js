@@ -204,6 +204,27 @@ test('broken pipeline mode reruns only the failed class/stage pair', async () =>
     'broken-only mode ran a stage that was not broken');
 });
 
+test('an undersized syllabus pdf is not spawned even by a forced parse run', async () => {
+  const tinyDir = path.join(tmpHome, 'classes', '102-tiny-syllabus');
+  await fs.mkdir(tinyDir, { recursive: true });
+  await fs.writeFile(path.join(tinyDir, 'syllabus.pdf'), 'x'.repeat(800));
+  const logPath = path.join(tmpHome, 'logs', 'trigger.log');
+  const before = await fs.readFile(logPath, 'utf8').catch(() => '');
+
+  const r = await request('POST', '/api/pipeline/run', { body: { stages: ['parse'] } });
+  assert.equal(r.status, 200);
+  let running = true;
+  for (let i = 0; i < 40 && running; i++) {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    running = (await request('GET', '/api/status')).json.pipeline.running;
+  }
+  assert.equal(running, false, 'forced parse pass did not finish');
+
+  const added = (await fs.readFile(logPath, 'utf8')).slice(before.length);
+  assert.equal(added.includes(`START parse-syllabus.js ${tinyDir}`), false,
+    'the scheduler spawned work its parser knowingly refuses');
+});
+
 test('ingest rejects untracked classes with 410 (server-side backstop)', async () => {
   const origin = `chrome-extension://${EXT_ID}`;
   const r = await request('POST', '/ingest/course', {

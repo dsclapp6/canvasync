@@ -238,6 +238,19 @@ test('the Status page offers each independently runnable pipeline part', async (
   assert.match(html, /data-pipeline-broken disabled/);
 });
 
+test('the global availability map disables Calendar only and its broken fallback', async () => {
+  const p = payload({
+    pipeline: { running: false, activeCount: 0, queuedCount: 0, maxConcurrent: 3 },
+    jobs: [],
+    brokenPipeline: { stageAvailability: { calendar: false } },
+  });
+  p.global.calendar.state = 'error';
+  const page = await renderPage(() => p);
+  const html = page.nodes['pipeline-actions'].innerHTML;
+  assert.match(html, /data-pipeline-stage="calendar" disabled title="Switched off in Settings"/);
+  assert.match(html, /data-pipeline-broken disabled/);
+});
+
 test('Run broken counts unique retry targets, including partial file failures', async () => {
   const p = payload({
     pipeline: { running: false, activeCount: 0, queuedCount: 0, maxConcurrent: 3 },

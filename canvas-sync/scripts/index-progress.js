@@ -43,22 +43,28 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, isInScope, courseIdOf, CLASS_DIR_RE } from '../scope.js';
+import {
+  MIN_SYLLABUS_DOCUMENT_BYTES,
+  isUsableSyllabusSource,
+} from '../syllabus-source.js';
 import { modelLockStatus, cliProviderStatuses, sha256File } from './_util.js';
 import { compactCourseCode } from './cal-names.js';
+
+export { MIN_SYLLABUS_DOCUMENT_BYTES, isUsableSyllabusSource };
 
 const execFileP = promisify(execFile);
 
 // ---------------------------------------------------------------------------
-// Source lists, copied from the two orchestrators.
+// Source lists, copied from the two orchestrators. The syllabus file-size
+// eligibility policy itself is shared through ../syllabus-source.js.
 //
 // These MUST stay in step with bridge/trigger.js:327 and
 // scripts/sync-all-contexts.js:63. They are duplicated here rather than
 // imported because importing trigger.js from scripts/ would pull the bridge's
-// module-level pipeline state into a CLI process. See the integration note in
-// the module docs: the right end state is one shared predicates module that all
-// three import. Until then, `PREDICATE_NOTES` below reports every place the two
-// orchestrators already disagree, so the page can never quietly claim a stage
-// is stale that the pipeline would then decline to run.
+// module-level pipeline state into a CLI process. `PREDICATE_NOTES` below
+// reports every remaining place the two orchestrators disagree, so the page
+// can never quietly claim a stage is stale that the pipeline would then
+// decline to run.
 // ---------------------------------------------------------------------------
 
 const BUILD_SOURCES = [
@@ -346,6 +352,21 @@ async function outputStale(classDir, anchorRel, sourceRels, dirRels = []) {
   return { inputsPresent: true, anchorAt, stale: false, reason: null, newestSource: iso(newest) };
 }
 
+async function usableSyllabusSources(classDir) {
+  const usable = [];
+  const ignored = [];
+  for (const rel of SYLLABUS_SOURCES) {
+    const s = await statSafe(path.join(classDir, rel));
+    if (!s || !s.isFile()) continue;
+    if (isUsableSyllabusSource(rel, s.size)) usable.push({ rel, size: s.size });
+    else ignored.push({ rel, size: s.size });
+  }
+  const ignoredNote = ignored.length
+    ? `${ignored.map(({ rel, size }) => `${rel} is ${size} bytes`).join('; ')} — parse-syllabus ignores pdf/docx of ${MIN_SYLLABUS_DOCUMENT_BYTES} bytes or less`
+    : null;
+  return { usable, ignoredNote };
+}
+
 /**
  * parse's predicate, in scripts/sync-all-contexts.js's stricter form: an mtime
  * that looks newer is confirmed against syllabus.hash before we call it stale.
@@ -356,7 +377,9 @@ async function outputStale(classDir, anchorRel, sourceRels, dirRels = []) {
  * 20 GB model for no reason.
  */
 async function parseStaleness(classDir) {
-  const base = await outputStale(classDir, 'syllabus_parsed.json', SYLLABUS_SOURCES);
+  const { usable, ignoredNote } = await usableSyllabusSources(classDir);
+  const base = await outputStale(classDir, 'syllabus_parsed.json', usable.map(source => source.rel));
+  if (!base.inputsPresent && ignoredNote) base.note = ignoredNote;
   if (!base.inputsPresent || !base.stale || base.anchorAt == null) return { ...base, hashChecked: false };
 
   const hashPath = path.join(classDir, 'syllabus.hash');
@@ -365,7 +388,7 @@ async function parseStaleness(classDir) {
   if (!stored) return { ...base, hashChecked: false };
 
   const hashes = [];
-  for (const rel of SYLLABUS_SOURCES) {
+  for (const { rel } of usable) {
     const abs = path.join(classDir, rel);
     const s = await statSafe(abs);
     if (!s || !s.isFile()) continue;
@@ -731,17 +754,13 @@ async function buildCategories(classDir, ctx) {
     indexed: false, sourceFile: null, confidence: null, updatedAt: null,
     state: 'not-indexed', note: null,
   };
-  const sourcePresent = [];
-  for (const rel of SYLLABUS_SOURCES) {
-    const s = await statSafe(p(rel));
-    // parse-syllabus.js:262,272 ignores a pdf/docx of 1024 bytes or less — a
-    // Canvas error page saved under the pdf name is not a syllabus.
-    if (s && s.isFile() && (rel === 'syllabus.html' || s.size > 1024)) sourcePresent.push({ rel, size: s.size });
-  }
+  // parse-syllabus.js ignores a pdf/docx of 1024 bytes or less — a Canvas
+  // error page saved under the pdf name is not a syllabus.
+  const { usable: sourcePresent, ignoredNote: ignoredSyllabusNote } = await usableSyllabusSources(classDir);
   sylCat.sourcesOnDisk = sourcePresent.map(s => s.rel);
   if (sourcePresent.length === 0 && !syllabusParsed.present) {
     sylCat.state = 'n-a';
-    sylCat.note = 'no syllabus.pdf / .docx / .html was ever delivered for this class';
+    sylCat.note = ignoredSyllabusNote ?? 'no syllabus.pdf / .docx / .html was ever delivered for this class';
   } else if (syllabusParsed.error) {
     sylCat.state = 'error';
     sylCat.note = syllabusParsed.error;
@@ -912,7 +931,7 @@ function evaluateStageState({ stage, staleness, logEntry, pipelineActive, livePr
     return { state: 'not-wired', basis: 'orchestrators', evidence: 'no orchestrator spawns build-pack.js and no pack2/ is produced' };
   }
   if (!staleness.inputsPresent && !anchorPresent) {
-    return { state: 'n-a', basis: 'filesystem', evidence: `none of this stage's inputs exist yet (${stage.inputs.length ? stage.inputs.slice(0, 3).join(', ') + (stage.inputs.length > 3 ? ', …' : '') : 'none declared'})` };
+    return { state: 'n-a', basis: 'filesystem', evidence: staleness.note ?? `none of this stage's inputs exist yet (${stage.inputs.length ? stage.inputs.slice(0, 3).join(', ') + (stage.inputs.length > 3 ? ', …' : '') : 'none declared'})` };
   }
   if (pipelineActive) {
     return { state: 'running', basis: 'pipelineStatus()', evidence: 'the bridge reports this token in pipelineStatus().active' };
@@ -932,11 +951,20 @@ function evaluateStageState({ stage, staleness, logEntry, pipelineActive, livePr
       evidence: `START at ${logEntry.lastStart.at} with no END and no live process — a bridge restart orphaned it (pipelineStatus is per-process memory)`,
     };
   }
-  if (logEntry?.lastSkip && (!logEntry.lastEnd || logEntry.lastSkip.atMs > logEntry.lastEnd.atMs)) {
-    return { state: 'cancelled', basis: 'trigger.log', evidence: `SKIP (cancelled) at ${logEntry.lastSkip.at}` };
-  }
-  if (logEntry?.lastEnd?.exit === 143) {
-    return { state: 'cancelled', basis: 'trigger.log', evidence: `END exit=143 at ${logEntry.lastEnd.at} — the user cancelled this, it did not fail` };
+  const skippedByCancel = logEntry?.lastSkip?.reason === 'cancelled'
+    && (!logEntry.lastEnd || logEntry.lastSkip.atMs > logEntry.lastEnd.atMs);
+  const endedByCancel = logEntry?.lastEnd?.exit === 143;
+  if (skippedByCancel || endedByCancel) {
+    const cancellation = skippedByCancel
+      ? `SKIP (cancelled) at ${logEntry.lastSkip.at}`
+      : `END exit=143 at ${logEntry.lastEnd.at}`;
+    if (anchorPresent && !anchorUnreadable && !staleness.stale) {
+      return {
+        state: 'done', basis: 'staleness predicate + trigger.log',
+        evidence: `${stage.anchor} is verified current; ${cancellation} only cancelled a forced re-run before it changed the output`,
+      };
+    }
+    return { state: 'cancelled', basis: 'trigger.log', evidence: `${cancellation} — the user cancelled this, it did not fail` };
   }
   if (sidecar?.fresh) {
     return { state: 'failed', basis: 'error sidecar', evidence: sidecar.evidence };
@@ -1311,9 +1339,17 @@ export async function indexProgress(root = dataRoot(), opts = {}) {
       // process from another bridge, so preserve the honest two-way state.
       calendarState = 'running-or-interrupted';
       calendarNote = `START at ${calendarLog.lastStart.at} with no later END`;
-    } else if (calendarLog?.lastEnd?.exit === 143) {
-      calendarState = 'cancelled';
-      calendarNote = `END exit=143 at ${calendarLog.lastEnd.at} — the user cancelled this`;
+    } else if ((calendarLog?.lastSkip?.reason === 'cancelled'
+      && (!calendarLog.lastEnd || calendarLog.lastSkip.atMs > calendarLog.lastEnd.atMs))
+      || calendarLog?.lastEnd?.exit === 143) {
+      const cancellation = calendarLog?.lastSkip?.reason === 'cancelled'
+        && (!calendarLog.lastEnd || calendarLog.lastSkip.atMs > calendarLog.lastEnd.atMs)
+        ? `SKIP (cancelled) at ${calendarLog.lastSkip.at}`
+        : `END exit=143 at ${calendarLog.lastEnd.at}`;
+      calendarState = w ? 'complete' : 'cancelled';
+      calendarNote = w
+        ? `${cancellation} only cancelled a forced re-run; the existing worklist is present and parseable`
+        : `${cancellation} — the user cancelled this`;
     } else if (calendarLog?.lastEnd && calendarLog.lastEnd.exit !== 0 && calendarLog.lastEnd.exit !== null) {
       calendarState = 'failed';
       calendarNote = `END exit=${calendarLog.lastEnd.exit} at ${calendarLog.lastEnd.at}`;

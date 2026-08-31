@@ -8,7 +8,13 @@ import { createWriteStream, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dataRoot } from '../data-root.js';
 import { readSyncScope, isInScope } from '../scope.js';
+import {
+  MIN_SYLLABUS_DOCUMENT_BYTES,
+  isUsableSyllabusSource,
+} from '../syllabus-source.js';
 import { TEXTBOOK_SCHEMA_VERSION } from './textbooks.js';
+
+export { MIN_SYLLABUS_DOCUMENT_BYTES, isUsableSyllabusSource };
 
 // One shared definition for every entry point — see ../data-root.js.
 const syncHome = dataRoot;
@@ -328,6 +334,18 @@ async function statMtime(filePath) {
   }
 }
 
+async function syllabusSourceMtime(filePath) {
+  try {
+    const s = await fs.stat(filePath);
+    if (!s.isFile()) return null;
+    return isUsableSyllabusSource(path.basename(filePath), s.size)
+      ? s.mtimeMs
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 // Recursively find the newest mtime of any file directly inside a directory.
 // Non-recursive by design: plan 1e only asks about files under files/, not
 // nested subfolders (Canvas folder-listing is a separate OPEN item in the plan).
@@ -350,19 +368,19 @@ async function newestMtimeInDir(dir) {
 
 // Stale check: does outPath need rebuilding from these sources?
 // sourcePaths are files; dirSources are directories scanned one level deep.
-async function isStale(outPath, sourcePaths, dirSources = []) {
+async function isStale(outPath, sourcePaths, dirSources = [], sourceMtime = statMtime) {
   const [outMtime, fileMtimes, dirMtimes] = await Promise.all([
     statMtime(outPath),
-    Promise.all(sourcePaths.map(statMtime)),
+    Promise.all(sourcePaths.map(sourceMtime)),
     Promise.all(dirSources.map(newestMtimeInDir)),
   ]);
   const newestSource = Math.max(0, ...fileMtimes.map(m => m ?? 0), ...dirMtimes);
   return newestSource > 0 && (outMtime === null || outMtime < newestSource);
 }
 
-async function hasAnyInput(sourcePaths, dirSources = []) {
+async function hasAnyInput(sourcePaths, dirSources = [], sourceMtime = statMtime) {
   const [fileMtimes, dirMtimes] = await Promise.all([
-    Promise.all(sourcePaths.map(statMtime)),
+    Promise.all(sourcePaths.map(sourceMtime)),
     Promise.all(dirSources.map(newestMtimeInDir)),
   ]);
   return Math.max(0, ...fileMtimes.map(m => m ?? 0), ...dirMtimes) > 0;
@@ -371,10 +389,13 @@ async function hasAnyInput(sourcePaths, dirSources = []) {
 // Automatic passes run stale stages. A Status-page action uses force=true, but
 // still requires at least one real input: "parse syllabus" must not spawn six
 // failing model jobs for classes that have never supplied a syllabus.
-async function runClassStage(classDir, scriptName, outPath, sourcePaths, dirSources = [], { force = false } = {}) {
+async function runClassStage(classDir, scriptName, outPath, sourcePaths, dirSources = [], {
+  force = false,
+  sourceMtime = statMtime,
+} = {}) {
   const shouldRun = force
-    ? await hasAnyInput(sourcePaths, dirSources)
-    : await isStale(outPath, sourcePaths, dirSources);
+    ? await hasAnyInput(sourcePaths, dirSources, sourceMtime)
+    : await isStale(outPath, sourcePaths, dirSources, sourceMtime);
   if (!shouldRun) return;
   const token = `${classDir}:${scriptName}`;
   if (queued.has(token) || active.has(token)) return;
@@ -400,7 +421,10 @@ async function processClassDir(classDir, fn, { selected = null, force = false } 
   }
   if (wants('parse')) await runClassStage(classDir, 'parse-syllabus.js',
     p('syllabus_parsed.json'),
-    [p('syllabus.html'), p('syllabus.pdf'), p('syllabus.docx')], [], { force: forceParse });
+    [p('syllabus.html'), p('syllabus.pdf'), p('syllabus.docx')], [], {
+      force: forceParse,
+      sourceMtime: syllabusSourceMtime,
+    });
 
   // 2. Extract text from downloaded course files → materials/. The anchor is
   // last_extracted.txt (written after everything else): _combined.txt is

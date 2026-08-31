@@ -27,7 +27,14 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-import { indexProgress, STAGES } from '../../scripts/index-progress.js';
+import {
+  indexProgress,
+  STAGES,
+  isUsableSyllabusSource as progressSyllabusSourcePredicate,
+} from '../../scripts/index-progress.js';
+import {
+  isUsableSyllabusSource as triggerSyllabusSourcePredicate,
+} from '../trigger.js';
 
 // fileURLToPath, never a raw import.meta.url pathname: the repo path has no
 // space and the tmp path does, so a raw compare silently no-ops on this machine.
@@ -35,6 +42,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PAGE = path.join(HERE, '..', 'public', 'progress.html');
 
 const REGIONS = ['banner', 'topline', 'pipeline-actions', 'classes', 'global', 'foot', 'pulse', 'poll-note'];
+
+test('scheduler and progress model share the syllabus-source predicate', () => {
+  assert.strictEqual(triggerSyllabusSourcePredicate, progressSyllabusSourcePredicate);
+});
 
 function stubNode(id) {
   return {

@@ -612,6 +612,8 @@ const PIPELINE_ACTIONS = [
 ];
 
 function stageOff(d, key) {
+  const availability = d && d.brokenPipeline && d.brokenPipeline.stageAvailability;
+  if (availability && availability[key] === false) return true;
   const classes = Array.isArray(d && d.classes) ? d.classes : [];
   return classes.some(function (c) {
     return (Array.isArray(c.stages) ? c.stages : []).some(function (s) {

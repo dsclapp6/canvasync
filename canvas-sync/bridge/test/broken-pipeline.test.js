@@ -33,6 +33,27 @@ test('broken plan retries only failed class stages and the broken global calenda
     targets: [{ folder: '101-live-course', stages: ['mine'] }],
     calendar: true,
     targetCount: 2,
+    stageAvailability: ENABLED,
+  });
+});
+
+test('a broken calendar is not offered when no class directory is in scope', () => {
+  const progress = {
+    classes: [
+      { folder: '202-old-course', inScope: false, stages: [], categories: [] },
+      { folder: null, inScope: true, stages: [], categories: [] },
+    ],
+    global: { calendar: { state: 'failed' } },
+  };
+
+  assert.deepEqual(brokenPipelinePlan(progress, {
+    allowedStageKeys: ALLOWED,
+    enabled: ENABLED,
+  }), {
+    targets: [],
+    calendar: false,
+    targetCount: 0,
+    stageAvailability: ENABLED,
   });
 });
 
@@ -70,6 +91,7 @@ test('a stage disabled in Settings is never offered as broken work', () => {
     targets: [{ folder: '101-live-course', stages: ['extract'] }],
     calendar: false,
     targetCount: 1,
+    stageAvailability: { ...ENABLED, mine: false, calendar: false },
   });
 });
 
@@ -89,7 +111,10 @@ test('an empty enabled configuration offers no broken stages', () => {
   assert.deepEqual(brokenPipelinePlan(progress, {
     allowedStageKeys: ALLOWED,
     enabled: {},
-  }), { targets: [], calendar: false, targetCount: 0 });
+  }), {
+    targets: [], calendar: false, targetCount: 0,
+    stageAvailability: Object.fromEntries(ALLOWED.map(stage => [stage, false])),
+  });
 });
 
 test('target count equals the number of selections in the shared plan', () => {

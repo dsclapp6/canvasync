@@ -18,15 +18,19 @@ export function brokenPipelinePlan(progress, {
   enabled = {},
 } = {}) {
   const allowed = new Set(allowedStageKeys);
+  const stageAvailability = Object.fromEntries(
+    [...allowed].map(stage => [stage, enabled[stage] === true]));
   const byFolder = new Map();
 
   const add = (folder, stage) => {
-    if (!folder || !allowed.has(stage) || enabled[stage] !== true) return;
+    if (!folder || !allowed.has(stage) || stageAvailability[stage] !== true) return;
     if (!byFolder.has(folder)) byFolder.set(folder, new Set());
     byFolder.get(folder).add(stage);
   };
 
   const classes = Array.isArray(progress?.classes) ? progress.classes : [];
+  const hasInScopeClass = classes.some(cls =>
+    cls && cls.inScope !== false && typeof cls.folder === 'string');
   for (const cls of classes) {
     if (!cls || cls.inScope === false || typeof cls.folder !== 'string') continue;
     const stages = Array.isArray(cls.stages) ? cls.stages : [];
@@ -46,8 +50,9 @@ export function brokenPipelinePlan(progress, {
   }
 
   const calendarState = String(progress?.global?.calendar?.state ?? '');
-  const calendar = allowed.has('calendar')
-    && enabled.calendar === true
+  const calendar = hasInScopeClass
+    && allowed.has('calendar')
+    && stageAvailability.calendar === true
     && RETRYABLE_STATES.has(calendarState);
 
   const targets = [...byFolder.entries()].map(([folder, stages]) => ({
@@ -57,7 +62,7 @@ export function brokenPipelinePlan(progress, {
   const targetCount = targets.reduce((sum, target) => sum + target.stages.length, 0)
     + (calendar ? 1 : 0);
 
-  return { targets, calendar, targetCount };
+  return { targets, calendar, targetCount, stageAvailability };
 }
 
 /**
