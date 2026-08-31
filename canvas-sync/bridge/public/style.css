@@ -1184,9 +1184,21 @@ table.files tr:hover td { background: var(--sunk); }
    a switch over a toggle button is that its state is legible without having to
    compare it to its neighbours: the knob is left or right, and the track is
    empty or filled.
+
+   The first version filled the track with --accent and the user's verdict was
+   "ugly". Measured, they were right and it was not close: 364px2 of forest
+   green at 6.82:1 against the paper, in a toolbar whose other controls say
+   "on" at 1.07:1 — six times the contrast of anything beside it, and the only
+   HUE in a row of neutrals. A switch has to fill to read as on, so the fix is
+   not less fill, it is no colour: the track is now --muted, monochrome, and
+   22x11 rather than 26x14. That keeps the knob at 5.46:1 against the track,
+   comfortably legible at 8px, while adding no colour to the row at all.
+   (--edge is quieter still at 3.54:1, but puts the knob at 3.83:1 — thin for a
+   target this small, so the extra calm is not worth the legibility.)
+
    State in ink and SHAPE, never opacity — CALENDAR-SPEC 3.6. Both halves are
-   here on purpose: the fill alone fails for anyone who cannot separate the two
-   greens, and the knob position alone is a small target for the eye. */
+   here on purpose: the fill alone fails anyone who cannot separate the tones,
+   and the knob position alone is a small target for the eye. */
 .switch-btn {
   display: inline-flex;
   align-items: center;
@@ -1201,11 +1213,11 @@ table.files tr:hover td { background: var(--sunk); }
 .switch-track {
   position: relative;
   flex: none;
-  width: 26px;
-  /* 14, not 15: 14 + 8px padding + 2px border is 24px, which is exactly what
-     the ghost buttons beside it measure. A control one pixel taller than its
-     neighbours reads as misaligned in a toolbar row. */
-  height: 14px;
+  width: 22px;
+  /* Under ~14px the LABEL's line box sets the button's height, so the control
+     measures 24px — exactly what the ghost buttons beside it measure — and the
+     track can shrink without the row going ragged. */
+  height: 11px;
   border-radius: 999px;
   background: var(--sunk);
   border: 1px solid var(--rule-2);
@@ -1215,8 +1227,8 @@ table.files tr:hover td { background: var(--sunk); }
   position: absolute;
   top: 1px;
   left: 1px;
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--muted);
   transition: transform var(--fast) var(--ease), background-color var(--fast) var(--ease);
@@ -1224,10 +1236,10 @@ table.files tr:hover td { background: var(--sunk); }
 .switch-btn:hover { color: var(--ink); border-color: var(--edge); }
 .switch-btn:hover .switch-track { border-color: var(--edge); }
 .switch-btn.active { color: var(--ink); border-color: var(--edge); }
-.switch-btn.active .switch-track { background: var(--accent); border-color: var(--accent-2); }
-/* 26 track - 2 border - 10 knob - 1 left inset - 1 right inset = 12px of travel,
+.switch-btn.active .switch-track { background: var(--muted); border-color: var(--muted); }
+/* 22 track - 2 border - 8 knob - 1 left inset - 1 right inset = 10px of travel,
    so the knob sits the same 1px from the end it is resting against. */
-.switch-btn.active .switch-knob { transform: translateX(12px); background: var(--on-accent); }
+.switch-btn.active .switch-knob { transform: translateX(10px); background: var(--panel); }
 
 @media (prefers-reduced-motion: reduce) {
   .switch-knob { transition: none; }
@@ -3362,7 +3374,19 @@ table.files tr:last-child td { border-bottom: 0; }
   --kind-soft: var(--sunk);
 }
 
-.filter-chip[data-kind-filter]::before {
+/* THE KIND'S COLOUR LIVES IN THE DOT, AND NOWHERE ELSE ON THIS ROW.
+   The user: *"there is too much going on with different colors on the calendar
+   with the meetings vs. office hours vs. hw, etc. labels at the top."* A
+   selected chip used to tint FOUR surfaces in its own hue — text, background,
+   border and count — on top of already carrying the dot. An empty selection
+   means "everything", so that was the default state: eight pills, eight hues,
+   eight tinted grounds, all at once.
+   This is the class row's idiom one row down, which never had the problem:
+   neutral chip, colour in the swatch alone. Two filter rows, one language.
+   Kind colour stays load-bearing where it categorises actual items — the
+   grid chips, the list rows, `.cal-kind.category-label` — which is where it
+   answers a question rather than decorating a control. */
+.filter-chip::before {
   content: "";
   width: 7px;
   height: 7px;
@@ -3370,16 +3394,29 @@ table.files tr:last-child td { border-bottom: 0; }
   border-radius: 50%;
   background: var(--kind-color, var(--edge));
 }
-.filter-chip[data-kind-filter].on {
-  color: var(--kind-color, var(--accent-2));
-  background: var(--kind-soft, var(--panel));
-  border-color: color-mix(in srgb, var(--kind-color, var(--accent)) 68%, var(--rule));
+/* On: solid frame, ink label, filled dot. Neutral — every kind says "on" the
+   same way, so the ROW reads as a row rather than as eight separate objects. */
+.filter-chip[data-kind-filter].on,
+.filter-chip.ai-filter.on {
+  color: var(--ink);
+  background: var(--panel);
+  border-color: var(--edge);
+  font-weight: var(--w-text);
 }
-.filter-chip[data-kind-filter].on:hover {
-  color: var(--kind-color, var(--accent-2));
-  background: color-mix(in srgb, var(--kind-color, var(--accent)) 15%, var(--panel));
+.filter-chip[data-kind-filter].on:hover,
+.filter-chip.ai-filter.on:hover { color: var(--ink); background: var(--sunk); }
+.filter-chip[data-kind-filter].on .chip-count,
+.filter-chip.ai-filter.on .chip-count { color: var(--muted); }
+/* Off: dashed frame, muted label, and the dot goes hollow — the same hollow
+   ring `.class-chip.off .chip-swatch` uses. Three signals in ink and shape,
+   never opacity (spec 3.6). The AI chip keeps a dashed frame in BOTH states
+   because dashed is its provenance idiom there, so its on/off is carried by
+   the label's ink and the dot — which is why it gets a dot at all now. */
+.filter-chip:not(.on) { border-style: dashed; }
+.filter-chip:not(.on)::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--kind-color, var(--rule-2));
 }
-.filter-chip[data-kind-filter].on .chip-count { color: var(--kind-color, var(--accent-2)); }
 
 .cal-row[data-kind] {
   padding-left: 9px;

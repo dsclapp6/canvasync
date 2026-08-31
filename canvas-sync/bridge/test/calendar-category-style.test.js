@@ -58,3 +58,68 @@ test('timed cards give metadata and titles separate rows, including narrow lanes
     /\.cal-chip\.placed\.meeting\s*\{[^}]*grid-template-areas:\s*"kind when"\s*"title title"/s,
     'meetings should not reserve empty checkbox space');
 });
+
+// --- the filter row is CALM; the grid is where kind colour works ------------
+//
+// The user: *"there is too much going on with different colors on the calendar
+// with the meetings vs. office hours vs. hw, etc. labels at the top."*
+// Measured against the previous stylesheet, the default row (an empty
+// selection means everything, so every chip was "on") put up 8 label colours,
+// 8 tinted backgrounds, 8 border colours AND 8 dots — 32 coloured surfaces.
+// Now 1 / 1 / 1, plus the same 8 dots at 7px.
+
+test('a kind\'s colour reaches the filter row through the DOT and nothing else', () => {
+  const dot = /\.filter-chip::before \{([^}]*)\}/.exec(CSS);
+  assert.ok(dot, 'the filter chips have no colour dot at all');
+  assert.match(dot[1], /background: var\(--kind-color/,
+    'the dot is what carries the kind — without it the row says nothing');
+
+  const on = /\.filter-chip\[data-kind-filter\]\.on,\s*\n\.filter-chip\.ai-filter\.on \{([^}]*)\}/.exec(CSS);
+  assert.ok(on, 'the selected-chip rule moved — this test is stale');
+  for (const prop of ['color', 'background', 'border-color']) {
+    const decl = new RegExp(`${prop}:([^;]*);`).exec(on[1]);
+    assert.ok(decl, `the selected chip must state its ${prop}`);
+    assert.doesNotMatch(decl[1], /--kind-color|--kind-soft/,
+      `a selected chip still tints its ${prop} with the kind's hue`);
+  }
+});
+
+test('…while the grid keeps kind colour, which is where it categorises', () => {
+  // The other half, and the one that makes the change a REDUCTION rather than
+  // a removal. Calming the filter row would be a straight loss if it took the
+  // categorisation with it: on an item, the colour answers "what kind is this?"
+  // — on a control, it was only decorating the control.
+  const label = /\.cal-kind\.category-label \{([^}]*)\}/.exec(CSS);
+  assert.ok(label && /color: var\(--kind-color/.test(label[1]),
+    'the category label on a chip must still carry its kind colour');
+  const row = /\.cal-row\[data-kind\] \{([^}]*)\}/.exec(CSS);
+  assert.ok(row && /border-left: 3px solid var\(--kind-color/.test(row[1]),
+    'the list row must still carry its kind colour');
+});
+
+test('off is said in ink and shape — dashed frame, muted label, hollow dot', () => {
+  const off = /\.filter-chip:not\(\.on\) \{([^}]*)\}/.exec(CSS);
+  assert.ok(off && /border-style: dashed/.test(off[1]), 'an unselected chip needs a dashed frame');
+  const dotOff = /\.filter-chip:not\(\.on\)::before \{([^}]*)\}/.exec(CSS);
+  assert.ok(dotOff, 'the dot must change when the chip is off');
+  assert.match(dotOff[1], /background: transparent/, 'the dot goes hollow');
+  assert.match(dotOff[1], /box-shadow: inset 0 0 0 2px var\(--kind-color/,
+    'the hollow dot keeps the kind visible as a ring — the same idiom as .class-chip.off');
+  // spec 3.6: never opacity. Fading a control on cream walks it into the paper.
+  for (const block of [off[1], dotOff[1]]) {
+    assert.doesNotMatch(block, /opacity/, 'state must never be carried by opacity');
+  }
+});
+
+test('the AI chip keeps its dashed provenance frame in BOTH states', () => {
+  // Dashed means "mined by AI" there, so it cannot also mean "off" — which is
+  // why that chip gained a dot: its on/off is carried by the label's ink and
+  // the dot's fill instead.
+  assert.match(CSS, /\.filter-chip\.ai-filter \{ border-style: dashed; \}/,
+    'the AI chip must be dashed whether or not it is selected');
+  const onRule = /\.filter-chip\[data-kind-filter\]\.on,\s*\n\.filter-chip\.ai-filter\.on \{/.test(CSS);
+  assert.ok(onRule, 'the AI chip must share the neutral selected treatment');
+  // and the dot must reach it: the rule is on .filter-chip, not [data-kind-filter]
+  assert.match(CSS, /\.filter-chip::before \{/,
+    'the dot rule must cover the AI chip too, or its on/off rests on ink alone');
+});

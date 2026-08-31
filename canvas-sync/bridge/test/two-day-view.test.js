@@ -188,8 +188,16 @@ test('the switch says on or off in SHAPE and ink, never opacity', () => {
   assert.ok(on, 'nothing moves the knob when the switch is on');
   assert.match(on[1], /transform: translateX\(\d+px\)/, 'the knob must MOVE — shape, not colour alone');
   const track = /\.switch-btn\.active \.switch-track \{([^}]*)\}/.exec(CSS);
-  assert.ok(track && /background: var\(--accent\)/.test(track[1]),
+  assert.ok(track, 'nothing fills the track when the switch is on');
+  assert.match(track[1], /background: var\(--(muted|edge|ink|fill)\)/,
     'the track must fill, so the state does not rest on knob position alone');
+  // The user called the first version "ugly", and measured they were right:
+  // --accent put 364px2 of forest green at 6.82:1 against the paper in a
+  // toolbar whose other controls say "on" at 1.07:1 — the only HUE in a row of
+  // neutrals. A switch has to fill to read as on, so the answer is no COLOUR,
+  // not less fill.
+  assert.doesNotMatch(track[1], /--accent/,
+    'the accent fill is back — it was the loudest thing in the toolbar');
   // and never the thing the spec forbids
   for (const rule of [on[1], track[1]]) {
     assert.doesNotMatch(rule, /opacity/, 'state must never be carried by opacity');
