@@ -1,6 +1,6 @@
 {
   "name": "canvas-sync-bridge",
-  "version": "1.8.20",
+  "version": "1.8.22",
   "description": "Local bridge server for Canvas Sync",
   "main": "server.js",
   "type": "module",
