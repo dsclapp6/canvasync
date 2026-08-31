@@ -72,7 +72,15 @@ passes, while queueing every class behind every other), and the slice-A site-8
 tests of the same shape. Sameness + discrimination + shape, always. Corollary
 from the same campaign: mutation testing's value is that it tells you which of
 your tests are load-bearing — including the ones it cannot close, which get
-documented instead of faked.
+documented instead of faked. Second corollary (from the 2-day geometry
+loop): the rule applies to the INSTRUMENT too. A drill that can only report
+"found nothing" fails the same way a constant-satisfied test does — an
+affordance-detection regex that misses the real button's wording reports a
+dead state that isn't there; a mutation run against an unverified baseline
+reports bites that aren't real; an audit racing a debounced re-render reports
+defects already fixed. Verify the check finds a planted positive, verify the
+baseline is green before mutating, and agree with the code on when the DOM is
+settled before measuring it.
 
 ## Follow-up items from the post-ship lock review (Codex F1/F2/F5, fixed v1.8.11)
 
