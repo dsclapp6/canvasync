@@ -15,6 +15,8 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
+const { localPythonStatus } = require('./local-python.js');
+
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BRIDGE_URL = 'http://127.0.0.1:3847';
 
@@ -137,20 +139,19 @@ async function ensureBridge() {
 
 const DEFAULT_LOCAL_MODEL = 'mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit';
 
+// The python /api/ask and every pipeline stage would actually spawn, plus
+// whether it is there — resolved by the shared rules in local-python.js rather
+// than by a fallback chain of this file's own. The chain that used to live
+// here reported the first python that EXISTED, so a mistyped Settings value
+// was answered for by Homebrew's python and the card went green while every
+// question failed. See local-python.js for the full account.
 function localPython() {
-  const fromSettings = (() => {
-    try {
-      const s = JSON.parse(fs.readFileSync(path.join(dataRoot(), 'settings.json'), 'utf8'));
-      return s?.env?.CSYNC_LOCAL_PYTHON;
-    } catch { return null; }
-  })();
-  const candidates = [
-    fromSettings,
-    path.join(os.homedir(), 'mlx-env', 'bin', 'python'),
-    '/usr/local/bin/python3',
-    '/opt/homebrew/bin/python3',
-  ].filter(Boolean);
-  return candidates.find(p => fs.existsSync(p)) ?? null;
+  let settingsEnv = null;
+  try {
+    settingsEnv = JSON.parse(
+      fs.readFileSync(path.join(dataRoot(), 'settings.json'), 'utf8'))?.env ?? null;
+  } catch { /* no settings.json yet — env or the default answers */ }
+  return localPythonStatus({ settingsEnv });
 }
 
 function hfCacheDirFor(modelId) {
@@ -290,15 +291,21 @@ ipcMain.handle('check-local-model', (e, modelId) => {
   const dir = hfCacheDirFor(id);
   const present = fs.existsSync(dir) &&
     fs.readdirSync(dir, { recursive: true }).some(n => String(n).endsWith('.safetensors'));
-  return { present, pythonOk: !!py, python: py, sizeGb: present ? dirSizeGb(dir) : null };
+  // `python` is the configured path whether or not it is there: the card can
+  // only tell the user what to fix if it knows what was looked for.
+  return { present, pythonOk: py.ok, python: py.python, sizeGb: present ? dirSizeGb(dir) : null };
 });
 
 ipcMain.handle('download-local-model', (e, modelId) => {
   const id = modelId || DEFAULT_LOCAL_MODEL;
   const py = localPython();
-  if (!py) return { ok: false, error: 'no MLX python environment found' };
+  if (!py.ok) {
+    return { ok: false,
+      error: `no python at ${py.python} — set "Local python" in Settings to your `
+        + `MLX venv's bin/python, or create that venv (see README)` };
+  }
   return new Promise((resolve) => {
-    const child = spawn(py, ['-c',
+    const child = spawn(py.python, ['-c',
       `from huggingface_hub import snapshot_download; snapshot_download(${JSON.stringify(id)})`],
       { stdio: 'ignore' });
     child.on('exit', (code) => resolve(code === 0

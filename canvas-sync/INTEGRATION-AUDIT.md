@@ -182,12 +182,14 @@ three-way state — `absent` still passes through so a fresh machine's default
 install works; only `not-a-venv` refuses), and POST /setup 409s a non-venv
 python rather than installing into a system prefix. Deleting the three
 routes as dead surface is recorded as a USER decision (falsifies VERIFY.md
-row 30). OPEN follow-up: app/main.js localPython() vs _util.js
-resolveLocalPython() answer one question by different rules — after v1.8.17
-a BROKEN configured python fails Ask by name while the IPC card reports
-pythonOk from its fallback chain. Convergence belongs in app/main.js
-(deliberately NOT in resolveLocalPython, whose honor-the-setting semantics
-is I14's point). app/ is unheld; route deliberately.
+row 30). Follow-up RESOLVED v1.8.21
+(canvasync-fc): app/local-python.js is the shared resolver; main.js
+delegates, the card names the CONFIGURED path whether or not it exists, and
+silent substitution of a fallback python is gone (anti-substitution test
+found vacuous on first write — the stub made the bug impossible — and
+rewritten to the bug's real shape). Remaining one-liner for the app.js
+chain: the card's failure copy still says "No MLX python found" without
+naming the path the IPC response now carries.
 
 ### I14 [medium] /api/ask ignores the CSYNC_LOCAL_PYTHON setting: localInvoke spawns the env-only LOCAL_PYTHON constant, so a custom python configured in Settings works for the pipeline but permanently breaks Ask
 
