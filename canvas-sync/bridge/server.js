@@ -40,7 +40,7 @@ import { canvasItemUrl, canvasSubmitUrl } from '../canvas-links.js';
 import { tasksForClass } from '../canvas-tasks.js';
 import { readingsWithScheduleFloor } from '../reading-index.js';
 import {
-  modelLockStatus, cliProviderStatuses, resolveAIProvider,
+  modelLockStatus, cliProviderStatuses, resolveAIProvider, resolveLocalPython,
 } from '../scripts/_util.js';
 import { DEFAULT_PALETTE, COLORS_FILE, resolveColors, applyColorPatch } from '../class-colors.js';
 import { countMeetings } from '../scripts/cal-meetings.js';
@@ -330,6 +330,68 @@ function logRequest(req, res, courseId) {
     courseId ? `courseId=${courseId}` : '',
   ].filter(Boolean).join(' ');
   console.log(line);
+}
+
+// --- Which environment the local-model routes are talking about ------------
+//
+// setup-local-model.sh has exactly ONE knob for where the MLX python lives —
+// `VENV="${CSYNC_LOCAL_VENV:-$HOME/mlx-env}"` (:29) — and every python
+// reference in it is "$VENV/bin/python". Settings offers a python PATH
+// (CSYNC_LOCAL_PYTHON) and no venv field, and the script has no concept of a
+// python path, so forwarding that variable would be a null fix: the venv root
+// has to be DERIVED, or these routes describe a different environment than the
+// one /api/ask and the pipeline actually run (INTEGRATION-AUDIT.md I14).
+
+/**
+ * The venv root a configured python belongs to, from the PATH SHAPE alone —
+ * no disk access, so it stays a pure function. Null when the shape cannot
+ * support the claim.
+ */
+export function venvRootForPython(pythonPath) {
+  if (typeof pythonPath !== 'string') return null;
+  const p = pythonPath.trim();
+  // A bare `python3` is whatever PATH resolves to and belongs to no venv.
+  if (!p || !path.isAbsolute(p)) return null;
+  const bin = path.dirname(p);
+  // The script only ever runs "$VENV/bin/python", so a python that does not
+  // live in a bin/ directory cannot be described by a venv root at all.
+  if (path.basename(bin) !== 'bin') return null;
+  const root = path.dirname(bin);
+  // "/bin/python" would claim the filesystem root as a venv.
+  if (root === path.dirname(root)) return null;
+  return root;
+}
+
+/**
+ * The same question with the one proof that separates a venv from a directory
+ * that merely contains a python: pyvenv.cfg, which `python -m venv` writes and
+ * nothing else does.
+ *
+ * Three outcomes, and the middle one is why this is not a one-line check:
+ *   venv        pyvenv.cfg is there. Pass it; --check describes the real env.
+ *   absent      nothing at that path YET. Pass it anyway — creating it is
+ *               exactly what setup is for, and refusing here would break the
+ *               default ~/mlx-env on a fresh machine, the one case these
+ *               routes were built for.
+ *   not-a-venv  a real directory that `python -m venv` did not make, i.e. a
+ *               system prefix like /opt/homebrew from a perfectly reasonable
+ *               /opt/homebrew/bin/python3.12. Deriving from it would point
+ *               --check at a different python than Settings names and aim
+ *               `python -m venv` at a prefix the user never offered up.
+ */
+export async function localVenvState(pythonPath) {
+  const root = venvRootForPython(pythonPath);
+  if (!root) return { venv: null, state: 'unusable-path', root: null };
+  try {
+    await fs.access(path.join(root, 'pyvenv.cfg'));
+    return { venv: root, state: 'venv', root };
+  } catch { /* either not a venv, or not created yet — the next check decides */ }
+  try {
+    await fs.access(root);
+  } catch {
+    return { venv: root, state: 'absent', root };
+  }
+  return { venv: null, state: 'not-a-venv', root };
 }
 
 // --- App factory (exported so tests can import without auto-starting) ---
@@ -1877,8 +1939,13 @@ export function buildApp(config) {
 
   dashRouter.get('/local-model', async (req, res) => {
     const tier = req.query.tier === 'light' ? 'light' : 'standard';
+    // Judge the python Settings actually names. With nothing derivable we pass
+    // nothing and the script keeps its own ~/mlx-env default — the same answer
+    // as before, rather than a guess.
+    const { venv } = await localVenvState(await resolveLocalPython());
     const child = spawn('bash', [SETUP_SCRIPT, '--check', '--tier', tier], {
-      cwd: REPO_ROOT, env: { ...process.env },
+      cwd: REPO_ROOT,
+      env: { ...process.env, ...(venv ? { CSYNC_LOCAL_VENV: venv } : {}) },
     });
     let out = '';
     child.stdout.on('data', d => { out += d; });
@@ -1904,11 +1971,30 @@ export function buildApp(config) {
   dashRouter.post('/local-model/setup', disabledCheck, async (req, res) => {
     if (modelSetup.running) return res.status(409).json({ error: 'setup already running', ...modelSetup });
     const tier = req.body?.tier === 'light' ? 'light' : 'standard';
+    // Refuse rather than install into somewhere nothing will open. The script
+    // creates and fills "$VENV", so when the configured python is not a venv's
+    // python there is no honest $VENV to hand it: it would either judge a
+    // different python than Settings names, or run `python -m venv` against a
+    // system prefix. Both end with tens of GB somewhere /api/ask never looks.
+    const python = await resolveLocalPython();
+    const { venv, state, root } = await localVenvState(python);
+    if (!venv) {
+      return res.status(409).json({
+        error: state === 'not-a-venv'
+          ? `${root} exists but is not a virtual environment, so setup cannot manage it`
+          : `${python} is not a virtual environment's python, so setup cannot manage it`,
+        // The refusal names both ways out, per the no-dead-states rule.
+        detail: `Settings' local python is ${python}. Point it at a venv's `
+          + `bin/python and run setup again, or install mlx-lm into that python `
+          + `yourself — Ask and the pipeline use it either way.`,
+        python, state,
+      });
+    }
     try {
       await fs.mkdir(path.join(syncHome(), 'logs'), { recursive: true });
       const fh = await fs.open(setupLogPath(), 'w');
       const child = spawn('bash', [SETUP_SCRIPT, '--tier', tier], {
-        cwd: REPO_ROOT, env: { ...process.env },
+        cwd: REPO_ROOT, env: { ...process.env, CSYNC_LOCAL_VENV: venv },
         stdio: ['ignore', fh.fd, fh.fd],
         detached: false,
       });

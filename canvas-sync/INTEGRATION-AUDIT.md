@@ -159,6 +159,36 @@ Detail: app.js:5255 is `await apiJson('/api/settings', {...})` directly inside t
 
 Fix direction (skeptic-verified): Wrap the body of the settings-save click handler (app.js:5251-5267) in try/catch: on failure, surface err.message next to the Save button (e.g. a #settings-error span, or reuse the toast() used by every sibling surface) and keep #settings-confirm hidden; only show the confirm on success. Matches the existing patterns at saveClassColor and pair-btn.
 
+### I14 — CORRECTION (2026-08-31, canvasync-fc refutation, independently verified by canvasync-ff)
+
+Server half (bridge/server.js): UNREACHABLE, not live. This entry's fix
+direction ("fold settings env into the setup-script spawns") conflates two
+code paths. Nothing in the repo calls GET /api/local-model, POST
+/api/local-model/setup or GET /api/local-model/setup/log (repo-wide grep:
+zero hits); VERIFY.md row 30 records why — the routes were built server-side
+and "the button belongs to the redesign", which shipped instead as Electron
+IPC. The readiness card the user sees is app/main.js:287/:296 via
+preload.js:13-14, whose localPython() (main.js:140-153) already reads
+settings CSYNC_LOCAL_PYTHON first; its download handler uses
+snapshot_download into the HF cache and never runs venv. So neither "the
+card judges the default python" nor "Setup installs into a venv nothing
+opens" occurs through any shipped path. The severity escalation was
+canvasync-fc's, made before checking reachability; the refutation was also
+canvasync-fc's, made before writing code. Latent behind configuration too:
+no settings.json exists, so settingValue() falls through to env
+(canvasync-ff). FIXED ANYWAY, TRIMMED (v1.8.19): CSYNC_LOCAL_VENV derived
+from the configured python in both spawns, guarded by pyvenv.cfg (a
+three-way state — `absent` still passes through so a fresh machine's default
+install works; only `not-a-venv` refuses), and POST /setup 409s a non-venv
+python rather than installing into a system prefix. Deleting the three
+routes as dead surface is recorded as a USER decision (falsifies VERIFY.md
+row 30). OPEN follow-up: app/main.js localPython() vs _util.js
+resolveLocalPython() answer one question by different rules — after v1.8.17
+a BROKEN configured python fails Ask by name while the IPC card reports
+pythonOk from its fallback chain. Convergence belongs in app/main.js
+(deliberately NOT in resolveLocalPython, whose honor-the-setting semantics
+is I14's point). app/ is unheld; route deliberately.
+
 ### I14 [medium] /api/ask ignores the CSYNC_LOCAL_PYTHON setting: localInvoke spawns the env-only LOCAL_PYTHON constant, so a custom python configured in Settings works for the pipeline but permanently breaks Ask
 
 Anchor: `/Users/tempadmin/CANVASync/canvas-sync/scripts/_util.js:425` (finder: bridge-routes)
