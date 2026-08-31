@@ -865,11 +865,22 @@ function renderHome() {
     const when = new Date(`${o.date}T${o.time ?? '12:00'}`);
     const day = Number.isNaN(when.getTime()) ? o.date
       : when.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    // The title CLICKS IN to the item, not to the class that contains it.
+    //
+    // Reused rather than re-derived: calItemModel already resolves an op to
+    // what it can honestly offer — a Canvas-backed deadline, a checkpoint that
+    // clicks in to the assignment it preps for (spec 2.12), an AI-added item
+    // with no Canvas page at all — and calTitleHtml already renders the right
+    // control for each, or plain text when there is none. That is the same
+    // resolution the calendar rows and chips use, so Coming up cannot drift
+    // from them, and it goes through the op's own url/origin rather than
+    // matching on titles.
+    const m = calItemModel(o);
     return `<li class="hu-row" data-folder="${esc(cls?.folder ?? '')}"
              style="--class-color:${classColor(o.class)}">
         <span class="hu-day">${esc(day)}</span>
         ${dueRelHtml(daysUntil(o.date), 'hu-rel')}
-        <span class="hu-title">${esc(o.title)}</span>
+        <span class="hu-title">${calTitleHtml(o, m, o.title)}</span>
         <span class="hu-kind">${esc(calKindLabel(o.kind))}</span>
       </li>`;
   }).join('');
@@ -888,6 +899,14 @@ function wireHome() {
     openClass(card.dataset.folder);
   });
   $('home-up-list').addEventListener('click', ev => {
+    // A control inside the row owns its own click: [data-open-assignment] is
+    // handled by the document-level listener in wireAssignment, and a Canvas
+    // link is an ordinary <a>. Falling through would open the CLASS page
+    // behind whichever of those the user actually clicked.
+    if (ev.target.closest('a, button')) return;
+    // The rest of the row still goes to the class. That is the honest fallback
+    // for a row whose item has no page of its own — an AI-added reading, say —
+    // and it is what stops any reachable part of the row being a dead click.
     const row = ev.target.closest('.hu-row');
     if (row?.dataset.folder) openClass(row.dataset.folder);
   });
