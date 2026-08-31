@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { repairMinedJson, validateMined } from '../mine-assignments.js';
+import { sameOrStronger } from '../model-profiles.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MINING_PROMPT_PATH = join(__dirname, '..', 'prompts', 'assignment-mining.md');
@@ -137,4 +140,90 @@ test('assignment JSON repair salvages a truncated repair response', async () => 
   assert.deepEqual(repair.parsed, {
     items: [{ id: 'kept', title: 'Complete' }],
   });
+});
+
+// --- Same-or-stronger repair pinning ----------------------------------------
+//
+// The mining repair is the worst case of the pattern: the longest JSON in the
+// pipeline, and a repair prompt that carries the broken output and the schema
+// but never the corpus. A backend weaker than the one that just failed does
+// not repair that — it invents it.
+
+test('the mining repair is pinned to the tier that answered the first attempt', async () => {
+  const promptTemplate = await readFile(MINING_PROMPT_PATH, 'utf8');
+  let options;
+  await repairMinedJson('{broken', promptTemplate, async (_prompt, invokeOptions) => {
+    options = invokeOptions;
+    return '{"items":[]}';
+  }, sameOrStronger({ backend: 'local', tier: 'standard', profile: 'local-standard' }));
+  assert.deepEqual(options.needs, { tier: 'standard' });
+  assert.equal(options.maxTokens, 16384, 'the pin must not disturb the v1.8.6 output budget');
+});
+
+test('a mining attempt that never answered pins nothing at all', async () => {
+  const promptTemplate = await readFile(MINING_PROMPT_PATH, 'utf8');
+  let options;
+  await repairMinedJson('{broken', promptTemplate, async (_prompt, invokeOptions) => {
+    options = invokeOptions;
+    return '{"items":[]}';
+  }, sameOrStronger({}));
+  assert.ok(!('needs' in options), `expected no pin, got ${JSON.stringify(options.needs)}`);
+});
+
+test('a mining repair cannot fall to a weaker backend than the attempt it repairs', async () => {
+  // End to end through the real main(), with the failover the pin exists for:
+  // the claude CLI is signed in for the first attempt and signed out by the
+  // time the repair asks, leaving only the local model. Pinned to `strong`,
+  // the repair refuses, and mining fails with its .ERROR sidecar instead of
+  // writing an item list reconstructed by a 4-bit model.
+  const tmpDir = await mkdtemp(join(tmpdir(), 'ccsync-mine-pin-'));
+  const classDir = join(tmpDir, 'class');
+  await mkdir(classDir, { recursive: true });
+  await writeFile(join(classDir, 'assignments.json'), '[]', 'utf8');
+
+  const bin = join(tmpDir, 'bin');
+  await mkdir(bin, { recursive: true });
+  const claude = join(bin, 'claude');
+  await writeFile(claude, `#!/bin/sh
+STATE=${JSON.stringify(join(bin, 'status-calls'))}
+if [ "$1 $2" = "auth status" ]; then
+  n=$(cat "$STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$STATE"
+  if [ "$n" -eq 1 ]; then printf '{"loggedIn":true}\\n'; exit 0; fi
+  printf '{"loggedIn":false}\\n'; exit 1
+fi
+cat >/dev/null
+printf '{broken\\n'
+`, { mode: 0o755 });
+  await writeFile(join(bin, 'codex'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const localPy = join(bin, 'local-python');
+  await writeFile(localPy,
+    '#!/bin/sh\ncat >/dev/null\nprintf \'{"items":[{"id":"invented","title":"RECONSTRUCTED BY LOCAL"}]}\\n\'\n',
+    { mode: 0o755 });
+
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(__dirname, '..', 'mine-assignments.js'), classDir], {
+      env: {
+        ...process.env,
+        CLAUDE_SKIP: '',
+        CANVAS_SYNC_HOME: tmpDir,
+        CSYNC_AI_BACKEND: 'auto',
+        CSYNC_CLAUDE_BIN: claude,
+        CSYNC_CODEX_BIN: join(bin, 'codex'),
+        CSYNC_LOCAL_PYTHON: localPy,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', d => { stderr += d; });
+    child.stdout.on('data', () => {});
+    child.on('close', code => resolve({ code, stderr }));
+    child.on('error', reject);
+  });
+
+  assert.equal(result.code, 1, `mining must fail rather than accept a weaker repair. stderr: ${result.stderr}`);
+  assert.match(result.stderr, /tier strong/, 'the failure must name the tier that could not be met');
+  assert.match(await readFile(join(classDir, 'assignments_mined.json.ERROR'), 'utf8'), /\{broken/);
+  await assert.rejects(readFile(join(classDir, 'assignments_mined.json'), 'utf8'),
+    'nothing invented by the weaker backend may be written');
+  await rm(tmpDir, { recursive: true, force: true });
 });

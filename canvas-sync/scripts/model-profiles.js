@@ -243,3 +243,32 @@ export function tierUnavailable(needs, considered) {
     { needs, considered },
   );
 }
+
+/**
+ * The `needs` a follow-up call must carry so it cannot land on a WEAKER
+ * backend than the one that already answered.
+ *
+ * For the JSON-repair calls this is the whole ballgame. A repair prompt is
+ * pure reconstruction — it carries the broken output and the schema, not the
+ * source syllabus or corpus — which makes it the highest hallucination
+ * surface in the pipeline. Under auto failover the backend can change between
+ * the first attempt and the repair (a CLI's auth expires, a status probe
+ * flaps), and a repair answered by a weaker model than the one that just
+ * failed is strictly worse than no repair at all: it returns confident,
+ * well-formed, invented content instead of an error the caller can act on.
+ *
+ * `info` is aiInvoke's out-param. It is EMPTY when the first attempt threw
+ * rather than answering, and then there is nothing to pin to — this returns
+ * null, leaving routing exactly as it is today rather than inventing a floor
+ * that would refuse a repair currently attempted.
+ *
+ * Note what a tier pin does and does not promise: it constrains STRENGTH, not
+ * identity. Claude and Codex are both `strong`, so a repair may legitimately
+ * move between them; that is the doc's contract ("same-or-stronger"), not a
+ * gap. And a `light` pin is satisfied by every backend, so pinning the weakest
+ * tier is a no-op by construction — correctly, since nothing is weaker.
+ */
+export function sameOrStronger(info) {
+  const tier = info?.tier;
+  return tier && TIER_RANK[tier] ? { tier } : null;
+}

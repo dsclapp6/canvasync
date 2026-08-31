@@ -11,7 +11,7 @@ import { mkdtemp, writeFile, chmod, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  profileFor, satisfies, assertNeeds, tierAtLeast, PROFILE_KEYS,
+  profileFor, profileByKey, satisfies, assertNeeds, tierAtLeast, sameOrStronger, PROFILE_KEYS,
 } from '../model-profiles.js';
 import { aiInvoke, ModelTierUnavailable } from '../_util.js';
 
@@ -19,6 +19,8 @@ const STANDARD_ID = 'mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit';
 const LIGHT_ID = 'mlx-community/Qwen3-4B-Instruct-2507-4bit';
 
 let root, marker;
+// A path guaranteed not to exist — see beforeEach.
+let MISSING_BIN;
 const saved = {};
 const KEYS = [
   'CANVAS_SYNC_HOME', 'CSYNC_AI_BACKEND', 'CSYNC_CLAUDE_BIN', 'CSYNC_CODEX_BIN',
@@ -52,6 +54,7 @@ async function localRan() {
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'csync-profiles-'));
   marker = join(root, 'local-ran');
+  MISSING_BIN = join(root, 'no-such-cli');
   for (const key of KEYS) saved[key] = process.env[key];
   process.env.CANVAS_SYNC_HOME = root;
 
@@ -65,8 +68,12 @@ before(async () => {
 
 beforeEach(async () => {
   await rm(marker, { force: true });
-  delete process.env.CSYNC_CLAUDE_BIN;
-  delete process.env.CSYNC_CODEX_BIN;
+  // Point at a path that does not exist rather than DELETING these: with the
+  // override unset, providerBin() falls back to ~/.local/bin, /opt/homebrew
+  // and PATH — so a test that forgets to install a fake would spawn the
+  // developer's REAL claude or codex CLI and make a live model call.
+  process.env.CSYNC_CLAUDE_BIN = MISSING_BIN;
+  process.env.CSYNC_CODEX_BIN = MISSING_BIN;
   delete process.env.CSYNC_CLAUDE_MODEL;
   delete process.env.CSYNC_CODEX_MODEL;
   process.env.CSYNC_LOCAL_MODEL = STANDARD_ID;
@@ -239,5 +246,53 @@ test('without needs, routing is unchanged — auto still ends at the local model
 test('a bad info out-param is rejected before anything is invoked', async () => {
   process.env.CSYNC_AI_BACKEND = 'local';
   await assert.rejects(aiInvoke('x', { info: 'please fill me' }), /info must be an object/);
+  assert.equal(await localRan(), false);
+});
+
+// --- Pinning a follow-up call to the backend that already answered -----------
+
+test('sameOrStronger turns a filled info into a tier pin', () => {
+  assert.deepEqual(sameOrStronger({ backend: 'codex', tier: 'strong', profile: 'codex-cli' }), { tier: 'strong' });
+  assert.deepEqual(sameOrStronger({ backend: 'local', tier: 'standard' }), { tier: 'standard' });
+});
+
+test('sameOrStronger pins nothing when there is nothing to pin to', () => {
+  // An info left untouched by a throw, and the degenerate inputs around it.
+  assert.equal(sameOrStronger({}), null);
+  assert.equal(sameOrStronger(null), null);
+  assert.equal(sameOrStronger(undefined), null);
+  assert.equal(sameOrStronger({ backend: 'claude' }), null, 'a backend without a tier is not a floor');
+  assert.equal(sameOrStronger({ tier: 'titanium' }), null, 'an unrecognised tier is not a floor either');
+});
+
+test('a light pin is satisfied by everything, which is the correct no-op', () => {
+  // Nothing is weaker than light, so pinning it constrains nothing. Worth
+  // asserting so the no-op is a decision on the record rather than a surprise.
+  const pin = sameOrStronger({ tier: 'light' });
+  assert.deepEqual(pin, { tier: 'light' });
+  for (const key of PROFILE_KEYS) {
+    assert.equal(satisfies(profileByKey(key), pin).ok, true, `${key} must satisfy a light pin`);
+  }
+});
+
+test('a real aiInvoke round-trip produces a usable pin', async () => {
+  // The two halves of this feature meeting: info comes back from a live call,
+  // and feeds straight into the needs of the next one.
+  process.env.CSYNC_AI_BACKEND = 'auto';
+  process.env.CSYNC_CLAUDE_BIN = await fakeCli('claude-out-pin', 1, 'CLAUDE');
+  process.env.CSYNC_CODEX_BIN = await fakeCli('codex-in-pin', 0, 'FIRST ANSWER');
+
+  const info = {};
+  assert.equal(await aiInvoke('first attempt', { info }), 'FIRST ANSWER');
+  const pin = sameOrStronger(info);
+  assert.deepEqual(pin, { tier: 'strong' });
+
+  // Now the CLI is signed out and only the local model is left: the pin
+  // refuses it. Signed out via a fake, never by unsetting the override.
+  process.env.CSYNC_CODEX_BIN = await fakeCli('codex-out-pin', 1, 'CODEX');
+  await assert.rejects(
+    aiInvoke('repair', { needs: pin }),
+    err => err.code === 'EMODELTIER',
+  );
   assert.equal(await localRan(), false);
 });

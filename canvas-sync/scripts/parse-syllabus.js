@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { load as cheerioLoad } from 'cheerio';
 import { aiInvoke, sha256File, atomicWriteJson, readJsonSafe } from './_util.js';
 import { outputSchemaFromPrompt, salvageFromResponse } from './json-repair.js';
+import { sameOrStronger } from './model-profiles.js';
 import {
   reconcileSyllabusTextbooks,
   TEXTBOOK_SCHEMA_VERSION,
@@ -158,19 +159,28 @@ function extractJsonFromResponse(raw) {
   return trimmed;
 }
 
-async function parseWithClaude(text, promptTemplate, sourceFile, sourceHash, lowConfidence) {
+async function parseWithClaude(text, promptTemplate, sourceFile, sourceHash, lowConfidence, info = null) {
   const prompt = promptTemplate.replace('<SYLLABUS_TEXT>', () => text);
   // The terminal provider uses its CLI default unless Settings pins a model. maxTokens
   // only affects the local backend, where the default 8192 is not enough for
   // a long syllabus schedule — the response truncates mid-JSON.
-  const raw = await aiInvoke(prompt, { timeoutMs: 300000, maxTokens: 16384 });
+  // `info` records WHICH backend answered, so a repair can be pinned to it or
+  // stronger. It stays untouched if this throws, which is what makes "we do
+  // not know what answered" distinguishable from "nothing answered".
+  const raw = await aiInvoke(prompt, { timeoutMs: 300000, maxTokens: 16384, ...(info ? { info } : {}) });
   return raw;
 }
 
-export async function repairJson(brokenRaw, promptTemplate, invoke = aiInvoke) {
+/**
+ * `needs` pins the repair to a backend at least as strong as the one that
+ * produced the broken output — see sameOrStronger() for why a weaker repair is
+ * worse than none. Null (the default, and what a first attempt that never
+ * answered yields) sends no constraint, leaving routing untouched.
+ */
+export async function repairJson(brokenRaw, promptTemplate, invoke = aiInvoke, needs = null) {
   const schema = outputSchemaFromPrompt(promptTemplate);
   const repairPrompt = `The previous response was not valid JSON. Return valid JSON only, matching this schema exactly:\n\n${schema}\n\nPrevious response:\n${brokenRaw}`;
-  const raw = await invoke(repairPrompt, { timeoutMs: 60000, maxTokens: 16384 });
+  const raw = await invoke(repairPrompt, { timeoutMs: 60000, maxTokens: 16384, ...(needs ? { needs } : {}) });
   try {
     return { raw, parsed: JSON.parse(extractJsonFromResponse(raw)), truncated: false, error: null };
   } catch (error) {
@@ -336,9 +346,11 @@ async function main() {
   let parsed = null;
   let rawResponse = null;
   let truncated = false;
+  // Filled by aiInvoke only if the attempt SUCCEEDS; stays empty if it threw.
+  const firstAttempt = {};
 
   try {
-    rawResponse = await parseWithClaude(extracted.text, promptTemplate, sourceFile, sourceHash, extracted.lowConfidence);
+    rawResponse = await parseWithClaude(extracted.text, promptTemplate, sourceFile, sourceHash, extracted.lowConfidence, firstAttempt);
     const jsonStr = extractJsonFromResponse(rawResponse);
     parsed = JSON.parse(jsonStr);
   } catch (err) {
@@ -356,7 +368,7 @@ async function main() {
     let repairErr = null;
     if (!parsed) {
       try {
-        const repair = await repairJson(rawResponse || '', promptTemplate);
+        const repair = await repairJson(rawResponse || '', promptTemplate, aiInvoke, sameOrStronger(firstAttempt));
         rawResponse = repair.raw;
         if (!repair.parsed && repair.error) throw repair.error;
         parsed = repair.parsed;

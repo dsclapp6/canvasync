@@ -17,6 +17,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { aiInvoke, readJsonSafe, atomicWriteJson } from './_util.js';
 import { outputSchemaFromPrompt, salvageFromResponse } from './json-repair.js';
+import { sameOrStronger } from './model-profiles.js';
 import { indexClassReadings } from './index-readings.js';
 import { materialSources, resolveMaterial } from '../bridge/public/material-links.js';
 import { referencedTextbooks, textbooksFromSyllabus } from '../bridge/textbooks.js';
@@ -83,10 +84,16 @@ function extractJsonFromResponse(raw) {
   return trimmed;
 }
 
-export async function repairMinedJson(brokenRaw, promptTemplate, invoke = aiInvoke) {
+/**
+ * `needs` pins the repair to a backend at least as strong as the one that
+ * produced the broken output — see sameOrStronger(). This is the longest JSON
+ * in the pipeline and the repair prompt does not carry the corpus, so a weaker
+ * model here reconstructs rather than repairs. Null sends no constraint.
+ */
+export async function repairMinedJson(brokenRaw, promptTemplate, invoke = aiInvoke, needs = null) {
   const schema = outputSchemaFromPrompt(promptTemplate);
   const repairPrompt = `The previous response was not valid JSON. Return the same content as VALID JSON only, matching this schema exactly:\n\n${schema}\n\nPrevious response:\n${brokenRaw}`;
-  const raw = await invoke(repairPrompt, { timeoutMs: 300000, maxTokens: 16384 });
+  const raw = await invoke(repairPrompt, { timeoutMs: 300000, maxTokens: 16384, ...(needs ? { needs } : {}) });
   try {
     return { parsed: JSON.parse(extractJsonFromResponse(raw)), truncated: false };
   } catch (error) {
@@ -522,13 +529,15 @@ async function main() {
   let rawResponse = null;
   let parsed = null;
   let truncated = false;
+  // Filled by aiInvoke only if the attempt SUCCEEDS; stays empty if it threw.
+  const firstAttempt = {};
   try {
-    rawResponse = await aiInvoke(prompt, { timeoutMs: 900000, maxTokens: 16384 });
+    rawResponse = await aiInvoke(prompt, { timeoutMs: 900000, maxTokens: 16384, info: firstAttempt });
     parsed = JSON.parse(extractJsonFromResponse(rawResponse));
   } catch (err) {
     process.stderr.write(`Mining attempt failed: ${err.message}\n`);
     try {
-      const repair = await repairMinedJson(rawResponse ?? '', promptTemplate);
+      const repair = await repairMinedJson(rawResponse ?? '', promptTemplate, aiInvoke, sameOrStronger(firstAttempt));
       parsed = repair.parsed;
       if (repair.truncated) {
         truncated = true;
