@@ -13,7 +13,7 @@ import {
   todayIso, weekDays, weekLabel, WEEKDAY_HEADS,
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   timeWindow, hourMarks, layoutDay,
-  partitionDenseSlots,
+  partitionDenseSlots, MIN_BLOCK_MIN,
 } from './cal-grid.js';
 import { nextSelection, isSelected, pruneSelection, isAiItemVisible } from './cal-plan.js';
 import {
@@ -3399,6 +3399,21 @@ const HOUR_PX = 44;
 const ALLDAY_ROW_PX = 20;
 const ALLDAY_PAD_PX = 3;
 
+// The pixel floor is DERIVED from the minutes cal-grid reserves, never a second
+// copy of it: lane assignment and this height are the same fact, and I6 was the
+// two disagreeing — 32px of screen is 44 minutes of clock, so a block grown to
+// it was overlapping a neighbour lane assignment had judged clear.
+const MIN_BLOCK_PX = (MIN_BLOCK_MIN / 60) * HOUR_PX;
+
+// How much block height each title clamp actually needs. The title box starts
+// 21.4px down (padding + the check/kind/time row + the row gap) and every line
+// is 15px, so two lines want 51.4px and three want 66.4px. Measured, not
+// chosen — and the tier that was MISSING is the middle one: `slot-roomy` began
+// at 52px while allowing three lines, so every block in [52, 67) drew a third
+// line it had no room for and the bottom of it was sliced off.
+const SLOT_SNUG_PX = 52;    // 2 lines
+const SLOT_ROOMY_PX = 67;   // 3 lines
+
 /**
  * Week view against a clock.
  *
@@ -3488,12 +3503,15 @@ function renderCalendarWeekTimed(ops) {
       // A deadline is a point, but a 22px one-line strip cannot show its
       // checkbox, kind, time AND title. Give short slots enough room for the
       // two-row card treatment below; the true start still stays on its line.
-      const h = Math.max(y(endMin) - top, 32);
+      const h = Math.max(y(endMin) - top, MIN_BLOCK_PX);
       const w = 100 / lanes;
+      const tier = h < SLOT_SNUG_PX ? 'slot-compact'
+        : h < SLOT_ROOMY_PX ? 'slot-snug'
+        : 'slot-roomy';
       return calChip(op, iso, {
         style: `top:${top}px;height:${h}px;left:${(lane * w).toFixed(3)}%;width:${w.toFixed(3)}%`,
         timed: true,
-        placedClass: `${h < 52 ? 'slot-compact' : 'slot-roomy'}${lanes > 1 ? ' lane-narrow' : ''}`,
+        placedClass: `${tier}${lanes > 1 ? ' lane-narrow' : ''}`,
       });
     }).join('');
     const collisionStacks = stacks.map(({ group, startMin, endMin, lane, lanes }) => {

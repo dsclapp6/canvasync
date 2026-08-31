@@ -13,7 +13,9 @@ import {
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   MAX_SPAN_DAYS,
   minutesOf, opSlot, timeWindow, hourMarks, layoutDay, partitionDenseSlots, DEFAULT_SLOT_MIN,
-} from '../public/cal-grid.js';
+  renderedEnd,
+  MIN_BLOCK_MIN,
+  MAX_LANES} from '../public/cal-grid.js';
 
 // --- ISO in, ISO out, always local --------------------------------------
 
@@ -522,4 +524,87 @@ test('two simultaneous items keep the ordinary side-by-side layout', () => {
   assert.equal(groups.length, 0);
   assert.equal(rest.length, 2);
   assert.deepEqual(rest.map(item => item.lanes), [2, 2]);
+});
+
+// --- Week-view geometry: rendered extent, lane capacity ---------------------
+//
+// These guard the invariant the Week view kept breaking: what is MODELLED and
+// what is DRAWN must be the same fact. Every symptom in the user's screenshot
+// was a version of the two diverging — a block grown past the minutes it
+// claimed, a lane narrower than the chip it holds, a clamp taller than the box.
+
+test('a short block occupies the minutes it is actually drawn for', () => {
+  // opSlot gives a no-end item 30 minutes, but the renderer will not draw a
+  // block shorter than MIN_BLOCK_MIN's worth of pixels. Lane assignment used
+  // the 30 and handed the next item the same lane, which then rendered on top.
+  assert.equal(renderedEnd(600, 630), 600 + MIN_BLOCK_MIN, 'a 30-minute slot claims the floor');
+  assert.equal(renderedEnd(600, 600 + MIN_BLOCK_MIN), 600 + MIN_BLOCK_MIN, 'exactly the floor is unchanged');
+  assert.equal(renderedEnd(600, 780), 780, 'a genuinely long block keeps its own end');
+});
+
+test('a deadline and a later item that would visually overlap get separate lanes', () => {
+  // The I6 shape: 2:00pm no-end deadline (30 modelled minutes, 55 drawn) and a
+  // 2:30 lecture. Modelled they merely touch; drawn, the first covers the
+  // second's title row.
+  const { timed } = layoutDay([
+    { date: '2026-09-10', all_day: false, time: '14:00' },
+    { date: '2026-09-10', all_day: false, time: '14:30', end_time: '15:30' },
+  ]);
+  assert.equal(timed.length, 2);
+  assert.notEqual(timed[0].lane, timed[1].lane, 'a pixel-overlapping pair must not share a lane');
+  assert.equal(timed[0].lanes, 2);
+});
+
+test('items that are genuinely clear of each other still share one lane', () => {
+  // The other half. A floor that made everything overlap would satisfy the test
+  // above while giving every column as many lanes as it has items.
+  const { timed } = layoutDay([
+    { date: '2026-09-10', all_day: false, time: '09:00', end_time: '10:00' },
+    { date: '2026-09-10', all_day: false, time: '13:00', end_time: '14:00' },
+  ]);
+  assert.equal(timed[0].lane, 0);
+  assert.equal(timed[1].lane, 0, 'four hours apart is not a collision');
+  assert.equal(timed[0].lanes, 1);
+});
+
+test('a cluster too narrow to read becomes one stack, whatever its end times', () => {
+  // The exact-slot rule could not see this: four items starting together with
+  // DIFFERENT ends never matched `${startMin}|${endMin}`, so they became four
+  // lanes of ~44px against a chip whose controls measure 84px.
+  const at230 = [
+    { date: '2026-09-10', all_day: false, time: '14:30' },
+    { date: '2026-09-10', all_day: false, time: '14:30', end_time: '15:00' },
+    { date: '2026-09-10', all_day: false, time: '14:30', end_time: '15:30' },
+    { date: '2026-09-10', all_day: false, time: '14:30', end_time: '16:00' },
+  ];
+  const { timed } = layoutDay(at230);
+  assert.ok(timed[0].lanes > MAX_LANES, `precondition: ${timed[0].lanes} lanes needed`);
+  const { groups, rest } = partitionDenseSlots(timed);
+  assert.equal(groups.length, 1, 'the whole cluster collapses to one stack');
+  assert.equal(groups[0].length, 4);
+  assert.equal(rest.length, 0);
+});
+
+test('a cluster that fits within the lane budget is left alone', () => {
+  // Two overlapping items are readable side by side — collapsing them would
+  // hide work behind a control the user has to open.
+  const { timed } = layoutDay([
+    { date: '2026-09-10', all_day: false, time: '14:30', end_time: '15:30' },
+    { date: '2026-09-10', all_day: false, time: '14:45', end_time: '15:45' },
+  ]);
+  assert.equal(timed[0].lanes, 2, 'precondition: exactly the budget');
+  const { groups, rest } = partitionDenseSlots(timed);
+  assert.deepEqual(groups, [], 'two lanes must not be collapsed');
+  assert.equal(rest.length, 2);
+});
+
+test('the exact-slot rule still fires for identical pileups', () => {
+  // Pre-existing behaviour: three or more sharing a start AND an end.
+  const same = Array.from({ length: 3 }, () =>
+    ({ date: '2026-09-10', all_day: false, time: '09:00', end_time: '10:00' }));
+  const { timed } = layoutDay(same);
+  const { groups, rest } = partitionDenseSlots(timed);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].length, 3);
+  assert.equal(rest.length, 0);
 });

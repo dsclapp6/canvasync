@@ -383,6 +383,41 @@ export function minutesOf(hhmm) {
 /** How long an item with a start but no stated end is drawn for. */
 export const DEFAULT_SLOT_MIN = 30;
 
+/**
+ * The minutes a block is GUARANTEED to occupy on screen, however short it is.
+ *
+ * The renderer refuses to draw a block shorter than 40px, and at HOUR_PX = 44
+ * those 40px are 55 minutes of the clock. 40px is MEASURED: the title box
+ * starts 21.4px down and one line is 15px, so a card needs 39.4px to show a
+ * single title line at all. The old 32px floor left 7.6px for a 15px line, so
+ * every short block sliced its own only title row. Lane assignment
+ * used the TRUE minutes instead, so a 30-minute default slot and a neighbour
+ * starting 30-43 minutes later were judged not to overlap, given one lane, and
+ * then drawn on top of each other — the later chip covering up to 10px of the
+ * earlier one's only title row.
+ *
+ * Exported so app.js derives its pixel minimum FROM this number rather than
+ * keeping its own copy: the modelled extent and the rendered extent are the
+ * same fact, and the bug was them disagreeing.
+ */
+export const MIN_BLOCK_MIN = 55;
+
+/**
+ * The most side-by-side lanes a column can hold and still be readable.
+ *
+ * A timed chip's own controls — checkbox, kind badge, time, title, marker —
+ * measure 84px of min-content. A week column is about 176px, so two lanes is
+ * 88px each and three is 58px: below the floor, with the time collapsing to
+ * zero and the marker overflowing the chip. Two is therefore not a preference,
+ * it is what the chip's contents cost.
+ */
+export const MAX_LANES = 2;
+
+/** What an op actually OCCUPIES on screen: its own length, or the floor. */
+export function renderedEnd(startMin, endMin) {
+  return Math.max(endMin, startMin + MIN_BLOCK_MIN);
+}
+
 // The hours the grid always shows, whatever the data says. A week whose only
 // timed item is a 2pm lecture should not render as a one-hour strip.
 const BASE_FROM = 8 * 60;
@@ -455,6 +490,11 @@ export function layoutDay(ops) {
   }
   timed.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
 
+  // Occupancy is what will be DRAWN, not what the data says. A block shorter
+  // than MIN_BLOCK_MIN is grown to it on screen, so it must claim those minutes
+  // here too — otherwise it is given a lane it visually overflows into.
+  for (const it of timed) it.occupiesTo = renderedEnd(it.startMin, it.endMin);
+
   let cluster = [];
   let clusterEnd = -1;
   const flush = () => {
@@ -463,7 +503,7 @@ export function layoutDay(ops) {
     for (const it of cluster) {
       let lane = laneEnds.findIndex(end => end <= it.startMin);
       if (lane < 0) { lane = laneEnds.length; laneEnds.push(0); }
-      laneEnds[lane] = it.endMin;
+      laneEnds[lane] = it.occupiesTo;
       it.lane = lane;
     }
     for (const it of cluster) it.lanes = laneEnds.length;
@@ -472,7 +512,7 @@ export function layoutDay(ops) {
   for (const it of timed) {
     if (cluster.length && it.startMin >= clusterEnd) flush();
     cluster.push(it);
-    clusterEnd = cluster.length === 1 ? it.endMin : Math.max(clusterEnd, it.endMin);
+    clusterEnd = cluster.length === 1 ? it.occupiesTo : Math.max(clusterEnd, it.occupiesTo);
   }
   flush();
   return { allDay, timed };
@@ -490,7 +530,7 @@ export function layoutDay(ops) {
  * caller that removed a dense group should lay those remaining ops out again,
  * because their old lane counts included the records that are now in a stack.
  */
-export function partitionDenseSlots(timed, minimum = 3) {
+export function partitionDenseSlots(timed, minimum = 3, { maxLanes = MAX_LANES } = {}) {
   const threshold = Number.isInteger(minimum) && minimum > 1 ? minimum : 3;
   const bySlot = new Map();
   for (const item of timed || []) {
@@ -505,5 +545,34 @@ export function partitionDenseSlots(timed, minimum = 3) {
     groups.push(items);
     for (const item of items) dense.add(item);
   }
+
+  // Second rule: a cluster too narrow to READ, whatever its clock times.
+  //
+  // The exact-slot rule above only catches items sharing a start AND an end,
+  // so four 2:30pm items with four different ends never matched it — they got
+  // four lanes instead, 44px each in a 176px column, against a chip whose
+  // own controls need 84px. Measured: clientWidth 40 against scrollWidth 84,
+  // the time collapsing to zero width and the marker hanging 29.6px past the
+  // edge. Lanes past maxLanes cannot be made readable by styling, so the whole
+  // cluster becomes one stack rather than a row of slivers.
+  const cap = Number.isInteger(maxLanes) && maxLanes > 0 ? maxLanes : MAX_LANES;
+  let cluster = [];
+  let clusterEnd = -1;
+  const closeCluster = () => {
+    if (cluster.length > 1 && cluster.some(item => (item.lanes ?? 1) > cap)) {
+      groups.push(cluster);
+      for (const item of cluster) dense.add(item);
+    }
+    cluster = [];
+  };
+  for (const item of (timed || [])) {
+    if (dense.has(item)) continue;      // already an exact-slot stack
+    const end = item.occupiesTo ?? renderedEnd(item.startMin, item.endMin);
+    if (cluster.length && item.startMin >= clusterEnd) closeCluster();
+    cluster.push(item);
+    clusterEnd = cluster.length === 1 ? end : Math.max(clusterEnd, end);
+  }
+  closeCluster();
+
   return { groups, rest: (timed || []).filter(item => !dense.has(item)) };
 }

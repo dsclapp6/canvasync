@@ -2596,6 +2596,18 @@ body { overflow-x: hidden; }
   border-radius: 2px;
   overflow: hidden;
 }
+/* The clickable title puts its text in a nested <a>/<button>, and an ancestor
+   cannot draw an ellipsis for a CHILD's clipped text — so a truncated STEP
+   title simply stopped mid-word. The child needs the one-line treatment too. */
+.cal-allday .cal-chip .chip-title > a,
+.cal-allday .cal-chip .chip-title > button {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .cal-allday .cal-chip .chip-title {
   -webkit-line-clamp: 1;
   line-height: 18px;
@@ -2615,13 +2627,18 @@ body { overflow-x: hidden; }
   pointer-events: none;
 }
 /* Now, as a line. Brick, because it is the one mark here that moves. */
+/* Above the collision summaries (z-index 4), not below them. The line IS
+   full-width — its rect matches the column — but a closed stack painted over
+   it and broke it into pieces, which reads as a line spanning only part of its
+   column. An OPEN stack (z-index 8) still wins, which is right: that is a
+   sheet the user deliberately opened. */
 .cal-nowline {
   position: absolute;
   left: 0;
   right: 0;
   border-top: 2px solid var(--alarm);
   pointer-events: none;
-  z-index: 2;
+  z-index: 5;
 }
 
 /* A placed chip owns its box, so it drops the flex-column rules the stacked
@@ -2649,7 +2666,17 @@ body { overflow-x: hidden; }
 .cal-chip.placed .cal-check-gap { grid-area: check; }
 .cal-chip.placed .cal-check { align-self: center; margin-top: 0; }
 .cal-chip.placed .chip-kind { grid-area: kind; align-self: center; margin-top: 0; }
-.cal-chip.placed .chip-when { grid-area: when; align-self: center; min-width: 0; }
+/* min-width:0 alone only lets the TRACK shrink — it does not stop the TEXT
+   from spilling out of it. Without these three the time ran on into the action
+   track and collided with the marker. */
+.cal-chip.placed .chip-when {
+  grid-area: when;
+  align-self: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .cal-chip.placed .chip-title { grid-area: title; }
 .cal-chip.placed .cal-submit,
 .cal-chip.placed .cal-nolink { grid-area: action; align-self: center; }
@@ -2665,6 +2692,27 @@ body { overflow-x: hidden; }
 }
 .cal-chip.placed.meeting .cal-check-gap { display: none; }
 
+/* A shared lane. `lane-narrow` was emitted by the renderer and had NO rule at
+   all — a dead class. Two lanes is the readable floor (the chip's own controls
+   measure 84px of min-content), and at that width the clock time is the one
+   thing already said by something else: the block's vertical position IS its
+   time, against a labelled gutter. Dropping it returns ~36px to the title. The
+   full time stays in the chip's title attribute. */
+.cal-chip.placed.lane-narrow {
+  grid-template-columns: 12px auto minmax(0, 1fr);
+  grid-template-areas:
+    "check kind action"
+    "title title title";
+  padding: 3px 4px;
+}
+.cal-chip.placed.lane-narrow .chip-when { display: none; }
+.cal-chip.placed.lane-narrow.meeting {
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "kind action"
+    "title title";
+}
+
 /* Tall appointments can use the room they actually have. One-hour and
    half-hour cards keep one clean title line rather than exposing a clipped
    fragment of the next one. */
@@ -2674,6 +2722,17 @@ body { overflow-x: hidden; }
 .cal-chip.placed.slot-compact .chip-title,
 .cal-chip.placed.slot-compact .chip-title a,
 .cal-chip.placed.slot-compact .chip-title button { -webkit-line-clamp: 1; }
+/* The middle tier that was missing, and the reason titles were sliced.
+   The title box starts 21.4px down and each line is 15px, so THREE lines need
+   66.4px of block height — but `slot-roomy` began at 52px, and every block in
+   [52, 67) was told it could use three lines while having room for two. The
+   third came out half-drawn under the block's bottom edge: measured overflow
+   14.4px at h=52, 8.4px at h=58, zero at h=66. Two lines need 51.4px, which is
+   what `slot-compact`'s 52px boundary already is — so the tiers are
+   1 / 2 / 3 lines at 52 and 67, both arithmetic rather than taste. */
+.cal-chip.placed.slot-snug .chip-title,
+.cal-chip.placed.slot-snug .chip-title a,
+.cal-chip.placed.slot-snug .chip-title button { -webkit-line-clamp: 2; }
 
 /* Three or more items at one exact time become one expandable stack. Six
    checkbox/title/submit grids cannot fit into six lanes without turning into
@@ -3237,11 +3296,44 @@ table.files tr:last-child td { border-bottom: 0; }
   text-transform: none;
 }
 
+/* NAMED AREAS, because `chip-when` is OPTIONAL.
+   This rule used to declare five bare tracks — 12px auto auto 1fr auto — which
+   assumed the time was always present. An all-day chip has no time and emits
+   four children, so every one shifted a column left: the marker landed in the
+   `minmax(0, 1fr)` track, which collapsed to 0px, and 16px of content spilled
+   past the chip. `.cal-allday` clips, so the overflow was sliced mid-glyph and
+   read as stray letters at the band's edge. Measured at a 176px column:
+   tracks `12px 32.32px 99.96px 0px 0px`, scrollWidth 177 vs clientWidth 168.
+   Placing by AREA makes a missing optional child cost nothing, which is what
+   `.cal-chip.placed` has always done — this is that, applied one level up. */
 .cal-chip[data-kind] {
   grid-template-columns: 12px auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "check kind when title action";
   border-top: 2px solid var(--kind-color, var(--edge));
   background: linear-gradient(180deg, var(--kind-soft, var(--panel)), var(--panel) 78%);
 }
+/* EVERY child gets its OWN area — including the time.
+   Sharing the title's cell was wrong and shipped a regression: the stacked
+   week and the month tiles emit non-placed chips that DO carry a time
+   (app.js:3382 and :3271 call calChip without `timed`), and there the time and
+   the title rendered at identical coordinates — measured left 61.3 / top 6 for
+   both. The five bare tracks were never the mistake; placing by ORDER was. A
+   named area an element does not occupy simply stays empty, which is exactly
+   what an all-day chip needs and what makes this shape total. */
+.cal-chip[data-kind]:not(.placed) .cal-check,
+.cal-chip[data-kind]:not(.placed) .cal-check-gap { grid-area: check; }
+.cal-chip[data-kind]:not(.placed) .chip-kind { grid-area: kind; }
+.cal-chip[data-kind]:not(.placed) .chip-when {
+  grid-area: when;
+  justify-self: start;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cal-chip[data-kind]:not(.placed) .chip-title { grid-area: title; }
+.cal-chip[data-kind]:not(.placed) .cal-submit,
+.cal-chip[data-kind]:not(.placed) .cal-nolink { grid-area: action; }
 .cal-chip[data-kind].meeting { background: var(--kind-soft, var(--ground)); }
 .chip-kind {
   align-self: start;
