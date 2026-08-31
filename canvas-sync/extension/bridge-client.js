@@ -120,6 +120,32 @@ export async function bridgePost(path, payload) {
  * Returns true if the bridge is reachable and responds 200 to GET /health.
  * Never throws — caller treats false as "bridge offline".
  */
+/**
+ * Remember the body limit the bridge just told us about.
+ *
+ * The extension's pre-flight size gate has to match the limit the BRIDGE
+ * enforces, and it used to be a constant on this side — so lowering
+ * config.maxIngestMb turned every large file into a full download followed by
+ * a 413, on every sync, forever. Written on the two responses the extension is
+ * guaranteed to see: the handshake, and every health probe (a handshake
+ * happens once; the config can change any time after it).
+ *
+ * Silent by design: an old bridge sends no such field, and the extension's own
+ * fallback constant covers that. Never let this fail a probe.
+ */
+async function _rememberIngestLimit(payload) {
+  const mb = Number(payload?.maxIngestMb);
+  if (!Number.isFinite(mb) || mb <= 0) return;
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.storage.local.set({ bridgeMaxIngestMb: mb }, () => {
+        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+        resolve();
+      });
+    });
+  } catch { /* storage fault — the fallback constant still bounds the gate */ }
+}
+
 export async function bridgeHealth() {
   // /health is secret-gated. Pre-pairing we have no secret and the probe will
   // return 401 — still counts as "bridge reachable" for status purposes, since
@@ -133,6 +159,10 @@ export async function bridgeHealth() {
       headers: secret ? { 'X-Bridge-Secret': secret } : {},
       signal: AbortSignal.timeout(4_000),
     });
+    if (response.ok) {
+      const payload = await response.json().catch(() => null);
+      await _rememberIngestLimit(payload);
+    }
     // 200 (authed) OR 401 (bridge up, not yet paired) both mean bridge is reachable.
     return response.ok || response.status === 401;
   } catch {
@@ -175,8 +205,10 @@ export async function handshake(installToken) {
     throw err;
   }
 
-  const { secret } = await response.json();
+  const payload = await response.json();
+  const secret = payload?.secret;
   if (!secret) throw new Error('Bridge did not return a secret during handshake.');
+  await _rememberIngestLimit(payload);
 
   await new Promise((resolve, reject) => {
     chrome.storage.local.set({ bridgeSecret: secret }, () => {

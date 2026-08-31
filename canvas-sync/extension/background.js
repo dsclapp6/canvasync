@@ -126,16 +126,36 @@ const COURSE_CONCURRENCY  = 3;
 const MAX_LOG_ENTRIES     = 50;
 const MAX_SYNC_HISTORY    = 25;
 const RETRY_DELAYS_MS     = [1_000, 4_000]; // exponential backoff steps for 5xx
-// v1.1: client-side cap on per-file ingest size. The bridge's limit
-// (config.maxIngestMb, default 200) is on the JSON BODY, and dataBase64
-// inflates raw bytes by 4/3 plus the JSON envelope — so the raw-file ceiling
-// that actually fits through a 200 MB body is ~150 MB. Gating on the raw size
-// at 200 MB let 150–200 MB files download fully, then 413 at the bridge, on
-// every sync forever. 3% margin covers the envelope and metadata fields.
-// OPEN: plumb the bridge's limit from config on handshake if/when exposed.
-const BRIDGE_BODY_LIMIT_MB = 200;
-const MAX_INGEST_BYTES     = Math.floor(BRIDGE_BODY_LIMIT_MB * (3 / 4) * 0.97) * 1024 * 1024; // 145 MB
-const MAX_INGEST_MB        = Math.floor(MAX_INGEST_BYTES / (1024 * 1024)); // for messages
+// Client-side cap on per-file ingest size. The bridge's limit is on the JSON
+// BODY, and dataBase64 inflates raw bytes by 4/3 plus the JSON envelope — so
+// the raw-file ceiling that actually fits is body x 3/4, less a 3% margin for
+// the envelope and metadata fields. Gating on the raw size at the BODY figure
+// let files between the two download fully, then 413 at the bridge, on every
+// sync forever.
+//
+// The OPEN that used to sit here — "plumb the bridge's limit from config on
+// handshake if/when exposed" — is done: the bridge sends maxIngestMb in the
+// handshake response and on every /health probe, bridge-client stores it, and
+// the gate below is sized from THAT. This constant is now only the fallback
+// for a bridge too old to send one, which is why it keeps the old 200.
+const BRIDGE_BODY_LIMIT_MB_FALLBACK = 200;
+const ingestBytesForMb = mb => Math.floor(mb * (3 / 4) * 0.97) * 1024 * 1024;
+
+// Cached for this service-worker lifetime; the worker dies often enough that a
+// changed limit is picked up within a sync or two, and HANDSHAKE clears it
+// outright. Deliberately NOT read per file: one storage round trip per course
+// download loop is enough.
+let _ingestLimitMb = null;
+async function _ingestLimit() {
+  if (_ingestLimitMb == null) {
+    let stored = null;
+    try { stored = await _storageGet(['bridgeMaxIngestMb']); } catch { /* storage fault */ }
+    const mb = Number(stored?.bridgeMaxIngestMb);
+    _ingestLimitMb = Number.isFinite(mb) && mb > 0 ? mb : BRIDGE_BODY_LIMIT_MB_FALLBACK;
+  }
+  const bytes = ingestBytesForMb(_ingestLimitMb);
+  return { bodyMb: _ingestLimitMb, bytes, mb: Math.floor(bytes / (1024 * 1024)) };
+}
 
 // ---------------------------------------------------------------------------
 // In-memory state (reset on service-worker restart, persisted fields reloaded)
@@ -842,16 +862,37 @@ async function fullSync(reason) {
           ...quizzes.map(q => q?.description),
         ].filter(Boolean).join('\n');
         const knownFileIds = new Set(filesIndex.map(f => String(f.id)));
+        // No count cap. There used to be a .slice(0, 60) here, which silently
+        // dropped every embedded file past the sixtieth in a reading-heavy
+        // course — and dropped them without a word, so the sync looked
+        // complete. Pagination and the token bucket already pace these
+        // lookups, so the cost of removing it is TIME, not correctness, and
+        // the user's instruction is explicit: download all the relevant files,
+        // not a prefix of them.
         const embeddedIds = _extractFileIdsFromHtml(htmlCorpus)
-          .filter(fid => !knownFileIds.has(String(fid)))
-          .slice(0, 60);
+          .filter(fid => !knownFileIds.has(String(fid)));
         const embeddedFiles = [];
+        const unresolved = [];
         for (const fid of embeddedIds) {
           _checkCancel();
           try {
             const info = await canvasGetJson(`/api/v1/courses/${id}/files/${fid}`);
             if (info && info.id) embeddedFiles.push(info);
-          } catch { /* forbidden or cross-course link — skip */ }
+            else unresolved.push(fid);
+          } catch {
+            // A link to another course's file, or one this student may not
+            // read. Skipping is right; skipping SILENTLY is what made a
+            // capped discovery indistinguishable from a complete one.
+            unresolved.push(fid);
+          }
+        }
+        if (unresolved.length) {
+          await _log('warn',
+            `${unresolved.length} of ${embeddedIds.length} file links embedded in `
+            + `${course.name ?? id}'s pages could not be read (cross-course link, or `
+            + `not shared with you): ${unresolved.slice(0, 5).join(', ')}`
+            + `${unresolved.length > 5 ? ', …' : ''}`,
+            reason);
         }
 
         // Course packs are LTI external tools (Harvard Business Publishing,
@@ -1360,11 +1401,14 @@ function _collectModuleFileIds(modules) {
 // Error policy:
 // - PermissionError on a single file (403) → skipped: 'forbidden'. NOT retried.
 //   We still count it; the final display shows "skipped: forbidden (N)".
-// - File > MAX_INGEST_BYTES → skipped: 'size'. Not even fetched.
+// - File over the bridge's ingest ceiling → skipped: 'size'. Not even fetched.
 // - Any other per-file failure → counted as error; sync continues.
 async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = [], reason }) {
   const courseId = course?.id;
   if (!courseId) return;
+
+  // What THIS bridge will accept, not what this file once assumed.
+  const { bytes: maxIngestBytes, mb: maxIngestMb } = await _ingestLimit();
 
   // Merge File-type module items into the effective download list. Rice profs
   // often lock the Files tab (so /api/v1/courses/:id/files returns []), but
@@ -1450,8 +1494,8 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
       continue;
     }
 
-    // Size gate — don't even fetch > MAX_INGEST_BYTES.
-    if (size > MAX_INGEST_BYTES) {
+    // Size gate — don't even fetch what the bridge would refuse.
+    if (size > maxIngestBytes) {
       skippedSize++;
       _broadcastProgress({
         phase: 'course-item', courseId, item: 'files_download',
@@ -1494,12 +1538,12 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
       // to the bridge, which would otherwise 413 it on every sync forever.
       // Same cap, measured a second time against real bytes.
       const actualBytes = decodedByteLength(binary.base64);
-      if (actualBytes > MAX_INGEST_BYTES) {
+      if (actualBytes > maxIngestBytes) {
         skippedSize++;
         await _log('warn',
           `Skipped ${f.display_name ?? f.filename ?? f.id}: Canvas declared `
           + `${size} bytes but it downloaded as ${actualBytes}, over the `
-          + `${MAX_INGEST_MB} MB ingest limit`,
+          + `${maxIngestMb} MB ingest limit`,
           reason);
         _broadcastProgress({
           phase: 'course-item', courseId, item: 'files_download',
@@ -1896,6 +1940,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // the next health probe.
         _status.bridgeReachable = true;
         _status.lastError       = null;
+        // Pairing just stored this bridge's body limit; drop any cached one so
+        // the next download loop sizes its gate from the new bridge, not the
+        // one this worker happened to see first.
+        _ingestLimitMb = null;
         // Pairing fixed the unrecoverable state — clear the stand-down flag and
         // the failure backoff so scheduled syncs resume immediately instead of
         // waiting out a cooldown earned while broken.

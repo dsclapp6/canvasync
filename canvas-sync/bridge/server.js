@@ -332,6 +332,29 @@ function logRequest(req, res, courseId) {
   console.log(line);
 }
 
+// --- How large an ingest body this bridge accepts ---------------------------
+//
+// ONE number, read in two places that must never disagree: the express.json
+// limit below, and the handshake response the extension derives its own
+// pre-flight gate from. They used to be independent — express.json read
+// config, the extension hardcoded 200 — so lowering config.maxIngestMb left
+// the extension happily downloading files it would then 413 on, every sync,
+// forever.
+//
+// 400 MB, and the ceiling is not arbitrary: the whole body is base64 inside a
+// single JSON string on both sides, and V8 caps one string at ~512 MB
+// (buffer.constants.MAX_STRING_LENGTH = 536,870,888). A body limit above that
+// cannot be honoured by either end no matter what it says here. 400 MB of body
+// carries a ~291 MB file, which is the honest number for this transport; going
+// higher means chunked upload, not a bigger constant.
+export const DEFAULT_MAX_INGEST_MB = 400;
+
+/** The limit this bridge actually enforces, config override included. */
+export function maxIngestMb(config = {}) {
+  const configured = Number(config?.maxIngestMb);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MAX_INGEST_MB;
+}
+
 // --- Which environment the local-model routes are talking about ------------
 //
 // setup-local-model.sh has exactly ONE knob for where the MLX python lives —
@@ -398,11 +421,14 @@ export async function localVenvState(pythonPath) {
 export function buildApp(config) {
   const app = express();
   app.use(corsMiddleware(config));
-  app.use(express.json({ limit: `${config.maxIngestMb ?? 200}mb` }));
+  app.use(express.json({ limit: `${maxIngestMb(config)}mb` }));
 
   // Health
   app.get('/health', requireSecret(config), (req, res) => {
-    res.json({ ok: true, version: VERSION });
+    // Also on /health, which every sync probes: a handshake happens once, but
+    // config.maxIngestMb can change any time afterwards, and a stale limit is
+    // the same desync in the other direction.
+    res.json({ ok: true, version: VERSION, maxIngestMb: maxIngestMb(config) });
     logRequest(req, res, null);
   });
 
@@ -459,7 +485,11 @@ export function buildApp(config) {
       });
       await fs.unlink(tokenPath).catch(() => {});
 
-      res.json({ ok: true, secret: config.bridgeSecret });
+      // The extension sizes its own pre-flight gate from this rather than
+      // from a constant of its own — see BRIDGE_BODY_LIMIT_MB_FALLBACK in
+      // extension/background.js. Sent on the ONE response the extension is
+      // guaranteed to read before it ever posts a file.
+      res.json({ ok: true, secret: config.bridgeSecret, maxIngestMb: maxIngestMb(config) });
       logRequest(req, res, null);
     } catch (err) {
       console.error('[bridge] /handshake error:', err.message);

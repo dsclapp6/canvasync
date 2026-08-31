@@ -70,7 +70,11 @@ function provisionDataRoot() {
   if (!fs.existsSync(configPath)) {
     const config = {
       bridgeSecret: crypto.randomBytes(32).toString('hex'),
-      maxIngestMb: 200,
+      // maxIngestMb deliberately absent: the bridge's own default governs
+      // (DEFAULT_MAX_INGEST_MB in bridge/server.js, plumbed to the extension
+      // through the handshake). Writing a copy here froze every app-created
+      // install at 200 MB, so raising the default would have reached new
+      // installs and no one else. Set the key by hand to override.
       createdBy: 'canvasync-app',
       createdAt: new Date().toISOString(),
     };
