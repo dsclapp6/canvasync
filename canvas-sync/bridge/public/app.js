@@ -13,7 +13,7 @@ import {
   todayIso, weekDays, weekLabel, WEEKDAY_HEADS,
   daysBetween, spanDates, spanPosition, orderedRange, movedDates, resizedDates,
   timeWindow, hourMarks, layoutDay,
-  partitionDenseSlots, MIN_BLOCK_MIN, MAX_LANES, laneBudgetFor,
+  partitionDenseSlots, MIN_BLOCK_MIN, MAX_LANES, laneBudgetFor, HOUR_PX, slotFloorPx,
 } from './cal-grid.js';
 import { nextSelection, isSelected, pruneSelection, isAiItemVisible } from './cal-plan.js';
 import {
@@ -448,7 +448,7 @@ function wireNav() {
     stepCalPeriod(Number(btn.dataset.calStep));
   });
 
-  // Lay the week against a clock. CALENDAR-SPEC 9.1.
+  // Lay the days against a clock — Week or 2-day. CALENDAR-SPEC 9.1.
   $('cal-times').addEventListener('click', () => {
     CAL_TIMES = !CAL_TIMES;
     localStorage.setItem('calTimes', CAL_TIMES ? '1' : '0');
@@ -3433,9 +3433,18 @@ const MONTH_TILE_MAX = 3;
 // about one day, not a preference.
 let CAL_EXPANDED = new Set();
 
-function renderCalendarWeek(ops) {
-  if (CAL_TIMES) return renderCalendarWeekTimed(ops);
-  const days = weekDays(CAL_ANCHOR);
+/**
+ * The column grid, timed or not, for any run of days.
+ *
+ * The 2-day view was built always-timed, on the reasoning that a 2-day view
+ * which could go untimed is just List with two days in it. The user ruled
+ * against that on 2026-08-31 — *"2 week should also have the time toggle"* —
+ * having seen it built, which is the only way that question gets answered
+ * honestly. So the clock is a mode of this grid rather than a property of the
+ * range, and both views enter here.
+ */
+function renderCalendarWeek(ops, days = weekDays(CAL_ANCHOR)) {
+  if (CAL_TIMES) return renderCalendarWeekTimed(ops, days);
   const buckets = bucketByDate(ops);
   const today = todayIso();
   const cols = days.map(iso => {
@@ -3457,12 +3466,16 @@ function renderCalendarWeek(ops) {
   // The grid scrolls inside its own box rather than pushing the page wide. A
   // week is seven columns by definition — collapsing it to one on a phone
   // would just be the list again — so on a narrow screen you swipe it.
-  return `<div class="cal-gridwrap"><div class="cal-week" id="cal-week">${cols}</div></div>`;
+  // --daycols, same as the timed grid: the track sizes live in style.css and JS
+  // supplies only how many days there are. Without it a 2-day untimed grid
+  // inherited the seven-column default and drew two columns and five gaps.
+  return `<div class="cal-gridwrap"><div class="cal-week" id="cal-week"`
+    + ` style="--daycols:${days.length}">${cols}</div></div>`;
 }
 
-// How tall one hour is drawn. The whole grid's geometry comes off this single
-// number, in both the CSS and the maths below, so they cannot drift.
-const HOUR_PX = 44;
+// HOUR_PX now lives in cal-grid.js, with the minute floor that is derived from
+// it. It was a local constant while MIN_BLOCK_MIN was hand-tuned to match it by
+// eye; deriving one from the other means they have to share a file.
 // One banner chip is one fixed line, so a band of N of them is arithmetic.
 // The CSS pins the chip to exactly this height; if one changes the other must.
 const ALLDAY_ROW_PX = 20;
@@ -3474,14 +3487,13 @@ const ALLDAY_PAD_PX = 3;
 // it was overlapping a neighbour lane assignment had judged clear.
 const MIN_BLOCK_PX = (MIN_BLOCK_MIN / 60) * HOUR_PX;
 
-// How much block height each title clamp actually needs. The title box starts
-// 21.4px down (padding + the check/kind/time row + the row gap) and every line
-// is 15px, so two lines want 51.4px and three want 66.4px. Measured, not
-// chosen — and the tier that was MISSING is the middle one: `slot-roomy` began
-// at 52px while allowing three lines, so every block in [52, 67) drew a third
-// line it had no room for and the bottom of it was sliced off.
-const SLOT_SNUG_PX = 52;    // 2 lines
-const SLOT_ROOMY_PX = 67;   // 3 lines
+// How much block height each title clamp actually needs — one ladder in
+// cal-grid, not two constants here. These were 52 and 67, written by hand from
+// the title's top offset and its lines, and both forgot the 4px of bottom
+// padding and border that close the box: a block in [52, 55.4) was given a
+// 2-line clamp with room for one. Measured boundaries are 40.4 / 55.4 / 70.4.
+const SLOT_SNUG_PX = slotFloorPx(2);    // 2 lines — 55.4
+const SLOT_ROOMY_PX = slotFloorPx(3);   // 3 lines — 70.4
 
 /**
  * Week view against a clock.
@@ -5106,7 +5118,7 @@ function renderCalendarOps() {
     // business setting the scale of a view about today and tomorrow.
     const days = twoDayDays();
     const inView = ops.filter(o => spanDates(o).some(d => days.includes(d)));
-    el.innerHTML = renderCalendarWeekTimed(inView, days);
+    el.innerHTML = renderCalendarWeek(inView, days);
   } else if (CAL_VIEW === 'week') {
     el.innerHTML = renderCalendarWeek(ops);
   } else if (CAL_VIEW === 'month') {
@@ -5130,11 +5142,12 @@ function syncCalControls(doneCount) {
   });
   const grp = $('cal-group-seg');
   if (grp) grp.classList.toggle('hidden', CAL_VIEW !== 'list');
-  // The clock belongs to Week alone: a month tile has no room for a scale and
-  // the list is not a grid, so the control is hidden rather than dead there.
+  // The clock belongs to the two COLUMN views. A month tile has no room for a
+  // scale and the list is not a grid, so the control is hidden rather than dead
+  // in those two.
   const times = $('cal-times');
   if (times) {
-    times.classList.toggle('hidden', CAL_VIEW !== 'week');
+    times.classList.toggle('hidden', CAL_VIEW !== 'week' && CAL_VIEW !== 'twoday');
     times.classList.toggle('active', CAL_TIMES);
     times.setAttribute('aria-pressed', CAL_TIMES ? 'true' : 'false');
   }

@@ -1179,6 +1179,60 @@ table.files tr:hover td { background: var(--sunk); }
 /* On, in ink weight and a border — never opacity. */
 .ghost-btn.active { color: var(--ink); border-color: var(--edge); background: var(--sunk); }
 
+/* An on/off switch, for a control that changes the MODE of a view rather than
+   adding to it. The user asked for "an on/off bubble thingy", and the point of
+   a switch over a toggle button is that its state is legible without having to
+   compare it to its neighbours: the knob is left or right, and the track is
+   empty or filled.
+   State in ink and SHAPE, never opacity — CALENDAR-SPEC 3.6. Both halves are
+   here on purpose: the fill alone fails for anyone who cannot separate the two
+   greens, and the knob position alone is a small target for the eye. */
+.switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-4) var(--s-2) var(--s-2);
+  color: var(--muted);
+  border-color: var(--rule-2);
+  box-shadow: none;
+  font-size: var(--t-legend);
+  font-weight: var(--w-label);
+}
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 26px;
+  /* 14, not 15: 14 + 8px padding + 2px border is 24px, which is exactly what
+     the ghost buttons beside it measure. A control one pixel taller than its
+     neighbours reads as misaligned in a toolbar row. */
+  height: 14px;
+  border-radius: 999px;
+  background: var(--sunk);
+  border: 1px solid var(--rule-2);
+  transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.switch-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform var(--fast) var(--ease), background-color var(--fast) var(--ease);
+}
+.switch-btn:hover { color: var(--ink); border-color: var(--edge); }
+.switch-btn:hover .switch-track { border-color: var(--edge); }
+.switch-btn.active { color: var(--ink); border-color: var(--edge); }
+.switch-btn.active .switch-track { background: var(--accent); border-color: var(--accent-2); }
+/* 26 track - 2 border - 10 knob - 1 left inset - 1 right inset = 12px of travel,
+   so the knob sits the same 1px from the end it is resting against. */
+.switch-btn.active .switch-knob { transform: translateX(12px); background: var(--on-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .switch-knob { transition: none; }
+}
+
 .sr-only {
   position: absolute;
   width: 1px; height: 1px;
@@ -2587,8 +2641,10 @@ body { overflow-x: hidden; }
    band above the grid for everything that is genuinely not on a clock.
    =========================================================================== */
 
-/* An hour is 44px. app.js's HOUR_PX is the same number and does the maths;
-   nothing here may assume a different one. */
+/* An hour is 54px — cal-grid.js's HOUR_PX, which does the maths and derives the
+   minute floor from it. Nothing here may assume a different one; the heights
+   are all inline styles from the renderer, so this comment is the only place
+   the number appears in CSS and it is a note, not a dependency. */
 .cal-week.timed {
   grid-template-columns: var(--gutter-w) repeat(var(--daycols, 7), minmax(var(--daycol-min), 1fr));
   min-width: calc(var(--gutter-w) + var(--daycols, 7) * var(--daycol-min));

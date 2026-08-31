@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { addDays, MAX_LANES, laneBudgetFor } from '../public/cal-grid.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const [APP, HTML] = await Promise.all([
+const [APP, HTML, CSS] = await Promise.all([
   readFile(path.join(HERE, '..', 'public', 'app.js'), 'utf8'),
   readFile(path.join(HERE, '..', 'public', 'index.html'), 'utf8'),
+  readFile(path.join(HERE, '..', 'public', 'style.css'), 'utf8'),
 ]);
 
 function declaration(name) {
@@ -106,7 +107,12 @@ test('the timed renderer is shared, not forked', () => {
   // a release — the whole S1-S5 batch was geometry drifting from itself.
   assert.match(APP, /function renderCalendarWeekTimed\(ops, days = weekDays\(CAL_ANCHOR\)(,|\))/,
     'the 2-day view must reuse the Week renderer with a different range');
-  assert.match(APP, /renderCalendarWeekTimed\(inView, days\)/);
+  // The 2-day view enters the SHARED column renderer, which decides timed or
+  // stacked from CAL_TIMES — it no longer calls the timed one directly, because
+  // it is no longer always timed (§9.1, reversed by the user).
+  assert.match(APP, /renderCalendarWeek\(inView, days\)/);
+  assert.match(APP, /function renderCalendarWeek\(ops, days = weekDays\(CAL_ANCHOR\)\) \{\s*\n\s*if \(CAL_TIMES\) return renderCalendarWeekTimed\(ops, days\);/,
+    'the untimed grid must take a range and hand the timed case straight on');
   assert.equal((APP.match(/function renderCalendarWeekTimed/g) || []).length, 1,
     'there must be exactly one timed renderer');
 });
@@ -116,4 +122,76 @@ test('the grid gets its column count from the renderer and its geometry from CSS
     'JS supplies the count only');
   assert.doesNotMatch(APP, /grid-template-columns:[^`]*repeat\(/,
     'track sizes must not be inlined by the renderer — they belong in style.css');
+});
+
+// --- the clock is a MODE of the view, not a property of the range ----------
+//
+// Reversed on 2026-08-31 by the user, who saw the always-timed 2-day view
+// built and said "2 week should also have the time toggle". The original
+// reasoning — an untimed 2-day view is List with two days in it — was a
+// defensible design call and simply not theirs to lose.
+
+test('the Times control is offered in BOTH column views', () => {
+  const sync = declaration('syncCalControls');
+  assert.match(sync, /times\.classList\.toggle\('hidden', CAL_VIEW !== 'week' && CAL_VIEW !== 'twoday'\)/,
+    'the 2-day view must offer the clock toggle too');
+});
+
+test('…and hidden, not dead, in the two views that cannot draw a clock', () => {
+  // The other half. `hidden` on nothing at all would satisfy the assertion
+  // above; what makes it right is that List and Month still do NOT get it —
+  // a month tile has no room for a scale and a list is not a grid, and a
+  // control that is present but does nothing reads as broken.
+  const sync = declaration('syncCalControls');
+  const rule = /times\.classList\.toggle\('hidden', ([^)]*)\)/.exec(sync);
+  assert.ok(rule, 'nothing decides whether the Times control shows');
+  for (const [view, shown] of [['week', true], ['twoday', true], ['list', false], ['month', false]]) {
+    const hidden = new Function('CAL_VIEW', `return ${rule[1]};`)(view);
+    assert.equal(hidden, !shown,
+      `the Times control is ${hidden ? 'hidden' : 'shown'} in ${view} view`);
+  }
+});
+
+test('an untimed 2-day view is the stacked grid scoped to two columns', () => {
+  // Not a third renderer, and not the seven-column default with five empty
+  // gaps: the same grid, told how many days it holds.
+  const fn = declaration('renderCalendarWeek');
+  assert.match(fn, /style="--daycols:\$\{days\.length\}"/,
+    'the untimed grid must declare its own column count');
+  assert.doesNotMatch(fn, /weekDays\(CAL_ANCHOR\)(?![\s\S]*\))/,
+    'the range must come from the caller, not be recomputed inside');
+  assert.equal((APP.match(/function renderCalendarWeek\(/g) || []).length, 1,
+    'there must be exactly one untimed column renderer');
+});
+
+test('the toggle re-renders whichever column view is up', () => {
+  // The handler is deliberately view-agnostic — it flips the mode and asks the
+  // view to redraw itself, so a new column view costs it nothing.
+  const handler = /\$\('cal-times'\)\.addEventListener\('click', \(\) => \{([\s\S]*?)\n  \}\);/.exec(APP);
+  assert.ok(handler, 'the Times control has no click handler');
+  assert.match(handler[1], /CAL_TIMES = !CAL_TIMES;/);
+  assert.match(handler[1], /localStorage\.setItem\('calTimes'/, 'the mode must survive a reload');
+  assert.match(handler[1], /renderCalendarOps\(\);/);
+  assert.doesNotMatch(handler[1], /CAL_VIEW/,
+    'the handler must not special-case which view it is in');
+});
+
+test('the switch says on or off in SHAPE and ink, never opacity', () => {
+  // CALENDAR-SPEC 3.6. The user asked for "an on/off bubble thingy", and a
+  // switch earns its place over a toggle button by being legible on its own —
+  // you can see it is off without a neighbour to compare it against.
+  assert.match(HTML, /id="cal-times"[^>]*class="switch-btn/,
+    'the Times control must be the switch, not a ghost button');
+  assert.match(HTML, /<span class="switch-track"[\s\S]*?<span class="switch-knob">/,
+    'the switch needs a track and a knob to move in it');
+  const on = /\.switch-btn\.active \.switch-knob \{([^}]*)\}/.exec(CSS);
+  assert.ok(on, 'nothing moves the knob when the switch is on');
+  assert.match(on[1], /transform: translateX\(\d+px\)/, 'the knob must MOVE — shape, not colour alone');
+  const track = /\.switch-btn\.active \.switch-track \{([^}]*)\}/.exec(CSS);
+  assert.ok(track && /background: var\(--accent\)/.test(track[1]),
+    'the track must fill, so the state does not rest on knob position alone');
+  // and never the thing the spec forbids
+  for (const rule of [on[1], track[1]]) {
+    assert.doesNotMatch(rule, /opacity/, 'state must never be carried by opacity');
+  }
 });

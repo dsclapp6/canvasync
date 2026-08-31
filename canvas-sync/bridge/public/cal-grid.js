@@ -384,23 +384,67 @@ export function minutesOf(hhmm) {
 export const DEFAULT_SLOT_MIN = 30;
 
 /**
+ * How tall one hour is drawn.
+ *
+ * The whole timed grid's geometry comes off this single number. It lives here,
+ * with the rest of the pure geometry, so the minute floor below can be derived
+ * from it — app.js imports it rather than keeping a second copy.
+ *
+ * Raised from 44 on 2026-08-31, at the user's request: *"you should spread out
+ * the times vertically a little more to make the display cleaner."*
+ */
+export const HOUR_PX = 54;
+
+/** One line of a chip title. Measured. */
+export const TITLE_LINE_PX = 15;
+
+/**
+ * The shortest block that can show one whole title line, in pixels.
+ *
+ * MEASURED against the shipped stylesheet, and it is a sum of the chip's own
+ * parts rather than a taste: 2px top border + 3px top padding + a 14.4px
+ * metadata row + a 2px row gap puts the title box 21.4px down; one line is
+ * 15px; 3px bottom padding and a 1px bottom border close it. 40.4px.
+ */
+export const TITLE_FLOOR_PX = 40.4;
+
+/**
+ * The block height at which a title can draw `lines` whole lines.
+ *
+ * One ladder, because it is one fact: 40.4px for the first line and 15px for
+ * every line after it. Swept in a browser at 0.1px, the smallest heights that
+ * afford 1/2/3 lines are 40.4 / 55.4 / 70.4 — exactly this.
+ *
+ * The renderer's tiers used to be two hand-written constants, 52 and 67,
+ * derived as `21.4 + 15n` — the title's TOP offset plus its lines, forgetting
+ * the 3px bottom padding and 1px bottom border that close the box. Each was
+ * therefore 3.4px too low, and a block in [52, 55.4) was told it could draw
+ * two lines while affording one. That was live at the old 44px hour, where a
+ * 75-minute block landed on it; raising the hour to 54 moved it onto 60-minute
+ * blocks, which is most classes, and turned a rare defect into a constant one.
+ */
+export function slotFloorPx(lines) {
+  return TITLE_FLOOR_PX + TITLE_LINE_PX * (Math.max(1, lines) - 1);
+}
+
+/**
  * The minutes a block is GUARANTEED to occupy on screen, however short it is.
  *
- * The renderer refuses to draw a block shorter than 40px, and at HOUR_PX = 44
- * those 40px are 55 minutes of the clock. 40px is MEASURED: the title box
- * starts 21.4px down and one line is 15px, so a card needs 39.4px to show a
- * single title line at all. The old 32px floor left 7.6px for a 15px line, so
- * every short block sliced its own only title row. Lane assignment
- * used the TRUE minutes instead, so a 30-minute default slot and a neighbour
- * starting 30-43 minutes later were judged not to overlap, given one lane, and
- * then drawn on top of each other — the later chip covering up to 10px of the
- * earlier one's only title row.
+ * DERIVED, because it is a pixel fact expressed in minutes: the floor above,
+ * converted at the current scale. It was hand-tuned to 55 when an hour was
+ * 44px, and a hand-tuned number is one that silently stops being right — at
+ * 54px an hour, 55 minutes over-reserves the lane by ten minutes of clock that
+ * nothing is drawn in, inventing collisions between items that do not touch.
  *
- * Exported so app.js derives its pixel minimum FROM this number rather than
- * keeping its own copy: the modelled extent and the rendered extent are the
- * same fact, and the bug was them disagreeing.
+ * Rounded UP, always: the minutes reserved must cover the pixels drawn. Down
+ * would re-open the exact bug this constant exists for — lane assignment
+ * judging two items clear while the renderer draws them on top of each other,
+ * the later chip covering up to 10px of the earlier one's only title row.
+ *
+ * app.js derives its pixel minimum back FROM this number, so the modelled
+ * extent and the rendered extent stay the same fact.
  */
-export const MIN_BLOCK_MIN = 55;
+export const MIN_BLOCK_MIN = Math.ceil((TITLE_FLOOR_PX / HOUR_PX) * 60);
 
 /**
  * The most side-by-side lanes a column is ALLOWED, before width is consulted.

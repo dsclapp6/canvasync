@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MIN_BLOCK_MIN, MAX_LANES } from '../public/cal-grid.js';
+import { MIN_BLOCK_MIN, MAX_LANES, HOUR_PX, TITLE_FLOOR_PX, TITLE_LINE_PX, slotFloorPx } from '../public/cal-grid.js';
 
 // Comments in this stylesheet quote the measurements that justify each rule —
 // including the values that were WRONG. An assertion about what the CSS now
@@ -61,29 +61,90 @@ test('the pixel floor is DERIVED from the minutes, never a second copy', () => {
 });
 
 test('the floor is tall enough for the one title line it promises', () => {
-  // Measured: the title box starts 21.4px down and a line is 15px, so a card
-  // needs 39.4px to show a single line. The old 32px floor gave it 7.6px and
-  // sliced its own only title row.
-  const hourPx = Number(/const HOUR_PX = (\d+);/.exec(APP)[1]);
-  const floorPx = (MIN_BLOCK_MIN / 60) * hourPx;
-  assert.ok(floorPx >= 39.4, `floor is ${floorPx.toFixed(1)}px — one title line needs 39.4px`);
+  // MEASURED, and a sum of the chip's own parts: 2px border + 3px padding +
+  // 14.4px metadata row + 2px gap puts the title 21.4px down, one line is 15px,
+  // and 3px padding + 1px border close it. 40.4px. The old 32px floor gave a
+  // 15px line 7.6px and sliced the only title row the block had.
+  const drawnPx = (MIN_BLOCK_MIN / 60) * HOUR_PX;
+  assert.ok(drawnPx >= TITLE_FLOOR_PX,
+    `floor draws ${drawnPx.toFixed(2)}px — one title line needs ${TITLE_FLOOR_PX}px`);
 });
 
-test('the title clamp tiers come from the line arithmetic', () => {
-  // 21.4 + 15n: two lines need 51.4px, three need 66.4px. The bug was a
-  // MISSING middle tier — roomy (3 lines) began at 52px, so every block in
-  // [52, 67) drew a third line it had no room for.
-  const snug = Number(/const SLOT_SNUG_PX = (\d+);/.exec(APP)[1]);
-  const roomy = Number(/const SLOT_ROOMY_PX = (\d+);/.exec(APP)[1]);
-  assert.ok(snug >= 51.4 && snug < 55, `2-line tier at ${snug}px, expected ~52`);
-  assert.ok(roomy >= 66.4 && roomy < 70, `3-line tier at ${roomy}px, expected ~67`);
-  assert.ok(roomy > snug, 'tiers must ascend');
+test('the hour is drawn at the scale the user asked for', () => {
+  // Not taste-pinning — a recorded ruling. On 2026-08-31: *"you should spread
+  // out the times vertically a little more to make the display cleaner."* 44px
+  // was the old scale, so a silent return to it undoes the request; the exact
+  // number above that is a judgement this test deliberately does not fix.
+  assert.ok(HOUR_PX > 44, `an hour is ${HOUR_PX}px — back at or below the scale that was widened`);
+  // The cost, so it is a known trade rather than a surprise: at 375px a 12-hour
+  // window is 1.8 phone screens tall against 1.47 before, and a tight 9-5 day
+  // stops fitting on one (0.98 -> 1.2). Kept because it is what was asked for.
+  assert.ok(HOUR_PX <= 60, `an hour is ${HOUR_PX}px — past this a normal day costs two phone screens`);
+});
+
+test('the minute floor is DERIVED from the pixel floor, not tuned to it', () => {
+  // 55 minutes was hand-tuned to 44px hours. It stayed 55 when the hour grew,
+  // where it reserves ten minutes of lane that nothing is drawn in — which
+  // invents collisions between items that do not touch. Both halves matter:
+  // it must COVER the pixels (above), and it must not exceed them by a whole
+  // minute (here), or the derivation has quietly become another literal.
+  assert.equal(MIN_BLOCK_MIN, Math.ceil((TITLE_FLOOR_PX / HOUR_PX) * 60),
+    'MIN_BLOCK_MIN is no longer the pixel floor expressed in minutes');
+  const spare = (MIN_BLOCK_MIN / 60) * HOUR_PX - TITLE_FLOOR_PX;
+  assert.ok(spare < (HOUR_PX / 60),
+    `${spare.toFixed(2)}px of slack — more than the rounding-up costs, so it is padded`);
+  // and rounded UP: reserving fewer minutes than are drawn is the original bug
+  assert.ok((MIN_BLOCK_MIN / 60) * HOUR_PX >= TITLE_FLOOR_PX);
+  // the scale itself must live with the maths that derives from it
+  assert.doesNotMatch(APP, /const HOUR_PX = \d+;/,
+    'a second copy of the hour scale is back in app.js');
+});
+
+test('the title clamp tiers are ONE ladder, measured once', () => {
+  // These were two hand-written constants, 52 and 67, and this test pinned
+  // them with `>= 51.4` windows built from the same arithmetic that produced
+  // them — so it agreed with the code and both were wrong. `21.4 + 15n` is the
+  // title's TOP offset plus its lines; it forgets the 3px bottom padding and
+  // 1px bottom border that CLOSE the box, so each tier sat 3.4px too low and a
+  // block in [52, 55.4) was clamped to two lines with room for one.
+  //
+  // Swept in a browser at 0.1px against this stylesheet, the smallest heights
+  // affording 1/2/3 lines are 40.4 / 55.4 / 70.4 — a first line plus 15px
+  // each. The tiers are now that ladder rather than a second reading of it.
+  assert.equal(slotFloorPx(1), TITLE_FLOOR_PX, 'the ladder must start at the one-line floor');
+  assert.equal(slotFloorPx(2), 55.4);
+  assert.equal(slotFloorPx(3), 70.4);
+  // Within a rounding epsilon, not exactly: 40.4 carries a binary-float tail,
+  // so the difference lands on 15.000000000000007. Rounding the CONSTANTS to
+  // make an `equal` pass would be adjusting the measurement to suit the test.
+  assert.ok(Math.abs((slotFloorPx(3) - slotFloorPx(2)) - TITLE_LINE_PX) < 1e-9,
+    'each rung is one line');
+
+  // the renderer must USE the ladder, not restate it
+  assert.match(APP, /const SLOT_SNUG_PX = slotFloorPx\(2\);/);
+  assert.match(APP, /const SLOT_ROOMY_PX = slotFloorPx\(3\);/);
+  assert.doesNotMatch(APP, /const SLOT_(SNUG|ROOMY)_PX = \d/,
+    'a hand-written tier boundary is back — that is the bug this replaced');
   assert.match(APP, /'slot-snug'/, 'the renderer must emit the middle tier');
-  for (const [cls, lines] of [['slot-compact', 1], ['slot-snug', 2], ['slot-roomy', 3]]) {
+
+  for (const [cls, lines] of [['slot-compact', 1], ['slot-snug', 2]]) {
     const rule = new RegExp(`\\.cal-chip\\.placed\\.${cls}[^{]*\\{[^}]*-webkit-line-clamp: ${lines}`, 's');
-    if (cls !== 'slot-roomy') {
-      assert.match(CSS, rule, `${cls} must clamp to ${lines} line(s)`);
-    }
+    assert.match(CSS, rule, `${cls} must clamp to ${lines} line(s)`);
+  }
+});
+
+test('every tier promises only lines the block can actually draw', () => {
+  // The property the two constants failed, checked across the durations a real
+  // calendar holds rather than at the boundaries alone. Measured in a browser:
+  // at HOUR_PX 54 all of 15/30/45/60/75/90/120/180 minutes afford at least the
+  // lines their tier clamps to. At the old 44px hour a 75-minute block was
+  // clamped to 2 and afforded 1.
+  const clampOf = (h) => h < slotFloorPx(2) ? 1 : h < slotFloorPx(3) ? 2 : 3;
+  const affords = (h) => Math.floor((h - (TITLE_FLOOR_PX - TITLE_LINE_PX)) / TITLE_LINE_PX);
+  for (const mins of [15, 30, 45, 60, 75, 90, 120, 180]) {
+    const h = Math.max((mins / 60) * HOUR_PX, (MIN_BLOCK_MIN / 60) * HOUR_PX);
+    assert.ok(affords(h) >= clampOf(h),
+      `a ${mins}-minute block draws ${h.toFixed(1)}px: clamped to ${clampOf(h)} lines, affords ${affords(h)}`);
   }
 });
 

@@ -258,8 +258,13 @@
                    checkbox that would un-finish it vanished with the row. This
                    brings those rows back. CALENDAR-SPEC 2.5. -->
               <!-- Week only: lay the seven columns against a clock. -->
-              <button type="button" id="cal-times" class="ghost-btn hidden" aria-pressed="false"
-                      title="Show the week against a clock">Times</button>
+              <!-- A MODE, not a filter, so it reads as a switch rather than as
+                   another ghost toggle: the days are drawn against a clock or
+                   they are not. Show past / Show completed sit beside it and
+                   stay ghost buttons because they ADD rows to what is here. -->
+              <button type="button" id="cal-times" class="switch-btn hidden" aria-pressed="false"
+                      title="Draw the days against a clock"><span class="switch-track"
+                      aria-hidden="true"><span class="switch-knob"></span></span>Times</button>
               <button type="button" id="cal-showpast" class="ghost-btn hidden" aria-pressed="false">Show past schedule</button>
               <button type="button" id="cal-showdone" class="ghost-btn hidden" aria-pressed="false">Show completed</button>
             </div>
