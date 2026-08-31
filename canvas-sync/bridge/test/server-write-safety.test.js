@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createServer } from './helpers/server-factory.js';
+import { filesIndexLockDir } from '../../file-lock.js';
 
 const SECRET = 'test-secret-write-safety';
 let server, baseUrl, tmpHome;
@@ -122,6 +123,90 @@ test('/ingest/course-file reports the preserved wrong-shape index instead of gen
   assert.equal(await fs.readFile(path.join(classDir, preserved), 'utf8'), wrongShape);
   await assert.rejects(fs.access(indexPath), { code: 'ENOENT' });
   await assert.rejects(fs.access(path.join(classDir, 'files', 'route-shape.pdf')), { code: 'ENOENT' });
+});
+
+// The design that justified withFilesIndexLock's 2s deadline is written down
+// twice — storage.js:274-277 ("the extension retries a 503 rather than waiting
+// on a held-open socket") and WRITE-SAFETY-AUDIT.md:261 — and neither half was
+// true. The timeout came back as a generic 500 'write failed', which reads
+// exactly like a permanent failure, and the extension did not retry this call
+// at all (the other half of this fix, extension/background.js).
+//
+// Held from OUTSIDE the process on purpose: the in-process layer would simply
+// queue a second bridge request until the first finished, so it can never
+// produce this timeout. The cross-process layer is the one extract-course-files
+// contends for while it finalizes the same class, which is the case the
+// deadline exists for.
+test('/ingest/course-file answers 503, not 500, while another process holds the files-index lock', async () => {
+  const courseId = 77102;
+  const classDir = path.join(tmpHome, 'classes', `${courseId}-lock-busy`);
+  await fs.mkdir(classDir, { recursive: true });
+  const lockDir = filesIndexLockDir(classDir);
+  await fs.mkdir(lockDir, { recursive: true });
+  // pid 1 is alive and is not ours — the two things considerReclaim checks.
+  // Our own pid would hit its inProcessExclusive self-reclaim branch and the
+  // route would take the lock straight off us, testing nothing.
+  await fs.writeFile(path.join(lockDir, 'owner.json'),
+    JSON.stringify({ pid: 1, token: 'held-by-another-process', at: Date.now() }));
+
+  let busy;
+  try {
+    busy = await call('POST', '/ingest/course-file', {
+      courseId,
+      fileId: 7710201,
+      displayName: 'lock-busy.pdf',
+      contentType: 'application/pdf',
+      size: 3,
+      canvasUpdatedAt: '2026-08-30T00:00:00Z',
+      dataBase64: Buffer.from('pdf').toString('base64'),
+    });
+  } finally {
+    await fs.rm(lockDir, { recursive: true, force: true });
+  }
+
+  assert.equal(busy.status, 503);
+  assert.match(busy.body.error, /busy/);
+  assert.match(busy.body.detail, /timed out waiting for file lock/);
+  // Nothing half-written: the binary lands inside the lock, so a request that
+  // never got the lock must leave the class dir as it found it.
+  await assert.rejects(fs.access(path.join(classDir, 'files', 'lock-busy.pdf')), { code: 'ENOENT' });
+  // And the new branch must not have gone through the preserve path: a busy
+  // lock is not an unreadable store, and moving the index aside for one would
+  // be a data-shaped answer to a timing problem.
+  const preserved = (await fs.readdir(classDir))
+    .filter(name => name.startsWith('files_index.json.unreadable-'));
+  assert.deepEqual(preserved, [], 'a lock timeout must not preserve-and-move the index');
+});
+
+// Guards the v1.8.12 recovery contract against the 503 branch added above: an
+// unreadable index is still a 500 whose body NAMES the preserved copy, and is
+// never collapsed into the new busy answer. Same class dir shape as the route
+// test above, driven a second time so the two branches are pinned side by side.
+test('the unreadable-index breadcrumb survives the lock-timeout branch', async () => {
+  const courseId = 77103;
+  const classDir = path.join(tmpHome, 'classes', `${courseId}-still-named`);
+  const indexPath = path.join(classDir, 'files_index.json');
+  await fs.mkdir(classDir, { recursive: true });
+  await fs.writeFile(indexPath, '{"entries": [{"canvasId": "must-not-be-lost"}]}');
+  const entriesBefore = new Set(await fs.readdir(classDir));
+
+  const refused = await call('POST', '/ingest/course-file', {
+    courseId,
+    fileId: 7710301,
+    displayName: 'still-named.pdf',
+    contentType: 'application/pdf',
+    size: 3,
+    canvasUpdatedAt: '2026-08-30T00:00:00Z',
+    dataBase64: Buffer.from('pdf').toString('base64'),
+  });
+
+  assert.equal(refused.status, 500, 'an unreadable index is permanent, not busy');
+  const preserved = (await fs.readdir(classDir))
+    .find(name => name.startsWith('files_index.json.unreadable-') && !entriesBefore.has(name));
+  assert.ok(preserved, 'the route must still preserve the wrong-shape index');
+  assert.match(refused.body.error, new RegExp(preserved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'the 500 body must still name the preserved file — it is the only way back to the data');
+  assert.equal(refused.body.detail, undefined, 'the busy branch must not answer for this one');
 });
 
 // --- Site 4: config.json ----------------------------------------------------

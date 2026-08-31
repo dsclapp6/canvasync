@@ -551,14 +551,16 @@ function _updateProgressState(e) {
 // deliberately absent from this list. A 404 does not improve on the third ask.
 //
 // THE PRECONDITION, and it does not live in this file: retrying is safe only
-// while every endpoint _withRetry wraps is idempotent. Three of its five call
-// sites are bridge POSTs — publishScope, /ingest/course, /ingest/complete — and
-// a transport failure on a POST is ambiguous by nature, since the write may
-// have landed with only the response lost. They are safe today because the
-// bridge makes them so: writeCourse and updateLastSync are wholesale writes
-// keyed by id, and runIfNeeded's startPipeline carries a busy guard. An
-// append-style ingest endpoint added later would break this silently and
-// nothing here would fail loudly. See bridge/server.js's ingest handlers.
+// while every endpoint _withRetry wraps is idempotent. Four of its six call
+// sites are bridge POSTs — publishScope, /ingest/course, /ingest/course-file,
+// /ingest/complete — and a transport failure on a POST is ambiguous by nature,
+// since the write may have landed with only the response lost. They are safe
+// today because the bridge makes them so: writeCourse and updateLastSync are
+// wholesale writes keyed by id, writeCourseFile is a canvasId-keyed upsert
+// that skips an unchanged file outright, and runIfNeeded's startPipeline
+// carries a busy guard. An append-style ingest endpoint added later would
+// break this silently and nothing here would fail loudly. See
+// bridge/server.js's ingest handlers.
 const _isTransient = makeIsTransient({ NetworkError, ServerError, BridgeServerError });
 
 async function _withRetry(fn) {
@@ -1507,7 +1509,16 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
         continue;
       }
 
-      await ingestCourseFile({
+      // The one ingest call that was not retried. A bridge-side lock timeout —
+      // 2s, spent waiting on extract-course-files finalizing this same class —
+      // threw straight to the catch below, so a file that had ALREADY been
+      // downloaded was counted `errored`, left out of files_index.json until
+      // some later sync happened to re-diff it, and flagged the whole
+      // files_download item red. A single retry 100ms later would have landed.
+      // Safe under the precondition stated at _withRetry: writeCourseFile is a
+      // canvasId-keyed upsert with a skip-if-unchanged fast path, so a POST
+      // that lands twice writes the same row once.
+      await _withRetry(() => ingestCourseFile({
         courseId,
         fileId:          f.id,
         displayName:     f.display_name ?? f.filename ?? String(f.id),
@@ -1516,7 +1527,7 @@ async function _downloadCourseFiles({ course, filesIndex, modules, extraFiles = 
         size,
         canvasUpdatedAt,
         dataBase64:      binary.base64,
-      });
+      }));
       done++;
     } catch (err) {
       if (err instanceof PermissionError) {

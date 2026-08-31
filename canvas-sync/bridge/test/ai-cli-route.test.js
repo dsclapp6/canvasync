@@ -61,3 +61,65 @@ test('login endpoint refuses unknown terminal providers', async () => {
   assert.equal(status, 400);
   assert.match(body.error, /claude or codex/);
 });
+
+// The launch child used to be spawned with no 'error' listener. A launch that
+// fails asynchronously — ENOENT here, EAGAIN/EMFILE on a loaded machine — then
+// reached the EventEmitter's rethrow as an uncaughtException, and the bridge
+// registers no process-level handler, so the BRIDGE DIED after having already
+// answered 200 'Terminal opened'.
+//
+// Reverted in a scratch copy of the tree, this fails on the FIRST assertion:
+// the route answers 200 'Terminal opened' for a child that never started, so
+// 200 !== 500. What it does NOT prove is the crash itself — node:test installs
+// its own uncaughtException handler, so under the runner the unhandled 'error'
+// is downgraded to a diagnostic line ("would have caused the test to fail, but
+// instead triggered an uncaughtException event") and the process survives. The
+// crash was shown separately, outside the runner: the same spawn shape
+// (detached, stdio ignore, unref, no listener) exits node with code 1 while
+// the surrounding try/catch never sees it. That is why the fix is a listener
+// and not only a status code.
+test('a launch failure answers 500 with the manual command — and leaves the bridge alive',
+  { skip: process.platform !== 'darwin' ? 'darwin-only: the route 501s elsewhere' : false },
+  async () => {
+    const previous = process.env.CSYNC_OPEN_BIN;
+    // A path that cannot spawn. The real /usr/bin/open would open a Terminal
+    // window on the user's desktop during a test run.
+    process.env.CSYNC_OPEN_BIN = path.join(tmpHome, 'no-such-open-binary');
+    let answer;
+    try {
+      answer = await request('/api/ai-cli/login', {
+        method: 'POST', body: JSON.stringify({ provider: 'claude' }),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.CSYNC_OPEN_BIN;
+      else process.env.CSYNC_OPEN_BIN = previous;
+    }
+
+    assert.equal(answer.status, 500);
+    assert.match(answer.body.error, /could not open the login terminal/);
+    assert.match(answer.body.detail, /ENOENT/);
+    // A dead end has to name its own way out, the way the non-macOS branch does.
+    assert.equal(answer.body.command, 'claude auth login');
+
+    // Reached at all only because the process survived the failed spawn.
+    const { status } = await request('/api/ai-cli');
+    assert.equal(status, 200);
+  });
+
+test('a codex launch failure names the codex login command',
+  { skip: process.platform !== 'darwin' ? 'darwin-only: the route 501s elsewhere' : false },
+  async () => {
+    const previous = process.env.CSYNC_OPEN_BIN;
+    process.env.CSYNC_OPEN_BIN = path.join(tmpHome, 'no-such-open-binary');
+    let answer;
+    try {
+      answer = await request('/api/ai-cli/login', {
+        method: 'POST', body: JSON.stringify({ provider: 'codex' }),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.CSYNC_OPEN_BIN;
+      else process.env.CSYNC_OPEN_BIN = previous;
+    }
+    assert.equal(answer.status, 500);
+    assert.equal(answer.body.command, 'codex login');
+  });

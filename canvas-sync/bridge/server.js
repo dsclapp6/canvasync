@@ -469,7 +469,26 @@ export function buildApp(config) {
       logRequest(req, res, courseId);
     } catch (err) {
       console.error('[bridge] /ingest/course-file error:', err.message, 'courseId:', courseId);
-      res.status(500).json({ error: err instanceof UnreadableStoreError ? err.message : 'write failed' });
+      // UnreadableStoreError is checked FIRST and on its own, because its
+      // message names the preserved copy of the index
+      // (files_index.json.unreadable-*) and that breadcrumb is the only route
+      // back to the data. A status branch added below must never shadow it.
+      if (err instanceof UnreadableStoreError) {
+        res.status(500).json({ error: err.message });
+      } else if (err?.code === 'ELOCKTIMEOUT') {
+        // The 2s deadline withFilesIndexLock enforces is a fail-fast written
+        // for THIS caller: storage.js:274-277 says "the extension retries a
+        // 503 rather than waiting on a held-open socket", and
+        // WRITE-SAFETY-AUDIT.md:261 repeats it. Neither half was true — the
+        // timeout came back as a generic 500 'write failed', indistinguishable
+        // from a permanent failure, and the extension did not retry this call
+        // at all (fixed alongside, extension/background.js). A lock held by
+        // extract-course-files for a moment is the transient case the deadline
+        // exists for, so say so on the wire: 503, and name the retry.
+        res.status(503).json({ error: 'files index is busy, retry', detail: err.message });
+      } else {
+        res.status(500).json({ error: 'write failed' });
+      }
       logRequest(req, res, courseId);
     }
   });
@@ -2033,15 +2052,49 @@ export function buildApp(config) {
       await fs.writeFile(launcher,
         `#!/bin/zsh\nexec ${shellQuote(setup)} ${provider}\n`, { mode: 0o700 });
       await fs.chmod(launcher, 0o700);
-      const opened = spawn('/usr/bin/open', ['-a', 'Terminal', launcher], {
+      // Overridable so the launch-failure path below is testable without
+      // opening a real Terminal window; production always takes the default.
+      // Same idiom as CSYNC_CLAUDE_BIN / CSYNC_CODEX_BIN.
+      const openBin = process.env.CSYNC_OPEN_BIN ?? '/usr/bin/open';
+      const opened = spawn(openBin, ['-a', 'Terminal', launcher], {
         detached: true, stdio: 'ignore',
       });
-      opened.unref();
-      res.json({
-        ok: true,
-        provider,
-        message: `Terminal opened for ${provider === 'claude' ? 'Claude Code' : 'Codex'} login.`,
+      // spawn reports a LAUNCH failure — EAGAIN or EMFILE while the pipeline
+      // is running several children next to a 20GB model — asynchronously, on
+      // an 'error' event, long after the try/catch around this block has
+      // exited. With no listener the EventEmitter rethrows it as an
+      // uncaughtException, and the bridge installs no process-level handler
+      // anywhere, so the whole bridge dies: dashboard and ingest with it.
+      // Every other spawn site here attaches this listener (spawnWorklistRebuild,
+      // GET /local-model, POST /local-model/setup); this route was the one that
+      // did not. Verified: an unhandled 'error' exits node 1, and the
+      // surrounding try/catch never sees it.
+      //
+      // Node emits exactly one of 'spawn' or 'error' for the launch itself, so
+      // the answer waits that one tick rather than promising "Terminal opened"
+      // for a child that never started. The listener stays attached for the
+      // child's whole life, because an 'error' arriving after the response
+      // would still be fatal, and headersSent keeps that late one to the log.
+      opened.on('error', (err) => {
+        console.error('[bridge] open Terminal failed:', err.message);
+        if (res.headersSent) return;
+        res.status(500).json({
+          error: 'could not open the login terminal',
+          detail: err.message,
+          // The dead end has to name its own way out: the same command the
+          // non-macOS branch hands back, so the user can finish by hand.
+          command: provider === 'claude' ? 'claude auth login' : 'codex login',
+        });
       });
+      opened.on('spawn', () => {
+        if (res.headersSent) return;
+        res.json({
+          ok: true,
+          provider,
+          message: `Terminal opened for ${provider === 'claude' ? 'Claude Code' : 'Codex'} login.`,
+        });
+      });
+      opened.unref();
     } catch (err) {
       console.error('[bridge] terminal AI login launch failed:', err.message);
       res.status(500).json({ error: 'could not open the login terminal', detail: err.message });

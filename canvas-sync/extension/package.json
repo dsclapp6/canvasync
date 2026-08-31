@@ -1,6 +1,6 @@
 {
   "name": "canvasync-extension",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "private": true,
   "type": "module",
   "description": "Not shipped to Chrome — Chrome loads only what manifest.json names. This exists so node --test can import the extension's ES modules.",
