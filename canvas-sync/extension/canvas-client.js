@@ -169,6 +169,7 @@ export async function canvasFetch(path, init = {}) {
       // must be typed as one rather than returned as a body to parse.
       throwForStatus(retry, url);
       if (retry.status === 403) throw new RateLimitError();
+      if (!retry.ok) throw new HttpError(retry.status, url);
       return retry;
     }
     // Non-rate-limit 403 = student doesn't have permission for this resource
@@ -178,6 +179,27 @@ export async function canvasFetch(path, init = {}) {
   }
 
   if (response.status >= 500) throw new ServerError(response.status);
+
+  // EVERY REMAINING NON-2xx IS AN ERROR, and is typed as one here.
+  //
+  // This function used to hand 400, 404, 405, 409 and 429 back to the caller
+  // as an ordinary response. `paginate` then called `.json()` on the error
+  // body, found it was not an array, and yielded it as data — so a rate-limited
+  // page mid-listing became a row in the resource, and a disabled tab became
+  // `pages.json = [{"message":"That page has been disabled for this course"}]`
+  // in five of six classes. Neither failed; both produced a sync that reported
+  // success over a hole.
+  //
+  // Deciding this by STATUS rather than by the shape of the body is the whole
+  // point: `{"errors":[…]}` is what Canvas says for a rate limit AND for an
+  // authorization refusal, so no amount of reading the body can separate
+  // "come back later" from "this is closed to you". The status can.
+  //
+  // What is TOLERABLE is not decided here. This types the failure; the caller
+  // owns the policy — background.js's fetchResource tolerates a 404 listing as
+  // a closed resource (omit the key, keep the last known-good file) and lets
+  // every other HttpError fail the resource loudly.
+  if (!response.ok) throw new HttpError(response.status, url);
 
   return response;
 }

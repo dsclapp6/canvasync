@@ -1,7 +1,7 @@
 // background.js — Service worker (ES module). Entry point for all background logic.
 // No DOM access. Runs in the extension's isolated service-worker context.
 
-import { paginate, fetchBinary, canvasGetJson, canvasFetch, CANVAS_BASE, AuthError, NetworkError, ServerError, PermissionError } from './canvas-client.js';
+import { paginate, fetchBinary, canvasGetJson, canvasFetch, CANVAS_BASE, AuthError, NetworkError, ServerError, PermissionError, HttpError } from './canvas-client.js';
 import { collectReplyMessages, stripHtml, rankTopicsForView, VIEW_TOPIC_CEILING }
   from './discussion-view.js';
 import {
@@ -748,7 +748,7 @@ async function fullSync(reason) {
       // Every key that fetchResource/_resolveCoursePacks will emit a
       // course-item event for must be announced here: progress.js builds rows
       // only from this list at course-start and drops events for missing rows.
-      const itemList = ['assignments', 'groups', 'modules', 'discussions', 'announcements', 'pages', 'quizzes', 'events', 'files', 'grades', 'tabs', 'groups_list', 'external_tools', 'course_packs', 'files_download', 'syllabus'];
+      const itemList = ['assignments', 'groups', 'modules', 'discussions', 'announcements', 'pages', 'front_page', 'quizzes', 'events', 'files', 'grades', 'tabs', 'groups_list', 'external_tools', 'course_packs', 'files_download', 'syllabus'];
       _broadcastProgress({
         phase:    'course-start',
         courseId: id,
@@ -784,11 +784,22 @@ async function fullSync(reason) {
           _broadcastProgress({ phase: 'course-item', courseId: id, item, status: 'done', count: data.length });
           return data;
         } catch (err) {
-          if (err instanceof PermissionError) {
+          // TOLERATED: this resource is closed to us. A 403 says so outright; a
+          // 404 is how Canvas says it for a disabled tab — five of six of this
+          // user's courses answer `/pages` that way while the pages themselves
+          // stay readable one at a time. Both mean "we cannot enumerate this",
+          // so the key is omitted and the last known-good file survives.
+          const closed = err instanceof PermissionError
+            || (err instanceof HttpError && err.status === 404);
+          if (closed) {
             _broadcastProgress({ phase: 'course-item', courseId: id, item, status: 'forbidden', count: 0 });
             forbidden.add(item);
             return [];
           }
+          // Everything else — 400, 409, 429, a typed server error — is a
+          // FAILURE, and falls through to the loud path below. Tolerating a
+          // rate limit here is how a first sync completes with no
+          // assignments.json ever written.
           // A user-initiated cancel is not an error — don't paint red states
           // on rows that were simply interrupted.
           if (!(err instanceof SyncCancelled)) {
@@ -837,17 +848,35 @@ async function fullSync(reason) {
         // href it lives in — so the link has to be captured before it, or the
         // file is undiscoverable however the corpus is searched afterwards.
         const replyHtml = [];
+        const unreadableTopics = [];
         for (const topic of viewTargets) {
           _checkCancel();
           try {
             const view = await canvasGetJson(`/api/v1/courses/${id}/discussion_topics/${topic.id}/view`);
             const messages = collectReplyMessages(view);
             replyHtml.push(...messages);
-            // Same strip, same order, same truncation as before: replies_text
-            // is read downstream and this fix must not reshape it.
+            // NO CAP. This used to keep the first 50 replies and the first
+            // 20,000 characters, silently — so the one thread where a seminar
+            // actually assigns its reading lost everything past reply 50, and
+            // the sync reported success. Storage is not a constraint in this
+            // repo, and the user's instruction is explicit: "There should be
+            // absolutely nothing that doesnt make it to the output."
             const texts = messages.map(stripHtml);
-            if (texts.length) topic.replies_text = texts.slice(0, 50).join('\n---\n').slice(0, 20000);
-          } catch { /* locked topic or require_initial_post — skip */ }
+            if (texts.length) topic.replies_text = texts.join('\n---\n');
+          } catch (err) {
+            // Locked, or require_initial_post. Ordinary — but a thread we
+            // could not read is a thread whose contents are missing from every
+            // downstream corpus, and that is worth a line in the log rather
+            // than a shrug in a comment.
+            unreadableTopics.push(topic?.title ?? String(topic?.id ?? '?'));
+          }
+        }
+        if (unreadableTopics.length) {
+          await _log('info',
+            `${unreadableTopics.length} discussion topic(s) in ${course.name ?? id} could not `
+            + `be opened (locked, or a reply is required first); their replies are not in the `
+            + `corpus: ${unreadableTopics.slice(0, 5).join('; ')}`
+            + `${unreadableTopics.length > 5 ? '; …' : ''}`, reason);
         }
         if (unopenedTopics.length) {
           // Never silent. A ceiling that drops threads without saying so is
@@ -864,6 +893,100 @@ async function fullSync(reason) {
             reason);
         }
 
+        // --- The wiki half of the course ---------------------------------
+        //
+        // Order matters and is the whole design. Module items come first
+        // because they are the richest seed (page slugs outright, in
+        // `page_url`); the front page second because in a `default_view:
+        // 'wiki'` course it IS the course home and the only surface that
+        // names the Week pages; the crawl last, because it needs both.
+        //
+        // Measured on this account before any of this existed: ZERO page links
+        // were present anywhere in the collected bodies of all six courses. A
+        // crawl seeded only from what we already had would have found nothing
+        // at all — which is why the front-page fetch is not an addition to the
+        // crawl, it is its precondition.
+        await _fillMissingModuleItems(id, modules, reason);
+
+        // The course home page. In five of this user's six courses
+        // `default_view` is 'wiki', meaning this page is what the student sees
+        // when they open the course — and we had never fetched it. A course
+        // with no front page set answers 404, which is ordinary, not an error.
+        let frontPage = null;
+        try {
+          const fp = await canvasGetJson(`/api/v1/courses/${id}/front_page`);
+          if (fp && !_isCanvasErrorBody(fp)) frontPage = fp;
+        } catch { /* no front page set, or not readable — both are ordinary */ }
+        if (frontPage) {
+          _broadcastProgress({ phase: 'course-item', courseId: id, item: 'front_page', status: 'done', count: 1 });
+        }
+
+        // Seeds, in the order they were argued for above.
+        const listedSlugs = new Set(
+          pages.map(pg => _normalizePageSlug(pg?.url)).filter(Boolean));
+        if (frontPage) listedSlugs.delete(_normalizePageSlug(frontPage.url));
+        const seedSlugs = new Set([
+          ..._pageSlugsFromModules(modules),
+          ..._pageSlugsFromHtml(frontPage?.body, id),
+          ..._pageSlugsFromHtml(course.syllabus_body, id),
+          ...assignments.flatMap(a => [..._pageSlugsFromHtml(a?.description, id)]),
+          ...announcements.flatMap(a => [..._pageSlugsFromHtml(a?.message, id)]),
+          ...discussions.flatMap(d => [..._pageSlugsFromHtml(d?.message, id)]),
+          ...replyHtml.flatMap(h => [..._pageSlugsFromHtml(h, id)]),
+          ...quizzes.flatMap(q => [..._pageSlugsFromHtml(q?.description, id)]),
+        ]);
+        // WHAT THIS COURSE HAD LAST TIME.
+        //
+        // The crawl is a DISCOVERY, not an enumeration: its reach is only as
+        // good as the seeds it happened to find. So a course whose listing
+        // worked last term and gets its Pages tab disabled mid-term could
+        // rediscover one page where twenty were known, and — because the
+        // bridge writes resource keys wholesale — that one-page array would
+        // replace the twenty-page file. A partial crawl must never be able to
+        // shrink the record.
+        //
+        // Seeding from the slugs we ourselves collected last sync closes that:
+        // every previously-known page is re-attempted, so the result cannot be
+        // smaller for want of a seed. A page that has genuinely been deleted
+        // 404s and drops out, which is correct — this remembers what to LOOK
+        // for, not what to claim.
+        //
+        // Only when the listing is closed. A working listing is authoritative
+        // and needs no help, and re-fetching every remembered slug against it
+        // would be twenty requests to learn nothing.
+        const SLUG_MEMORY_KEY = 'pageSlugsByCourse';
+        const slugMemory = (await _storageGet([SLUG_MEMORY_KEY]))[SLUG_MEMORY_KEY] ?? {};
+        if (forbidden.has('pages')) {
+          for (const slug of (Array.isArray(slugMemory[id]) ? slugMemory[id] : [])) {
+            if (slug) seedSlugs.add(slug);
+          }
+        }
+
+        const crawled = await _crawlCoursePages({
+          courseId: id, seeds: seedSlugs, known: listedSlugs, reason });
+
+        // One list, deduped by slug. The listing's own rows win where both
+        // exist — they came from the endpoint built to describe them.
+        const pagesBySlug = new Map();
+        for (const pg of [...crawled, ...(frontPage ? [frontPage] : []), ...pages]) {
+          const slug = _normalizePageSlug(pg?.url) || `#${pagesBySlug.size}`;
+          pagesBySlug.set(slug, pg);
+        }
+        const allPages = [...pagesBySlug.values()];
+        // Remember the slugs, not the bodies — this is a seed list for the
+        // next sync, not a second cache to drift from the first.
+        if (allPages.length) {
+          slugMemory[id] = [...new Set(allPages.map(pg => _normalizePageSlug(pg?.url)).filter(Boolean))];
+          await _storageSet({ [SLUG_MEMORY_KEY]: slugMemory });
+        }
+        if (crawled.length || frontPage) {
+          _broadcastProgress({ phase: 'course-item', courseId: id, item: 'pages', status: 'done', count: allPages.length });
+          await _log('info',
+            `Course ${course.name ?? id}: collected ${allPages.length} wiki page(s)`
+            + `${forbidden.has('pages') ? ' with the pages listing closed' : ''}`
+            + ` (${crawled.length} reached by link${frontPage ? ', plus the front page' : ''}).`, reason);
+        }
+
         // Harvest file IDs embedded in HTML bodies across every scraped
         // surface (syllabus tab, page bodies, assignment descriptions,
         // announcements, discussions, quiz descriptions). Profs routinely link
@@ -871,7 +994,11 @@ async function fullSync(reason) {
         // Modules — this is the only way those get picked up.
         const htmlCorpus = [
           course.syllabus_body,
-          ...pages.map(p => p?.body),
+          // allPages, not `pages`: for five of six courses the listing is
+          // closed and everything real arrived through the crawl. This line
+          // reading `pages` was why week-page PDFs were never downloaded —
+          // the corpus that finds embedded files had nothing to read.
+          ...allPages.map(p => p?.body),
           ...assignments.map(a => a?.description),
           ...announcements.map(a => a?.message),
           ...discussions.map(d => d?.message),
@@ -939,7 +1066,32 @@ async function fullSync(reason) {
           ...unlessForbidden('assignments', 'assignments', assignments),
           ...unlessForbidden('modules', 'modules', modules),
           ...unlessForbidden('announcements', 'announcements', announcements),
-          ...unlessForbidden('pages', 'pages', pages),
+          // Pages get their own rule, because they are the one resource we
+          // now collect two ways. Three cases, and the middle one is the
+          // whole point of the work order:
+          //   listing worked            -> send what we have (an honest [] included)
+          //   listing closed, crawl won -> SEND THE REAL PAGES. The 403 is not
+          //                                evidence of absence, and letting the
+          //                                omission stand would leave the
+          //                                disabled-tab placeholder on disk.
+          //   listing closed, crawl dry -> omit, so the last known-good file
+          //                                survives a transient failure.
+          // Three cases, and the payload now SAYS which one it is, because the
+          // bridge cannot tell an authoritative list from a partial discovery
+          // by looking at it — and writing the second over the first is how a
+          // sparse crawl erases a rich cache (Codex M1).
+          //   listing worked  -> 'listing', written wholesale. Authoritative,
+          //                      including an honest empty: a course whose
+          //                      pages were all deleted must not resurrect
+          //                      them from cache forever.
+          //   listing closed  -> 'crawl', merged by slug. A crawl's reach is
+          //                      only as good as its seeds, so it may add and
+          //                      update but never remove.
+          //   nothing at all  -> key absent, the strongest signal there is:
+          //                      storage writes nothing and the cache stands.
+          ...((allPages.length || !forbidden.has('pages'))
+            ? { pages: allPages, pages_source: forbidden.has('pages') ? 'crawl' : 'listing' }
+            : {}),
           ...unlessForbidden('quizzes', 'quizzes', quizzes),
           ...unlessForbidden('groups', 'assignment_groups', assignmentGroups),
           ...unlessForbidden('discussions', 'discussions', discussions),
@@ -1376,14 +1528,212 @@ async function _findSyllabusCandidates(course, filesIndex, modules) {
   return ranked.slice(0, MAX_SYLLABUS_CANDIDATES);
 }
 
+// A Canvas ERROR BODY, not a resource. Canvas answers a disabled tab with 404
+// and a JSON object — `{"message":"That page has been disabled for this
+// course"}` — and 404 is not a status `throwForStatus` throws on, so the body
+// came back, parsed clean, failed the Array check in `paginate`, and was
+// yielded as if it were data. `_collectPages` then pushed it as a ROW.
+//
+// That is how five of six courses came to hold
+// `pages.json = [{"message":"That page has been disabled for this course"}]`:
+// not a fetch that failed loudly, but one that succeeded into a shape nothing
+// inspected. The placeholder then LOOKED like collected data to everything
+// downstream, which is worse than an empty file — an empty file says "nothing
+// here", and this said "one page, and its title is an apology".
+function _isCanvasErrorBody(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  // A real resource always carries an identity. An error envelope never does.
+  if (value.id != null || value.url != null || value.page_id != null) return false;
+  return typeof value.message === 'string' || value.errors != null
+    || value.status === 'unauthorized' || value.status === 'unauthenticated';
+}
+
+
 // Collect all pages of a paginated endpoint into a flat array.
 async function _collectPages(url) {
   const all = [];
   for await (const page of paginate(url)) {
     _checkCancel();
-    all.push(...(Array.isArray(page) ? page : [page]));
+    if (Array.isArray(page)) { all.push(...page); continue; }
+    // Typed as a permission failure so the caller's existing guard does the
+    // right thing: mark the item forbidden, OMIT its key from the ingest, and
+    // leave the last known-good file on disk untouched. Returning it as data
+    // is the one option that loses information.
+    // TWO DEFENCES, ONE JOB EACH, and they do not overlap. Status decides
+    // whether a failure is tolerable, and it decides that before any body is
+    // read — so this one is left with exactly the case status cannot see: a
+    // 200 response whose body is an error envelope rather than a resource.
+    // There is no tolerable version of that, so it is always loud. The
+    // `_isToleratedErrorBody` discriminator that used to live here is gone:
+    // once canvasFetch types every non-2xx, reading the body to guess at
+    // tolerance was a second answer to a question already answered.
+    if (_isCanvasErrorBody(page)) {
+      throw new Error(`Canvas returned an error body with a 2xx status for ${url}: `
+        + JSON.stringify(page).slice(0, 200));
+    }
+    all.push(page);
   }
   return all;
+}
+
+// ---------------------------------------------------------------------------
+// Wiki pages: the half of a course that the pages LISTING will not admit to
+// ---------------------------------------------------------------------------
+//
+// Five of six of this user's courses hide the Pages tab, so
+// `/api/v1/courses/:id/pages` 404s — while the pages themselves are published,
+// student-visible, and in one course hold the entire syllabus. The user's
+// instruction is unambiguous: "There should be absolutely nothing that doesnt
+// make it to the output."
+//
+// The listing being closed says nothing about whether a page can be fetched by
+// slug, and measured against this account's real data it says nothing true:
+// individual fetches work fine. So the slugs are discovered from every surface
+// that names one, and the closure is walked — a Week page links its sub-pages,
+// and those link further.
+
+// `/courses/<id>/pages/<slug>` inside an HTML body. Same course only: a link
+// into ANOTHER course is a link to something this student may not be enrolled
+// in, and following it would collect a stranger's material into this folder.
+function _pageSlugsFromHtml(html, courseId) {
+  const out = new Set();
+  if (typeof html !== 'string' || !html) return out;
+  const re = /\/courses\/(\d+)\/pages\/([^"'#?\s<>\\)]+)/g;
+  let m;
+  while ((m = re.exec(html))) {
+    if (String(m[1]) !== String(courseId)) continue;
+    const slug = _normalizePageSlug(m[2]);
+    if (slug) out.add(slug);
+  }
+  return out;
+}
+
+// Module items of type Page carry the slug outright, in `page_url`. This is by
+// far the richest seed on real data — 30, 45 and 51 page items in three of
+// this user's courses — and it needs no HTML parsing at all.
+function _pageSlugsFromModules(modules) {
+  const out = new Set();
+  for (const mod of modules ?? []) {
+    for (const item of mod?.items ?? []) {
+      if (item?.type !== 'Page') continue;
+      const slug = _normalizePageSlug(item.page_url);
+      if (slug) out.add(slug);
+    }
+  }
+  return out;
+}
+
+function _normalizePageSlug(raw) {
+  if (!raw) return '';
+  let slug = String(raw).trim();
+  if (!slug) return '';
+  // A body may carry the slug percent-encoded; the API wants it raw, and two
+  // spellings of one slug would otherwise be fetched twice and stored twice.
+  try { slug = decodeURIComponent(slug); } catch { /* leave as-is */ }
+  return slug.replace(/[/#?].*$/, '').trim();
+}
+
+// A runaway guard, not a budget. Nothing in this account comes near it (the
+// largest course lists 29 pages), and if it ever fires it says so by name —
+// the completeness doctrine's rule is not "never bound", it is "never drop
+// anything silently".
+const PAGE_CRAWL_CEILING = 1000;
+
+/**
+ * Walk the page closure from a set of seed slugs, fetching each page and
+ * harvesting the slugs its own body links, until nothing new appears.
+ *
+ * Returns the pages it managed to fetch. A slug that 403s or 404s is dropped
+ * from the crawl but counted, because "this page is not readable by you" and
+ * "this page does not exist" are both ordinary in a live course and neither is
+ * a reason to abandon the rest.
+ */
+async function _crawlCoursePages({ courseId, seeds, known = new Set(), reason }) {
+  const queue = [...seeds].filter(s => s && !known.has(s));
+  const seen = new Set(queue);
+  const collected = [];
+  const unreadable = [];
+  let dropped = 0;
+
+  while (queue.length) {
+    _checkCancel();
+    if (collected.length >= PAGE_CRAWL_CEILING) { dropped = queue.length; break; }
+    const slug = queue.shift();
+    let page;
+    try {
+      page = await canvasGetJson(`/api/v1/courses/${courseId}/pages/${encodeURIComponent(slug)}`);
+    } catch {
+      unreadable.push(slug);
+      continue;
+    }
+    // The same error-envelope shape the listing returns, one level down.
+    if (!page || _isCanvasErrorBody(page)) { unreadable.push(slug); continue; }
+    // STAMP THE SLUG WE ASKED FOR. The bridge merges crawl-sourced pages into
+    // the cached file by `url`, and a merge on a missing key is worse than no
+    // merge — it would append duplicates rather than update rows. Canvas does
+    // return `url` on a single-page GET, but "does" is not something this code
+    // can check at runtime, and it costs one line to stop depending on it.
+    if (!page.url) page.url = slug;
+    collected.push(page);
+    // THE CLOSURE. A Week page's whole job is to link the material for that
+    // week, so the pages that matter most are exactly the ones no listing and
+    // no module ever named.
+    for (const next of _pageSlugsFromHtml(page.body, courseId)) {
+      if (seen.has(next) || known.has(next)) continue;
+      seen.add(next);
+      queue.push(next);
+    }
+  }
+
+  if (dropped) {
+    await _log('warn',
+      `Course ${courseId}: page crawl stopped at the ${PAGE_CRAWL_CEILING}-page ceiling `
+      + `with ${dropped} still queued — those pages were NOT collected.`, reason);
+  }
+  if (unreadable.length) {
+    await _log('info',
+      `Course ${courseId}: ${unreadable.length} linked page(s) could not be read `
+      + `(unpublished, or not shared with you): ${unreadable.slice(0, 5).join(', ')}`
+      + `${unreadable.length > 5 ? ', …' : ''}`, reason);
+  }
+  return collected;
+}
+
+// Canvas omits `items` from a module in a `?include[]=items` listing once the
+// module is large enough, with no flag saying it did. BUSI 374 is the proof:
+// one module, "Session navigation", arriving with items absent while the
+// module plainly holds the whole course. Fetch those items directly.
+async function _fillMissingModuleItems(courseId, modules, reason) {
+  const thin = (modules ?? []).filter(m => m && !(Array.isArray(m.items) && m.items.length));
+  if (!thin.length) return 0;
+  let filled = 0;
+  const unreachable = [];
+  for (const mod of thin) {
+    _checkCancel();
+    if (mod.id == null) continue;
+    try {
+      const items = await _collectPages(
+        `/api/v1/courses/${courseId}/modules/${mod.id}/items?include[]=content_details&per_page=100`);
+      if (items.length) { mod.items = items; filled += items.length; }
+    } catch {
+      // A module the student may not open — ordinary. But a module whose items
+      // we failed to fetch is a module whose pages never get seeded, so it is
+      // named rather than shrugged at.
+      unreachable.push(mod.name ?? String(mod.id));
+    }
+  }
+  if (unreachable.length) {
+    await _log('warn',
+      `Course ${courseId}: ${unreachable.length} module(s) arrived without items and could `
+      + `not be fetched directly, so any pages they list were not discovered through them: `
+      + `${unreachable.slice(0, 5).join('; ')}${unreachable.length > 5 ? '; …' : ''}`, reason);
+  }
+  if (filled) {
+    await _log('info',
+      `Course ${courseId}: recovered ${filled} module item(s) that the modules `
+      + `listing omitted despite include[]=items.`, reason);
+  }
+  return filled;
 }
 
 // ---------------------------------------------------------------------------
