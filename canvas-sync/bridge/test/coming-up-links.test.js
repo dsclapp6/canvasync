@@ -129,21 +129,32 @@ test('every row renders something clickable OR plain text, never a dead control'
 test('Coming up reuses the calendar resolver rather than re-deriving one', () => {
   // If this ever stops being true the two surfaces can disagree about the same
   // op, which is the drift the reuse exists to prevent.
-  const home = /\$\('home-up-list'\)\.innerHTML = next\.map\(o => \{[\s\S]*?\}\)\.join\(''\);/.exec(SRC);
-  assert.ok(home, 'the Coming up renderer moved — stale test');
-  assert.match(home[0], /calItemModel\(o\)/, 'must resolve through calItemModel');
-  assert.match(home[0], /calTitleHtml\(o, m, o\.title\)/, 'must render through calTitleHtml');
-  assert.doesNotMatch(home[0], /<span class="hu-title">\$\{esc\(o\.title\)\}/,
+  const row = declaration('homeRowHtml');
+  assert.match(row, /calItemModel\(o\)/, 'must resolve through calItemModel');
+  assert.match(row, /calTitleHtml\(o, m, o\.title\)/, 'must render through calTitleHtml');
+  assert.doesNotMatch(row, /<span class="hu-title">\$\{esc\(o\.title\)\}/,
     'the title is plain text again — rows are back to opening the class');
+  // Both home lists draw through that one renderer, so Completed cannot drift
+  // from Coming up any more than Coming up can drift from the calendar.
+  const home = declaration('renderHome');
+  assert.match(home, /\$\('home-up-list'\)\.innerHTML = next\.map\(o => homeRowHtml\(o, cards\)\)/,
+    'Coming up must render every row through homeRowHtml');
+  assert.match(home, /\$\('home-done-list'\)\.innerHTML = completed\.map\(o => homeRowHtml\(o, cards\)\)/,
+    'Completed must render every row through homeRowHtml');
 });
 
 test('a click on a row control does not ALSO open the class behind it', () => {
   // Both handlers are live: the document-level [data-open-assignment] listener
   // and the row's own class-page fallback. Without the guard a deep-link
   // opened the item and the class page in the same click.
-  const wire = /\$\('home-up-list'\)\.addEventListener\('click', ev => \{[\s\S]*?\}\);/.exec(SRC);
-  assert.ok(wire, 'the Coming up click handler moved — stale test');
-  assert.match(wire[0], /closest\('a, button'\)/, 'controls must own their own click');
-  assert.match(wire[0], /openClass\(row\.dataset\.folder\)/,
+  const wire = declaration('homeRowClick');
+  assert.match(wire, /closest\('a, button, input'\)/,
+    'controls must own their own click — the checkbox included, or every tick opens the class');
+  assert.match(wire, /openClass\(row\.dataset\.folder\)/,
     'the rest of the row must still go somewhere — no reachable dead click');
+  const home = declaration('wireHome');
+  assert.match(home, /\$\('home-up-list'\)\.addEventListener\('click', homeRowClick\)/,
+    'Coming up must be wired to the shared row handler');
+  assert.match(home, /\$\('home-done-list'\)\.addEventListener\('click', homeRowClick\)/,
+    'Completed must be wired to the same handler — its rows have the same controls');
 });

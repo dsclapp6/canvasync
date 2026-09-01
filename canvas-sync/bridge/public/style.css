@@ -1065,7 +1065,9 @@ table.files tr:hover td { background: var(--sunk); }
 }
 .cal-check-gap { display: block; }
 .cal-row.is-done .cal-title,
-.cal-row.is-done .cal-when { color: var(--muted); text-decoration: line-through; }
+.cal-row.is-done .cal-when,
+.hu-row.is-done .hu-title,
+.hu-row.is-done .hu-day { color: var(--muted); text-decoration: line-through; }
 .cal-row.is-done .cal-tags { color: var(--muted); }
 .cal-row.is-done .cal-cat,
 .cal-row.is-done .cal-kind,
@@ -2075,7 +2077,7 @@ table.files tr:hover td { background: var(--sunk); }
 
 .home-upcoming { margin-top: var(--s-8); }
 .home-upcoming h3 { padding-bottom: var(--s-2); border-bottom: 1px solid var(--rule-2); margin-bottom: var(--s-2); }
-#home-up-list { list-style: none; }
+#home-up-list, #home-done-list { list-style: none; }
 .hu-row {
   display: flex;
   align-items: baseline;
@@ -2109,6 +2111,11 @@ table.files tr:hover td { background: var(--sunk); }
 }
 .hu-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hu-kind { font-size: var(--t-legend); color: var(--muted); flex: none; }
+/* The calendar's own checkbox (calCheckHtml), in a flex row rather than the
+   calendar's grid: the spacer has to hold the checkbox's width here, or a row
+   that cannot be ticked shifts its day column left of its neighbours'. */
+.hu-row .cal-check,
+.hu-row .cal-check-gap { width: 13px; flex: none; }
 
 /* --- Grades ---------------------------------------------------------------- */
 .gr-head { display: flex; align-items: baseline; gap: var(--s-5); flex-wrap: wrap; margin-bottom: var(--s-4); }

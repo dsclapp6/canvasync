@@ -564,72 +564,10 @@ function wireNav() {
     renderClassChips();
   });
 
-  // Ticking a deadline off from the calendar. The row goes struck-through at
-  // once and the bridge rebuilds the worklist behind it — waiting for the
-  // rebuild before acknowledging the click reads as the checkbox not working.
-  $('cal-ops').addEventListener('change', async (ev) => {
-    const box = ev.target.closest('[data-cal-done]');
-    if (!box) return;
-    const folder = box.dataset.calClass;
-    const id = box.dataset.calDone;
-    // A prep block ticks itself off by id; the assignment it belongs to stays
-    // open. Anything else ticks the item.
-    const cpId = box.dataset.calCp || null;
-    // Two keys, deliberately. `key` identifies the tickable THING (a prep
-    // block is not its parent), and is what CAL_DONE and the pending overlay
-    // are keyed on. `writeKey` identifies the FILE the write lands in — one
-    // JSON object per task, rewritten wholesale — so a tick, a note and a
-    // dragged sibling all queue behind each other instead of overwriting one
-    // another.
-    const key = calDoneKey(folder, id, cpId);
-    const writeKey = taskWriteKey(folder, id);
-    const done = box.checked;
-    // `.cal-row` in the list, `.cal-chip` in the week and month grids — the
-    // same checkbox is rendered into both, so the handler cannot assume one.
-    const row = box.closest('.cal-row, .cal-chip');
-    if (done) CAL_DONE.add(key); else CAL_DONE.delete(key);
-    CAL_DONE_PENDING.set(key, done);
-    row?.classList.toggle('is-done', done);
-    // POSTs for one key are SERIALIZED, and each queue turn sends the LATEST
-    // intent. Two overlapping requests could land out of order — tick then
-    // untick, with the tick's POST writing last — leaving the server at the
-    // stale intent while the pending overlay pins the newer one: the row
-    // redrew unchecked on every reload, forever, and the saved state was
-    // simply wrong.
-    const tail = CAL_POST_QUEUE.get(writeKey) ?? Promise.resolve();
-    const run = tail.then(async () => {
-      // The pending map is the newest intent when it still holds one, and
-      // THIS click's own value otherwise. It must never be read as "nothing
-      // to send": seedCalDone retires an entry the moment the (deliberately
-      // stale) worklist agrees with it, which for a fresh un-tick is
-      // immediately — so bailing on `undefined` dropped the user's last
-      // toggle silently, exactly the wedge this queue exists to prevent.
-      // Re-POSTing a value the server already holds is idempotent.
-      const intent = CAL_DONE_PENDING.has(key) ? CAL_DONE_PENDING.get(key) : done;
-      try {
-        await api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cpId ? { checkpointDone: { id: cpId, done: intent } } : { done: intent }),
-        });
-      } catch (err) {
-        // Put it back rather than leaving a tick that did not save — unless
-        // the user has re-toggled since; then the newer queue turn owns it.
-        if (CAL_DONE_PENDING.get(key) === intent) {
-          if (intent) CAL_DONE.delete(key); else CAL_DONE.add(key);
-          CAL_DONE_PENDING.delete(key);
-          box.checked = !intent;
-          row?.classList.toggle('is-done', !intent);
-          toast(`Could not save that: ${err.message}`);
-        }
-      } finally {
-        // Drop the tail once it is the last one: the settled promise's
-        // closure pins `box` and `row`, detached after any re-render.
-        if (CAL_POST_QUEUE.get(writeKey) === run) CAL_POST_QUEUE.delete(writeKey);
-      }
-    });
-    CAL_POST_QUEUE.set(writeKey, run);
-  });
+  // Ticking a deadline off. Bound on the document, not on #cal-ops: the same
+  // checkbox is drawn by the home page's Coming up and Completed rows, which
+  // live outside the calendar. See onCalDoneChange.
+  document.addEventListener('change', onCalDoneChange);
 
   // A month tile that holds more than it can show. CALENDAR-SPEC 3.8.
   $('cal-ops').addEventListener('click', (ev) => {
@@ -687,6 +625,88 @@ function wireNav() {
   wireCalendarDrag();
   wireCalendarResize();
   wireItemDialog();
+}
+
+/**
+ * Ticking a deadline off. One listener for the whole document, like the
+ * assignment links: the same checkbox is rendered by the calendar list, the
+ * week and month chips, and the home page's Coming up and Completed rows, and
+ * all of them want the same behaviour. It was bound on #cal-ops alone until
+ * the home page grew checkboxes — which then did nothing at all.
+ *
+ * The row goes struck-through at once and the bridge rebuilds the worklist
+ * behind it — waiting for the rebuild before acknowledging the click reads as
+ * the checkbox not working. CALENDAR-SPEC 2.4.
+ */
+async function onCalDoneChange(ev) {
+  const box = ev.target.closest('[data-cal-done]');
+  if (!box) return;
+  const folder = box.dataset.calClass;
+  const id = box.dataset.calDone;
+  // A prep block ticks itself off by id; the assignment it belongs to stays
+  // open. Anything else ticks the item.
+  const cpId = box.dataset.calCp || null;
+  // Two keys, deliberately. `key` identifies the tickable THING (a prep
+  // block is not its parent), and is what CAL_DONE and the pending overlay
+  // are keyed on. `writeKey` identifies the FILE the write lands in — one
+  // JSON object per task, rewritten wholesale — so a tick, a note and a
+  // dragged sibling all queue behind each other instead of overwriting one
+  // another.
+  const key = calDoneKey(folder, id, cpId);
+  const writeKey = taskWriteKey(folder, id);
+  const done = box.checked;
+  // `.cal-row` in the list, `.cal-chip` in the week and month grids — the
+  // same checkbox is rendered into both, so the handler cannot assume one.
+  // (It is rendered into the home page's `.hu-row` too, but renderHome() below
+  // redraws those lists wholesale, so there is nothing to toggle by hand.)
+  const row = box.closest('.cal-row, .cal-chip');
+  if (done) CAL_DONE.add(key); else CAL_DONE.delete(key);
+  CAL_DONE_PENDING.set(key, done);
+  row?.classList.toggle('is-done', done);
+  // The home page redraws from CAL_DONE now, not after the rebuild: a ticked
+  // row moves from Coming up to Completed before the POST has left, and an
+  // un-ticked one comes back the same way.
+  renderHome();
+  // POSTs for one key are SERIALIZED, and each queue turn sends the LATEST
+  // intent. Two overlapping requests could land out of order — tick then
+  // untick, with the tick's POST writing last — leaving the server at the
+  // stale intent while the pending overlay pins the newer one: the row
+  // redrew unchecked on every reload, forever, and the saved state was
+  // simply wrong.
+  const tail = CAL_POST_QUEUE.get(writeKey) ?? Promise.resolve();
+  const run = tail.then(async () => {
+    // The pending map is the newest intent when it still holds one, and
+    // THIS click's own value otherwise. It must never be read as "nothing
+    // to send": seedCalDone retires an entry the moment the (deliberately
+    // stale) worklist agrees with it, which for a fresh un-tick is
+    // immediately — so bailing on `undefined` dropped the user's last
+    // toggle silently, exactly the wedge this queue exists to prevent.
+    // Re-POSTing a value the server already holds is idempotent.
+    const intent = CAL_DONE_PENDING.has(key) ? CAL_DONE_PENDING.get(key) : done;
+    try {
+      await api(`/api/class/${folder}/task/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cpId ? { checkpointDone: { id: cpId, done: intent } } : { done: intent }),
+      });
+    } catch (err) {
+      // Put it back rather than leaving a tick that did not save — unless
+      // the user has re-toggled since; then the newer queue turn owns it.
+      if (CAL_DONE_PENDING.get(key) === intent) {
+        if (intent) CAL_DONE.delete(key); else CAL_DONE.add(key);
+        CAL_DONE_PENDING.delete(key);
+        box.checked = !intent;
+        row?.classList.toggle('is-done', !intent);
+        renderHome();
+        toast(`Could not save that: ${err.message}`);
+      }
+    } finally {
+      // Drop the tail once it is the last one: the settled promise's
+      // closure pins `box` and `row`, detached after any re-render.
+      if (CAL_POST_QUEUE.get(writeKey) === run) CAL_POST_QUEUE.delete(writeKey);
+    }
+  });
+  CAL_POST_QUEUE.set(writeKey, run);
 }
 
 /**
@@ -849,24 +869,84 @@ function homeCardHtml(c) {
     </article>`;
 }
 
-/** The next deadlines across every class, newest first. Meetings are not news. */
-function upcomingOps(limit = 8) {
-  const ops = CAL_WORKLIST?.ops ?? [];
+/** Date, then time — the order the home lists share with the calendar list. */
+function byDateThenTime(a, b) {
+  return a.date.localeCompare(b.date) || String(a.time ?? '').localeCompare(String(b.time ?? ''));
+}
+
+// Coming up shows everything due within this many days, and never fewer than
+// this many rows. The old fixed cap of eight cut a day of seven quizzes at
+// three, and a quiet week showed nothing past it.
+const HOME_UP_DAYS = 7;
+const HOME_UP_MIN_ROWS = 8;
+
+/**
+ * Every dated, non-meeting item the home page could list — open or finished —
+ * one entry per tickable thing, each with the CAL_DONE key that says which.
+ *
+ * Two sources, because the worklist splits them: `ops` holds open work, and
+ * `dropped` (reason 'done') holds finished work the routine must not put on
+ * the calendar. A tick moves an item between the two only when the debounced
+ * rebuild lands, so for a moment the SAME item is in `ops` with its key in
+ * CAL_DONE, or in `dropped` with its key just removed. CAL_DONE is the truth
+ * about done-ness; the union is the truth about what exists. Deduped on
+ * calDoneKey with the live op winning — it is the newer record. A dropped
+ * record with no key has nothing to un-tick against and is left out, exactly
+ * as seedCalDone leaves it out. Meetings are not news, and the user's own
+ * items have their own calendar.
+ */
+function homeItems() {
   // Local, never toISOString().slice() — the UTC slice rolls to tomorrow at
   // 5pm local and quietly drops today's own deadlines from "Coming up".
   const today = localTodayIso();
-  return ops
-    .filter(o => {
-      if (o.calendar === 'meeting' || !o.date || o.date < today) return false;
-      // CAL_DONE holds calDoneKey (`folder|id[|cp]`) strings — testing the
-      // op's `[csync:...]` marker never matched, so a just-ticked deadline
-      // kept showing in Coming up and counting in "due this week".
-      const folder = calFolder(o.class);
-      return !(folder && o.item_id != null
-        && CAL_DONE.has(calDoneKey(folder, o.item_id, o.checkpoint_id ?? null)));
-    })
-    .sort((a, b) => a.date.localeCompare(b.date) || String(a.time ?? '').localeCompare(String(b.time ?? '')))
-    .slice(0, limit);
+  const seen = new Set();
+  const items = [];
+  const add = (op, finished) => {
+    if (op.calendar === 'meeting' || op.calendar === 'custom' || !op.date || op.date < today) return;
+    // CAL_DONE holds calDoneKey (`folder|id[|cp]`) strings — testing the
+    // op's `[csync:...]` marker never matched, so a just-ticked deadline
+    // kept showing in Coming up and counting in "due this week".
+    const folder = calFolder(op.class);
+    const key = folder && op.item_id != null ? calDoneKey(folder, op.item_id, op.checkpoint_id ?? null) : null;
+    if (key ? seen.has(key) : finished) return;
+    if (key) seen.add(key);
+    items.push({ op, key });
+  };
+  for (const op of CAL_WORKLIST?.ops ?? []) add(op, false);
+  for (const op of completedOps()) add(op, true);
+  return items;
+}
+
+/**
+ * The two home lists, and the count the header states.
+ *
+ * Coming up: every open item within the next HOME_UP_DAYS days, and never
+ * fewer than HOME_UP_MIN_ROWS of them — a quiet week still shows what is
+ * ahead, and a busy day is never cut off part-way.
+ *
+ * Completed: every finished item that Coming up WOULD list were it unticked,
+ * so a mis-tick is always findable directly below the list it left. With at
+ * least as many open items as Coming up shows, that is exactly the date span
+ * Coming up shows. With fewer, Coming up is showing everything open, so
+ * un-ticking ANY finished item would put it on the list — and every finished
+ * item ahead is listed. Deriving the span from the visible rows alone missed
+ * the one case that matters most: ticking the last row when fewer than eight
+ * remain shortens the span, and the row just ticked fell outside it.
+ */
+function homeLists() {
+  const today = localTodayIso();
+  const weekEnd = addDays(today, HOME_UP_DAYS);
+  const items = homeItems();
+  const isDone = (it) => it.key != null && CAL_DONE.has(it.key);
+  const open = items.filter(it => !isDone(it)).map(it => it.op).sort(byDateThenTime);
+  const done = items.filter(isDone).map(it => it.op).sort(byDateThenTime);
+  const thisWeek = open.filter(o => o.date <= weekEnd).length;
+  const rows = Math.max(HOME_UP_MIN_ROWS, thisWeek);
+  const next = open.slice(0, rows);
+  const shownEnd = next.length ? next[next.length - 1].date : today;
+  const spanEnd = shownEnd > weekEnd ? shownEnd : weekEnd;
+  const completed = open.length < rows ? done : done.filter(o => o.date <= spanEnd);
+  return { next, completed, thisWeek };
 }
 
 function renderHome() {
@@ -881,40 +961,54 @@ function renderHome() {
   const counted = cards.reduce((n, c) => n + (c.grade?.counted ?? 0), 0);
   const stats = [`${cards.length} ${cards.length === 1 ? 'class' : 'classes'}`];
   if (counted) stats.push(`${graded} of ${counted} graded`);
-  const up = upcomingOps(200);
-  const weekEnd = addDays(localTodayIso(), 7);
-  const thisWeek = up.filter(o => o.date <= weekEnd).length;
+  const { next, completed, thisWeek } = homeLists();
   if (thisWeek) stats.push(`${thisWeek} due this week`);
   $('home-stats').innerHTML = stats.map(t => `<span>${esc(t)}</span>`).join('');
 
   $('home-cards').innerHTML = cards.map(homeCardHtml).join('');
 
-  const next = up.slice(0, 8);
+  // Each section hides when it is empty rather than saying so — an empty
+  // Completed list is the normal state, not a message. Neither hides the
+  // other: tick every open item and Coming up goes away while Completed holds
+  // them all, so no reachable state empties the page.
   $('home-upcoming').classList.toggle('hidden', next.length === 0);
-  $('home-up-list').innerHTML = next.map(o => {
-    const cls = cards.find(c => c.slug === o.class);
-    const when = new Date(`${o.date}T${o.time ?? '12:00'}`);
-    const day = Number.isNaN(when.getTime()) ? o.date
-      : when.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-    // The title CLICKS IN to the item, not to the class that contains it.
-    //
-    // Reused rather than re-derived: calItemModel already resolves an op to
-    // what it can honestly offer — a Canvas-backed deadline, a checkpoint that
-    // clicks in to the assignment it preps for (spec 2.12), an AI-added item
-    // with no Canvas page at all — and calTitleHtml already renders the right
-    // control for each, or plain text when there is none. That is the same
-    // resolution the calendar rows and chips use, so Coming up cannot drift
-    // from them, and it goes through the op's own url/origin rather than
-    // matching on titles.
-    const m = calItemModel(o);
-    return `<li class="hu-row" data-folder="${esc(cls?.folder ?? '')}"
-             style="--class-color:${classColor(o.class)}">
-        <span class="hu-day">${esc(day)}</span>
-        ${dueRelHtml(daysUntil(o.date), 'hu-rel')}
-        <span class="hu-title">${calTitleHtml(o, m, o.title)}</span>
-        <span class="hu-kind">${esc(calKindLabel(o.kind))}</span>
-      </li>`;
-  }).join('');
+  $('home-up-list').innerHTML = next.map(o => homeRowHtml(o, cards)).join('');
+  $('home-completed').classList.toggle('hidden', completed.length === 0);
+  $('home-done-list').innerHTML = completed.map(o => homeRowHtml(o, cards)).join('');
+}
+
+/**
+ * One row of either home list.
+ *
+ * The checkbox is the calendar's own — calCheckHtml over the same calItemModel
+ * — so there is one tick mechanism, not two, and the document-level
+ * onCalDoneChange handles it here as it does in the grid. A row whose item
+ * cannot be ticked (no id of its own) gets the same spacer the calendar uses,
+ * and the column stays aligned.
+ *
+ * The title CLICKS IN to the item, not to the class that contains it. Reused
+ * rather than re-derived: calItemModel already resolves an op to what it can
+ * honestly offer — a Canvas-backed deadline, a checkpoint that clicks in to
+ * the assignment it preps for (spec 2.12), an AI-added item with no Canvas
+ * page at all — and calTitleHtml already renders the right control for each,
+ * or plain text when there is none. That is the same resolution the calendar
+ * rows and chips use, so the home page cannot drift from them, and it goes
+ * through the op's own url/origin rather than matching on titles.
+ */
+function homeRowHtml(o, cards) {
+  const cls = cards.find(c => c.slug === o.class);
+  const when = new Date(`${o.date}T${o.time ?? '12:00'}`);
+  const day = Number.isNaN(when.getTime()) ? o.date
+    : when.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const m = calItemModel(o);
+  return `<li class="hu-row${m.done ? ' is-done' : ''}" data-folder="${esc(cls?.folder ?? '')}"
+           style="--class-color:${classColor(o.class)}">
+      ${calCheckHtml(o, m, o.title)}
+      <span class="hu-day">${esc(day)}</span>
+      ${dueRelHtml(daysUntil(o.date), 'hu-rel', { done: m.done })}
+      <span class="hu-title">${calTitleHtml(o, m, o.title)}</span>
+      <span class="hu-kind">${esc(calKindLabel(o.kind))}</span>
+    </li>`;
 }
 
 function wireHome() {
@@ -929,18 +1023,23 @@ function wireHome() {
     ev.preventDefault();
     openClass(card.dataset.folder);
   });
-  $('home-up-list').addEventListener('click', ev => {
-    // A control inside the row owns its own click: [data-open-assignment] is
-    // handled by the document-level listener in wireAssignment, and a Canvas
-    // link is an ordinary <a>. Falling through would open the CLASS page
-    // behind whichever of those the user actually clicked.
-    if (ev.target.closest('a, button')) return;
-    // The rest of the row still goes to the class. That is the honest fallback
-    // for a row whose item has no page of its own — an AI-added reading, say —
-    // and it is what stops any reachable part of the row being a dead click.
-    const row = ev.target.closest('.hu-row');
-    if (row?.dataset.folder) openClass(row.dataset.folder);
-  });
+  $('home-up-list').addEventListener('click', homeRowClick);
+  $('home-done-list').addEventListener('click', homeRowClick);
+}
+
+/** A click on a home row that is not on one of its controls goes to the class. */
+function homeRowClick(ev) {
+  // A control inside the row owns its own click: [data-open-assignment] is
+  // handled by the document-level listener in wireAssignment, a Canvas link is
+  // an ordinary <a>, and the checkbox belongs to onCalDoneChange. Falling
+  // through would open the CLASS page behind whichever of those the user
+  // actually clicked — for the checkbox, on every single tick.
+  if (ev.target.closest('a, button, input')) return;
+  // The rest of the row still goes to the class. That is the honest fallback
+  // for a row whose item has no page of its own — an AI-added reading, say —
+  // and it is what stops any reachable part of the row being a dead click.
+  const row = ev.target.closest('.hu-row');
+  if (row?.dataset.folder) openClass(row.dataset.folder);
 }
 
 async function loadClasses() {
