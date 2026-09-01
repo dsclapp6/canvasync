@@ -326,3 +326,12 @@ duplication itself. Shape when taken: a dependency-free root module (the
 syllabus-source.js pattern) re-exported by all four sites with symbol-identity
 tests, so divergence becomes impossible rather than unlikely. Crosses three
 custodies — schedule as its own lane, not a rider.
+
+## Orphan temp-home leak, logs/-only population (found 2026-09-01)
+
+101 cvsync-scope-* orphans hold ONLY logs/delete.log with entries dated
+2026-08-24 — a separate, older leak from the calendar/-writing bug fixed in
+v1.8.35: something writes <home>/logs after teardown. Deliberately NOT swept
+(they are the only evidence). Root-cause when a lane is free; the v1.8.35
+commit and scope.test.js's updated comment carry the breakdown (151 total:
+44 calendar/ swept, 6 seeded, 101 logs/-only kept).
