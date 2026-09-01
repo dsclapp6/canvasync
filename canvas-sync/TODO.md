@@ -283,3 +283,34 @@ And the standing precondition: `busi-305` and `busi-396` still have `meeting_sch
 in their parsed syllabi, so days and times for those two do not exist in any source held. §7
 established that the fix there is a user-typed override, not more parsing. A title format
 cannot conjure a meeting that has no day.
+
+## Completeness audit follow-ups (Codex, 2026-09-01 — logs/codex-completeness-audit.md)
+
+Dispatched already: C1/M1 (extension error taxonomy + pages cache union — Agent 3's
+revision), C2/H1 + op-or-ledger invariant (fail-closed assignment floor, quiz-only
+rows — fc), reading-index silent caps (ff, inside work order F). Remaining, in
+severity order, each with file:line evidence in the report:
+
+1. **H3 — a failed scope publish strands a newly selected class.** The extension
+   treats a `/config/scope` failure as cosmetic and syncs anyway; `sync-scope.json`
+   outranks the newer `last_sync.json`, so class B is ingested but the pipeline and
+   calendar keep filtering by the stale mirror, with no drop record. Either make
+   scope publication a prerequisite for `/ingest/complete`, or have `readSyncScope`
+   distrust a mirror older than the completed sync. Crosses extension + bridge
+   custody — needs its own coordinated lane.
+2. **H2 — peer-review / subassignment deadlines are never fetched.** Canvas exposes
+   them (assignment peer-review inclusion, calendar `sub_assignment` rows, Learning
+   Object Dates); a review deadline distinct from the parent due date has no path
+   into any stored file. New collection capability — user sign-off before building.
+3. **H4 — mining accepts a valid-but-incomplete model return.** No postcondition
+   compares model output against the raw assignment corpus; `{"items":[]}` for a
+   40-row class writes clean. The raw union downstream (v1.8.29) now repairs the
+   CALENDAR, so this is mining-quality, not calendar loss — add a coverage warning
+   (and the un-ledgered syllabus-budget skip at mine-assignments.js:227) rather
+   than a hard gate.
+4. **L1 — announcement window.** Term-start-to-tomorrow is right for the calendar,
+   but announcements scheduled ahead or predating a late first sync never enter the
+   corpus. Only matters to mining context; note kept for the next collection pass.
+5. Dated raw rows with `id == null` are filtered before normalization with no
+   ledger record (canvas-tasks.js:225) — malformed-cache guard, fold into fc's
+   invariant work if cheap.
