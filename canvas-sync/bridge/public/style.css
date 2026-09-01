@@ -2078,20 +2078,34 @@ table.files tr:hover td { background: var(--sunk); }
 .home-upcoming { margin-top: var(--s-8); }
 .home-upcoming h3 { padding-bottom: var(--s-2); border-bottom: 1px solid var(--rule-2); margin-bottom: var(--s-2); }
 #home-up-list, #home-done-list { list-style: none; }
+/* THE ROW DECIDES FROM ITS OWN WIDTH — a container query on the section that
+   holds the two lists, which is the width every row fills. Placed by named
+   AREA, not by order, for the same reason the chips are: a row without a
+   checkbox leaves a hole in the check column instead of shifting its day
+   left, and the narrow shape below can move the title to its own line
+   without touching the markup. */
+.home-upcoming { container-type: inline-size; container-name: home-list; }
 .hu-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 13px auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "check day rel title kind";
   align-items: baseline;
-  gap: var(--s-5);
+  column-gap: var(--s-5);
   padding: var(--s-3) var(--s-2);
   border-bottom: 1px solid var(--rule);
   border-radius: var(--r-1);
 }
 .hu-row:hover { background: var(--sunk); }
+/* The calendar's own checkbox (calCheckHtml). The spacer takes the same area
+   and width, or a row that cannot be ticked would shift its day column left
+   of its neighbours'. */
+.hu-row .cal-check,
+.hu-row .cal-check-gap { grid-area: check; width: 13px; }
 .hu-day {
+  grid-area: day;
   font-variant-numeric: tabular-nums;
   font-size: var(--t-legend);
   color: var(--muted);
-  flex: none;
 }
 /* The graded distance beside the day. Both the font and the floor are set once,
    with .hu-day, in the home-page block further down — declaring them here as
@@ -2099,23 +2113,44 @@ table.files tr:hover td { background: var(--sunk); }
    silently won, so this block's `font-family: var(--mono)` and
    `min-width: 11ch` never applied to a single render.
 
-   The floor is a floor, not a cap: .hu-rel is `flex: none` with no overflow
-   rule, so a longer phrase widens the column rather than being clipped. That
-   matters because relPhrase() does show the past ("2 weeks ago") and its
-   longest output is 13 characters ("114 weeks ago"), not the 11 this comment
-   used to claim. */
+   The floor is a floor, not a cap: .hu-rel sits in an `auto` track with no
+   overflow rule, so a longer phrase widens the column rather than being
+   clipped. That matters because relPhrase() does show the past ("2 weeks
+   ago") and its longest output is 13 characters ("114 weeks ago"), not the 11
+   this comment used to claim. */
 .hu-rel {
+  grid-area: rel;
   font-variant-numeric: tabular-nums;
   font-size: var(--t-legend);
-  flex: none;
 }
-.hu-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hu-kind { font-size: var(--t-legend); color: var(--muted); flex: none; }
-/* The calendar's own checkbox (calCheckHtml), in a flex row rather than the
-   calendar's grid: the spacer has to hold the checkbox's width here, or a row
-   that cannot be ticked shifts its day column left of its neighbours'. */
-.hu-row .cal-check,
-.hu-row .cal-check-gap { width: 13px; flex: none; }
+/* min-width: 0 lets the TRACK shrink below the title's text; the overflow rule
+   is what stops the text running on into the kind column. */
+.hu-title { grid-area: title; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hu-kind { grid-area: kind; font-size: var(--t-legend); color: var(--muted); }
+
+/* Narrow, the row WRAPS rather than starves. Measured at a 375px viewport
+   before this: a 317px section, of which the list's default 40px indent, the
+   row's 28px padding and 267px of checkbox + day + distance + kind + four
+   gutters left the title a 0px box — 21 of the 27 live rows overflowed a page
+   that does not scroll sideways, so the loss was silent. Below 540px of
+   section, the first line is the checkbox, day, distance and kind; the title
+   takes a whole second line; the list drops its indent; and the checkbox
+   grows to a 24px target for a thumb. At 540px the single line still gives
+   the title 205px, and above it nothing here applies. The threshold is the
+   container's CONTENT box, as on the chips. */
+@container home-list (max-width: 539px) {
+  #home-up-list, #home-done-list { padding-left: 0; }
+  .hu-row {
+    grid-template-columns: 24px auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "check day rel kind"
+      "title title title title";
+    row-gap: 2px;
+  }
+  .hu-row .cal-check,
+  .hu-row .cal-check-gap { width: 24px; height: 24px; }
+  .hu-kind { justify-self: end; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
 
 /* --- Grades ---------------------------------------------------------------- */
 .gr-head { display: flex; align-items: baseline; gap: var(--s-5); flex-wrap: wrap; margin-bottom: var(--s-4); }

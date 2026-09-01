@@ -496,6 +496,69 @@ test('a done home row reads like a done calendar row — the same rule, no new c
   const check = /\.hu-row \.cal-check,\s*\.hu-row \.cal-check-gap\s*\{([^}]*)\}/.exec(CSS_CODE);
   assert.ok(check, 'the box and its spacer must share one width rule in a flex row');
   assert.match(check[1], /width:\s*13px/, 'the calendar checkbox\'s own width');
-  assert.match(check[1], /flex:\s*none/);
+  assert.match(check[1], /grid-area:\s*check/, 'and the check AREA, so a spacer row leaves a hole rather than shifting its day');
   assert.match(CSS_CODE, /#home-up-list, #home-done-list \{ list-style: none; \}/, 'neither list grows bullets');
+});
+
+test('narrow rows wrap rather than starve the title; wide rows keep their single line', () => {
+  // Node has no layout engine, so this pins the RULES that decide the shape,
+  // not the pixels they produce; the pixels are measured in the browser pane.
+  //
+  // Before: .hu-row was a no-wrap flex row whose fixed columns — checkbox,
+  // day, distance, kind, four gutters, and the list's default 40px indent —
+  // came to more than a 317px section could hold, so the title's box was 0px
+  // wide and the page, which does not scroll sideways, lost it silently.
+  const areasOf = (body) => {
+    const m = /grid-template-areas:\s*((?:"[^"]*"\s*)+);/.exec(body);
+    assert.ok(m, `no grid-template-areas in: ${body.trim().slice(0, 60)}`);
+    return [...m[1].matchAll(/"([^"]*)"/g)].map(l => l[1].trim().split(/\s+/));
+  };
+
+  // Discrimination: the wide rule is ONE line, placed by named area, checkbox first.
+  const wide = /^\.hu-row \{([^}]*)\}/m.exec(CSS_CODE);
+  assert.ok(wide, 'style.css must declare .hu-row at the top level');
+  assert.match(wide[1], /display:\s*grid/, 'a grid, so a child is placed by area rather than by order');
+  const wideLines = areasOf(wide[1]);
+  assert.equal(wideLines.length, 1, 'wide: a single line');
+  assert.deepEqual(wideLines[0], ['check', 'day', 'rel', 'title', 'kind'], 'checkbox first, title on the line');
+  assert.match(wide[1], /grid-template-columns:[^;]*minmax\(0, 1fr\)/, 'the title track is the one that shrinks');
+  assert.doesNotMatch(wide[1], /display:\s*flex|flex-wrap/, 'not a flex row any more — a no-wrap flex row is how it starved');
+  for (const [sel, area] of [
+    ['\\.hu-row \\.cal-check,\\s*\\.hu-row \\.cal-check-gap', 'check'],
+    ['\\.hu-day', 'day'], ['\\.hu-rel', 'rel'], ['\\.hu-title', 'title'], ['\\.hu-kind', 'kind'],
+  ]) {
+    const rule = new RegExp(`^${sel} \\{([^}]*)\\}`, 'm').exec(CSS_CODE);
+    assert.ok(rule, `${sel} must have a top-level rule`);
+    assert.match(rule[1], new RegExp(`grid-area:\\s*${area}\\b`), `${sel} must own the ${area} area`);
+  }
+  assert.match(CSS_CODE, /^\.home-upcoming \{ container-type: inline-size; container-name: home-list; \}/m,
+    'the section the rows fill is the container the query reads');
+
+  // Convergence: below the threshold the title gets a whole line of its own,
+  // the checkbox stays first and grows to a thumb-sized target, and the
+  // list's default indent — 40 of 317px — is no longer spent on nothing.
+  const narrow = /^@container home-list \(max-width: (\d+)px\) \{([\s\S]*?)^\}/m.exec(CSS_CODE);
+  assert.ok(narrow, 'style.css must carry a @container home-list block');
+  const threshold = Number(narrow[1]);
+  assert.ok(threshold >= 315, `a 375px phone gives the section 315px; the threshold (${threshold}) must reach it`);
+  assert.ok(threshold < 700, `the threshold (${threshold}) must leave the wide layout alone at desktop widths`);
+  const body = narrow[2];
+  const row = /^\s+\.hu-row \{([^}]*)\}/m.exec(body);
+  assert.ok(row, 'the block must restyle .hu-row');
+  const lines = areasOf(row[1]);
+  assert.equal(lines.length, 2, 'narrow: two lines');
+  assert.equal(lines[0][0], 'check', 'the checkbox stays first');
+  assert.ok(!lines[0].includes('title'), 'the title is not on the first line');
+  assert.ok(lines[1].length === lines[0].length && lines[1].every(t => t === 'title'),
+    'the title takes the whole second line');
+  assert.match(row[1], /grid-template-columns:[^;]*minmax\(0, 1fr\)/,
+    'the flexible track survives, so the kind cannot push the row wider than its box');
+  const check = /\.hu-row \.cal-check,\s*\.hu-row \.cal-check-gap \{([^}]*)\}/.exec(body);
+  assert.ok(check, 'the block must resize the checkbox and its spacer together');
+  assert.match(check[1], /width:\s*(2[4-9]|[3-9]\d)px/, 'a target of at least 24px for a thumb');
+  assert.match(check[1], /height:\s*(2[4-9]|[3-9]\d)px/);
+  assert.match(body, /#home-up-list, #home-done-list \{ padding-left: 0; \}/, 'the lists drop their default indent');
+  const kind = /\.hu-kind \{([^}]*)\}/.exec(body);
+  assert.ok(kind && /overflow:\s*hidden/.test(kind[1]) && /text-overflow:\s*ellipsis/.test(kind[1]),
+    'a long kind label clips inside its track rather than overflowing the row');
 });
