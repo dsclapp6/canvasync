@@ -8,14 +8,23 @@ const [APP, CSS] = await Promise.all([
   readFile(new URL('style.css', PUBLIC), 'utf8'),
 ]);
 
+// Comments here quote the rules that were REMOVED, `--kind-color` among them.
+// An assertion about what the stylesheet now declares must not be able to read
+// its own explanation — this exact trap already cost a false failure once, on a
+// comment quoting the `line-height: 1.4` it had replaced.
+const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+const CSS_CODE = stripComments(CSS);
+
 const KINDS = [
   'meeting', 'office_hours', 'homework', 'reading', 'exam', 'checkpoint', 'personal',
 ];
 
-test('every calendar category has an explicit visual token', () => {
+test('every calendar category has an explicit visual token ON ITEMS', () => {
+  // The second half of this used to require a FILTER colour per kind too. The
+  // user ruled that row colourless — twice — so requiring one would now pin
+  // the defect. What the row needs is a label and a count, not a hue.
   for (const kind of KINDS) {
     assert.match(CSS, new RegExp(`\\[data-kind="${kind}"\\]`), `${kind} needs an item colour`);
-    assert.match(CSS, new RegExp(`data-kind-filter="${kind}"`), `${kind} needs a filter colour`);
   }
 });
 
@@ -68,20 +77,37 @@ test('timed cards give metadata and titles separate rows, including narrow lanes
 // 8 tinted backgrounds, 8 border colours AND 8 dots — 32 coloured surfaces.
 // Now 1 / 1 / 1, plus the same 8 dots at 7px.
 
-test('a kind\'s colour reaches the filter row through the DOT and nothing else', () => {
-  const dot = /\.filter-chip::before \{([^}]*)\}/.exec(CSS);
-  assert.ok(dot, 'the filter chips have no colour dot at all');
-  assert.match(dot[1], /background: var\(--kind-color/,
-    'the dot is what carries the kind — without it the row says nothing');
+test('the kind filter row carries NO kind colour anywhere', () => {
+  // Ruled twice. First pass I moved the hue out of label/background/border and
+  // left it in a 7px dot — 32 coloured surfaces down to 8. Verdict: *"you didnt
+  // fix the colors they are all still there."* Eight dots is eight colours on
+  // the row they named, and splitting the difference was me answering a
+  // question they had not asked.
+  //
+  // Structural, not incidental: the token is not DEFINED for filter selectors,
+  // so a future rule cannot reach for a hue that is merely unused here.
+  assert.doesNotMatch(CSS_CODE, /\.filter-chip\[data-kind-filter="[a-z_]+"\]/,
+    'a filter chip is defining a per-kind colour token again');
+  const rules = CSS_CODE.split('}').filter(r => /\.filter-chip/.test(r));
+  for (const rule of rules) {
+    assert.doesNotMatch(rule, /--kind-color|--kind-soft/,
+      `a .filter-chip rule reaches for the kind hue:\n${rule.trim().slice(0, 160)}`);
+  }
+  assert.doesNotMatch(CSS_CODE, /\.filter-chip[^{]*::before \{/,
+    'the colour dot is back on the filter row');
+});
 
+test('…and still says which kinds are selected, without it', () => {
+  // The other half. A row with no colour is trivially calm and useless if it
+  // also stopped saying anything — the frame and the ink have to carry the
+  // whole signal now that nothing else can.
   const on = /\.filter-chip\[data-kind-filter\]\.on,\s*\n\.filter-chip\.ai-filter\.on \{([^}]*)\}/.exec(CSS);
   assert.ok(on, 'the selected-chip rule moved — this test is stale');
-  for (const prop of ['color', 'background', 'border-color']) {
-    const decl = new RegExp(`${prop}:([^;]*);`).exec(on[1]);
-    assert.ok(decl, `the selected chip must state its ${prop}`);
-    assert.doesNotMatch(decl[1], /--kind-color|--kind-soft/,
-      `a selected chip still tints its ${prop} with the kind's hue`);
-  }
+  assert.match(on[1], /color: var\(--ink\)/, 'a selected chip must say so in ink');
+  assert.match(on[1], /border-color: var\(--edge\)/, 'and in its frame');
+  const base = /\n\.filter-chip \{([^}]*)\}/.exec(CSS);
+  assert.ok(base && /color: var\(--muted\)/.test(base[1]),
+    'an unselected chip must be muted, or on and off look identical');
 });
 
 test('…while the grid keeps kind colour, which is where it categorises', () => {
@@ -97,18 +123,11 @@ test('…while the grid keeps kind colour, which is where it categorises', () =>
     'the list row must still carry its kind colour');
 });
 
-test('off is said in ink and shape — dashed frame, muted label, hollow dot', () => {
+test('off is said in ink and shape — dashed frame, muted label', () => {
   const off = /\.filter-chip:not\(\.on\) \{([^}]*)\}/.exec(CSS);
   assert.ok(off && /border-style: dashed/.test(off[1]), 'an unselected chip needs a dashed frame');
-  const dotOff = /\.filter-chip:not\(\.on\)::before \{([^}]*)\}/.exec(CSS);
-  assert.ok(dotOff, 'the dot must change when the chip is off');
-  assert.match(dotOff[1], /background: transparent/, 'the dot goes hollow');
-  assert.match(dotOff[1], /box-shadow: inset 0 0 0 2px var\(--kind-color/,
-    'the hollow dot keeps the kind visible as a ring — the same idiom as .class-chip.off');
   // spec 3.6: never opacity. Fading a control on cream walks it into the paper.
-  for (const block of [off[1], dotOff[1]]) {
-    assert.doesNotMatch(block, /opacity/, 'state must never be carried by opacity');
-  }
+  assert.doesNotMatch(off[1], /opacity/, 'state must never be carried by opacity');
 });
 
 test('the AI chip keeps its dashed provenance frame in BOTH states', () => {
@@ -119,7 +138,10 @@ test('the AI chip keeps its dashed provenance frame in BOTH states', () => {
     'the AI chip must be dashed whether or not it is selected');
   const onRule = /\.filter-chip\[data-kind-filter\]\.on,\s*\n\.filter-chip\.ai-filter\.on \{/.test(CSS);
   assert.ok(onRule, 'the AI chip must share the neutral selected treatment');
-  // and the dot must reach it: the rule is on .filter-chip, not [data-kind-filter]
-  assert.match(CSS, /\.filter-chip::before \{/,
-    'the dot rule must cover the AI chip too, or its on/off rests on ink alone');
+  // Its on/off now rests on the label's ink alone — one signal where a kind
+  // chip has two. That is what the row had before I briefly gave it a dot, and
+  // it is the cost of a colourless row on the one chip whose frame is spoken
+  // for. Noted rather than hidden; the user has not objected to this chip.
+  assert.match(CSS, /\.filter-chip\.ai-filter:not\(\.on\) \{[^}]*color: var\(--muted\)/,
+    'the AI chip must mute its label when off, or its state is unreadable');
 });

@@ -3341,31 +3341,31 @@ table.files tr:last-child td { border-bottom: 0; }
  * Class colour answers "which course?" on the left edge. These quieter,
  * independent hues answer "what kind of item?" everywhere the item appears.
  */
-[data-kind="meeting"], .filter-chip[data-kind-filter="meeting"] {
+[data-kind="meeting"] {
   --kind-color: #526B78;
   --kind-soft: color-mix(in srgb, #526B78 10%, var(--panel));
 }
-[data-kind="office_hours"], .filter-chip[data-kind-filter="office_hours"] {
+[data-kind="office_hours"] {
   --kind-color: #75617C;
   --kind-soft: color-mix(in srgb, #75617C 10%, var(--panel));
 }
-[data-kind="homework"], .filter-chip[data-kind-filter="homework"] {
+[data-kind="homework"] {
   --kind-color: #8A5B18;
   --kind-soft: color-mix(in srgb, #8A5B18 10%, var(--panel));
 }
-[data-kind="reading"], .filter-chip[data-kind-filter="reading"] {
+[data-kind="reading"] {
   --kind-color: #2F6B5B;
   --kind-soft: color-mix(in srgb, #2F6B5B 10%, var(--panel));
 }
-[data-kind="exam"], .filter-chip[data-kind-filter="exam"] {
+[data-kind="exam"] {
   --kind-color: #963F34;
   --kind-soft: color-mix(in srgb, #963F34 10%, var(--panel));
 }
-[data-kind="checkpoint"], .filter-chip[data-kind-filter="checkpoint"] {
+[data-kind="checkpoint"] {
   --kind-color: #78682A;
   --kind-soft: color-mix(in srgb, #78682A 11%, var(--panel));
 }
-[data-kind="personal"], .filter-chip[data-kind-filter="personal"] {
+[data-kind="personal"] {
   --kind-color: #545C88;
   --kind-soft: color-mix(in srgb, #545C88 10%, var(--panel));
 }
@@ -3374,28 +3374,24 @@ table.files tr:last-child td { border-bottom: 0; }
   --kind-soft: var(--sunk);
 }
 
-/* THE KIND'S COLOUR LIVES IN THE DOT, AND NOWHERE ELSE ON THIS ROW.
-   The user: *"there is too much going on with different colors on the calendar
-   with the meetings vs. office hours vs. hw, etc. labels at the top."* A
-   selected chip used to tint FOUR surfaces in its own hue — text, background,
-   border and count — on top of already carrying the dot. An empty selection
-   means "everything", so that was the default state: eight pills, eight hues,
-   eight tinted grounds, all at once.
-   This is the class row's idiom one row down, which never had the problem:
-   neutral chip, colour in the swatch alone. Two filter rows, one language.
-   Kind colour stays load-bearing where it categorises actual items — the
-   grid chips, the list rows, `.cal-kind.category-label` — which is where it
-   answers a question rather than decorating a control. */
-.filter-chip::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-radius: 50%;
-  background: var(--kind-color, var(--edge));
-}
-/* On: solid frame, ink label, filled dot. Neutral — every kind says "on" the
-   same way, so the ROW reads as a row rather than as eight separate objects. */
+/* THIS ROW HAS NO KIND COLOUR AT ALL. Plain chips: a label, a count, a frame.
+   The user, twice. First: *"there is too much going on with different colors on
+   the calendar with the meetings vs. office hours vs. hw, etc. labels at the
+   top."* A selected chip was tinting four surfaces in its own hue on top of a
+   dot, and an empty selection means "everything", so that was the RESTING
+   state — 8 label colours, 8 tinted grounds, 8 borders, 8 dots.
+   I answered with the class row's idiom: neutral chip, colour in the dot
+   alone, 32 coloured surfaces down to 8. Their verdict: *"you didnt fix the
+   colors they are all still there."* They were right and I had split the
+   difference — eight dots is still eight colours on the row they named. The
+   count is now zero.
+   The `--kind-color` token is no longer DEFINED for `.filter-chip` selectors,
+   rather than defined and left unused: a future rule cannot reach for a hue
+   that does not exist here. Kind colour stays load-bearing where it
+   categorises actual items — grid chips, list rows, `.cal-kind.category-label`
+   — which is where it answers a question instead of decorating a control. */
+/* On: solid frame, ink label. Off: dashed frame, muted label. That is the
+   whole vocabulary of this row now. */
 .filter-chip[data-kind-filter].on,
 .filter-chip.ai-filter.on {
   color: var(--ink);
@@ -3407,16 +3403,12 @@ table.files tr:last-child td { border-bottom: 0; }
 .filter-chip.ai-filter.on:hover { color: var(--ink); background: var(--sunk); }
 .filter-chip[data-kind-filter].on .chip-count,
 .filter-chip.ai-filter.on .chip-count { color: var(--muted); }
-/* Off: dashed frame, muted label, and the dot goes hollow — the same hollow
-   ring `.class-chip.off .chip-swatch` uses. Three signals in ink and shape,
-   never opacity (spec 3.6). The AI chip keeps a dashed frame in BOTH states
-   because dashed is its provenance idiom there, so its on/off is carried by
-   the label's ink and the dot — which is why it gets a dot at all now. */
+/* Off: dashed frame and a muted label — ink and shape, never opacity (spec
+   3.6). The AI chip is dashed in BOTH states, because dashed is its provenance
+   idiom there rather than a state; its on/off rests on the label's ink alone.
+   That is one signal where the kind chips get two, and it is what the row had
+   before I added dots to it — the user has not objected to that chip. */
 .filter-chip:not(.on) { border-style: dashed; }
-.filter-chip:not(.on)::before {
-  background: transparent;
-  box-shadow: inset 0 0 0 2px var(--kind-color, var(--rule-2));
-}
 
 .cal-row[data-kind] {
   padding-left: 9px;
