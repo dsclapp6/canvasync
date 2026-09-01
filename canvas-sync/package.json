@@ -1,6 +1,6 @@
 {
   "name": "canvasync",
-  "version": "1.8.26",
+  "version": "1.8.27",
   "private": true,
   "description": "Repo-root manifest. Exists solely so data-root.js is treated as ESM: without a package.json here Node walks up past the repo to the user's home directory to decide the module type, warns about it on every load, and would break outright if that stray file ever declared \"type\": \"commonjs\". Dependencies live in app/ and bridge/, which have their own manifests.",
   "type": "module"
