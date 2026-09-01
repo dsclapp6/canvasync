@@ -307,7 +307,27 @@ async function _acquireModelLock(maxWaitMs) {
       await writeFile(pidFile, String(process.pid), 'utf8');
       _weHoldLock = true;
       return;
-    } catch { /* held, or the write faulted — decide below, never spin */ }
+    } catch (err) {
+      // EEXIST is "held", and worth waiting out. ENOENT is the parent
+      // directory being GONE, and no amount of waiting brings a data root
+      // back — the only thing polling achieves is holding the process open
+      // for the rest of maxWaitMs.
+      //
+      // That is not hypothetical: a test whose teardown removes its temp home
+      // while an abandoned localInvoke is still in its acquire loop leaves
+      // that loop polling a path that cannot return, idle in kevent, for the
+      // full 45-minute default. It reads as a wedged, silent test process with
+      // no CPU use. Before the deadline check was added it was a hot spin
+      // instead; honouring the deadline made it quiet, not short.
+      if (err?.code && err.code !== 'EEXIST') {
+        const fault = new Error(
+          `local-model lock is unusable at ${dir}: ${err.code}`);
+        fault.code = 'EMODELLOCKGONE';
+        fault.cause = err;
+        throw fault;
+      }
+      /* held — decide below, never spin */
+    }
 
     // Held — reclaim if the holder is dead, otherwise wait our turn.
     let reclaimed = false;

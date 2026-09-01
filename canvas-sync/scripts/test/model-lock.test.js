@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 let tmpHome, stubPath, util;
 
@@ -27,7 +28,13 @@ before(async () => {
 });
 
 after(async () => {
-  delete process.env.CANVAS_SYNC_HOME;
+  // REPOINT, never delete — the same rule scope.test.js's teardown records.
+  // An acquire loop or a spawned child that outlives this hook reads
+  // CANVAS_SYNC_HOME fresh; with it unset, dataRoot() falls back to
+  // ~/canvas-sync-data and the leftover work starts taking, reclaiming or
+  // writing the USER'S real model lock.
+  const graveyard = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-lock-void-'));
+  process.env.CANVAS_SYNC_HOME = graveyard;
   delete process.env.CSYNC_LOCAL_PYTHON;
   await fs.rm(tmpHome, { recursive: true, force: true });
 });
@@ -208,4 +215,79 @@ test('the default wait is still the 45 minutes the pipeline relies on', async ()
   // minutes is normal — into a failed one.
   const src = await fs.readFile(new URL('../_util.js', import.meta.url), 'utf8');
   assert.match(src, /lockWaitMs = 45 \* 60 \* 1000/);
+});
+
+// --- A lock that cannot be waited for ---------------------------------------
+//
+// The wedge: a localInvoke abandoned mid-acquire (its test cancelled, its
+// promise dropped) keeps polling. `_acquireModelLock` resolves the lock path
+// ONCE at entry, so it keeps asking about a directory that teardown has since
+// deleted — and the answer never changes. With the deadline check in place
+// that is a QUIET 45-minute wait rather than a hot spin: the process sits idle
+// in kevent, using no CPU, and node --test waits on it forever. Two runs were
+// caught that way, one killed after 15 minutes.
+//
+// Waiting is right for a lock that is HELD. It is never right for one whose
+// data root is gone, and telling those apart is the fix.
+
+test('a lock whose data root vanishes mid-wait gives up at once, not in 45 minutes', {
+  timeout: 30000,
+}, async () => {
+  await fs.rm(lockDir(), { recursive: true, force: true });
+  await fs.mkdir(lockDir(), { recursive: true });
+  // Our own pid: alive, so no staleness rule reclaims it and the loop really
+  // does enter the wait rather than taking the lock immediately.
+  await fs.writeFile(path.join(lockDir(), 'pid'), String(process.pid), 'utf8');
+
+  const started = Date.now();
+  const pending = util.localInvoke('hello', { timeoutMs: 5000 });
+  const settled = pending.then(() => null, err => err);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  await fs.rm(tmpHome, { recursive: true, force: true });   // the root disappears
+
+  const err = await settled;
+  const elapsed = Date.now() - started;
+  assert.ok(err, 'a lock that cannot exist must not resolve');
+  assert.equal(err.code, 'EMODELLOCKGONE', `expected a typed fault, got: ${err.message}`);
+  assert.ok(elapsed < 25000,
+    `must give up on the fault, not wait out the 45-minute deadline (took ${elapsed}ms)`);
+
+  // Put the home back so the remaining tests and the teardown have one.
+  await fs.mkdir(tmpHome, { recursive: true });
+  await fs.writeFile(stubPath, '#!/bin/sh\nsleep 1\necho "gen-done pid=$$"\n', { mode: 0o755 });
+});
+
+test('and the PROCESS exits — a leaked wait is invisible from inside the test', {
+  timeout: 40000,
+}, async () => {
+  // The assertion above proves the promise settles. It cannot prove the
+  // process is free to exit, and that is the symptom that actually bit: node
+  // --test runs each file in a child and waits on it, so one live handle turns
+  // a passing file into a suite that never returns. Measured from outside,
+  // which is the only place it is visible.
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-lock-exit-'));
+  await fs.mkdir(path.join(home, 'locks', 'local-model.lock'), { recursive: true });
+  await fs.writeFile(path.join(home, 'locks', 'local-model.lock', 'pid'), '1', 'utf8');
+  const utilUrl = new URL('../_util.js', import.meta.url).href;
+  const source = `
+    const { localInvoke } = await import(${JSON.stringify(utilUrl)});
+    const fs = await import('node:fs/promises');
+    const run = localInvoke('x', { timeoutMs: 2000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 200));
+    await fs.rm(${JSON.stringify(home)}, { recursive: true, force: true });
+    await run;
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
+    env: { ...process.env, CANVAS_SYNC_HOME: home, CSYNC_LOCAL_PYTHON: stubPath },
+    stdio: 'ignore',
+  });
+  const started = Date.now();
+  const exited = await new Promise((resolve) => {
+    const kill = setTimeout(() => { child.kill('SIGKILL'); resolve(false); }, 30000);
+    child.on('exit', () => { clearTimeout(kill); resolve(true); });
+  });
+  assert.ok(exited, 'the process never exited — a handle outlived the work that made it');
+  assert.ok(Date.now() - started < 25000,
+    `the process must not hold the suite open for its whole lock deadline (${Date.now() - started}ms)`);
+  await fs.rm(home, { recursive: true, force: true });
 });
