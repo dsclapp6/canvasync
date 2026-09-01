@@ -123,6 +123,32 @@ function coveredCanvasIds(it) {
   return out;
 }
 
+/**
+ * What a released member keeps from the aggregate that used to speak for it.
+ *
+ * When an aggregate stops emitting an op of its own, its enrichment is the only
+ * thing that would be lost: the weight rule ("ALL seven must be attempted or
+ * the session scores zero") and the instruction that applies to each member
+ * ("watch the video, attempt the quiz before class"). Both are true of every
+ * member individually, so both are copied onto every member — deliberately
+ * repeated across the set rather than stored once, because the whole point of
+ * releasing them is that a student reads ONE row and knows what to do.
+ *
+ * weight_note is a real consumer-facing field (sync-calendar writes it into the
+ * event description, build-context and build-pack into the pack), so it travels
+ * as itself rather than being flattened into prose.
+ */
+function withAggregateContext(item, ctx) {
+  if (!ctx) return item;
+  const lines = [`Part of: ${ctx.title}`];
+  if (ctx.description) lines.push(ctx.description);
+  return {
+    ...item,
+    description: [item.description, lines.join('\n')].filter(Boolean).join('\n'),
+    ...(!item.weight_note && ctx.weight_note ? { weight_note: ctx.weight_note } : {}),
+  };
+}
+
 // "S2a Concept Check Quizzes (7 items)" — a mined item that says out loud it
 // stands for several deliverables.
 const AGGREGATE_COUNT_RE = /\(\s*(\d+)\s*items?\s*\)/i;
@@ -209,6 +235,11 @@ export function tasksForClass({ mined, assignments, readings } = {}) {
   // claimed, so its same-named siblings survive as extras.
   const claimedIds = new Set();
 
+  // Canvas id -> the enrichment of the aggregate that used to speak for it.
+  // Filled when an aggregate releases its dated members below, read when those
+  // members are built as extras.
+  const memberContext = new Map();
+
   // Mined items describe the work; only Canvas knows its URL — and whether that
   // URL has to be the quiz form rather than the assignment page.
   const items = [];
@@ -230,6 +261,49 @@ export function tasksForClass({ mined, assignments, readings } = {}) {
     // aggregate that claimed to cover them. An aggregate is only worth keeping
     // when Canvas has nothing dated to show.
     if (ids.length === 1 && aggregateCount(it.title) >= 2 && datedIds.has(key)) continue;
+
+    // The same summary, the other way round: an aggregate that names SEVERAL
+    // Canvas ids used to claim every one of them and emit a single item in
+    // their place. On this user's data that hid 32 dated BUSI 380 quizzes
+    // inside 8 "Session N Concept Check quizzes (…)" items — no individual
+    // title, no row, no Submit link, nothing to tick. The ruling (2026-09-01)
+    // is that everything Canvas dates shows up on its own, so the dated members
+    // are RELEASED: they surface below as extras carrying Canvas's own title,
+    // links and points, and the aggregate emits no op, because emitting both is
+    // the double-booking the rule above exists to prevent.
+    //
+    // Undated members are still claimed — Canvas has nothing dated to show for
+    // them, so there is nothing to release and nothing to double-book.
+    //
+    // Recurring items are excluded on purpose: swallowsDated below already
+    // stops them claiming dated rows, and they still owe their note. Skipping
+    // them here would delete the recurrence instead of releasing anything.
+    // "Aggregate" is measured in LIVE rows, not in the id list: mining writes
+    // stale ids beside good ones, and an item that can only reach ONE live
+    // Canvas row is a 1:1 item with a dead id in its list, not a summary of
+    // several. Releasing that one would drop the mined title and description
+    // for no gain — its single dated row already surfaces as the item's own
+    // canvas_assignment_id. Two live rows or more is the real thing.
+    const liveIds = ids.filter(id => byId.has(id));
+    const datedMembers = ids.filter(id => datedIds.has(id));
+    if (!it.recurring && liveIds.length >= 2 && datedMembers.length) {
+      for (const id of ids) {
+        if (datedIds.has(id)) {
+          // First aggregate wins if two ever name the same row: a member
+          // reading "Part of: X" and "Part of: Y" describes nothing.
+          if (!memberContext.has(id)) {
+            memberContext.set(id, {
+              title: it.title,
+              description: it.description ?? null,
+              weight_note: it.weight_note ?? null,
+            });
+          }
+        } else {
+          claimedIds.add(id);
+        }
+      }
+      continue;
+    }
 
     const tk = titleKey(it.title);
 
@@ -312,7 +386,8 @@ export function tasksForClass({ mined, assignments, readings } = {}) {
   }
 
   const extras = itemsFromCanvasAssignments(rows)
-    .filter(it => !claimedIds.has(String(it.canvas_assignment_id)));
+    .filter(it => !claimedIds.has(String(it.canvas_assignment_id)))
+    .map(it => withAggregateContext(it, memberContext.get(String(it.canvas_assignment_id))));
 
   const source = items.length
     ? (extras.length ? 'mixed' : 'mined')

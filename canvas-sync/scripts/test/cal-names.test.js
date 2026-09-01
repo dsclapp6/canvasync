@@ -429,22 +429,40 @@ test('the location field is normalised the same way the title is', () => {
   assert.ok(meetingTitle({ code: 'BUSI 380 002', location: long }).includes(roomName(long)));
 });
 
-test('every title stays short enough to read in a month view', () => {
+// REPLACED 2026-09-01. This used to assert that every title fits a month view,
+// which is how worklist.json and the .ics came to STORE truncated names
+// ("BUSI 380 · Quiz Session 2a Concept Check quizzes (7…") that nothing
+// downstream could recover. The user's rule is that nothing is cut off; a
+// calendar client elides a long row on its own, and cal-ics folds long SUMMARY
+// lines at 75 octets, so the full name survives the wire. What a title MUST
+// still do is fit its structure — code, then name — and that is what is pinned.
+test('an item title stored in the calendar keeps the whole name', () => {
   const monster = 'S2a-Concept Check: Understand the Nature of Multi-Channel Distribution Strategy';
   for (const t of [
     dueTitle({ code: 'BUSI 380 002', title: monster, category: 'homework' }),
     prepTitle({ code: 'BUSI 380 002', title: monster }),
+    checkpointTitle({ code: 'BUSI 380 002', title: monster }),
+  ]) {
+    assert.ok(!t.endsWith('…'), `truncated at rest: ${t}`);
+    assert.match(t, /Strategy$/, `the tail of the name is gone: ${t}`);
+    assert.match(t, /BUSI ?380/, `the course code must still lead: ${t}`);
+  }
+});
+
+// A meeting title is SYNTHESISED — code, label, room, professor — not a name
+// anyone typed, so a room stated as a sentence is trimmed rather than allowed
+// to push the professor off the end. Deliberately still capped; the no-cut-offs
+// rule is about work the user has to recognise and submit.
+test('a synthesised meeting title still fits a month view', () => {
+  const monster = 'S2a-Concept Check: Understand the Nature of Multi-Channel Distribution Strategy';
+  for (const t of [
     meetingTitle({ code: 'BUSI 380 002', label: 'Lecture', topic: monster }),
-    // A room stated as a sentence rather than a room. The three fields the user
-    // asked for all have to survive it, so it is the LOCATION that gets cut and
-    // not the professor on the end.
     meetingTitle({
       code: 'BUSI 380 002',
       label: 'Lecture',
       location: 'Virani Undergraduate Business Building, second floor, room 182',
       instructor: 'Constance Porter',
     }),
-    checkpointTitle({ code: 'BUSI 380 002', title: monster }),
   ]) {
     assert.ok(t.length <= 70, `${t.length}: ${t}`);
   }

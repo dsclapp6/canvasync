@@ -95,6 +95,10 @@ const NOISE = [
   /\s*[-–—:]\s*$/,
 ];
 
+// The default width for clip(). Titles that are STORED are no longer cut to it
+// (see cleanItemTitle) — this is now the cap for synthesised display strings
+// that have no other length discipline, such as the office-hours title
+// sync-calendar builds and roomName's location.
 const MAX_TITLE = 46;
 
 /**
@@ -141,7 +145,14 @@ export function cleanItemTitle(title, code = '') {
   for (const [re, to] of ABBREV) s = s.replace(re, to);
   s = s.replace(/\s+/g, ' ').replace(/\s+([,;:.])/g, '$1').trim();
   if (!s) s = String(title).trim() || 'Untitled';
-  return clip(s);
+  // NOT clipped. This return feeds dueTitle and prepTitle, whose output is
+  // STORED — in worklist.json and in the .ics other calendars subscribe to —
+  // so a clip here truncated the name at rest and nothing downstream could
+  // recover it ("BUSI 380 · Quiz Session 2a Concept Check quizzes (7…").
+  // Display width is the display's problem: every calendar client already
+  // elides a long title to fit its row, and cal-ics folds long SUMMARY lines
+  // at 75 octets per RFC 5545, so the full name survives the wire intact.
+  return s;
 }
 
 // A reading gets a verb, because "Ch 4" alone on a calendar is a mystery.
@@ -162,7 +173,7 @@ export function dueTitle({ code, title, category }) {
   let name = cleanItemTitle(title, short);
   const prefix = CATEGORY_PREFIX[category];
   if (needsPrefix(prefix, name)) name = `${prefix} ${name}`;
-  return short ? `${short} · ${clip(name, MAX_TITLE)}` : clip(name, MAX_TITLE);
+  return short ? `${short} · ${name}` : name;
 }
 
 /**
@@ -172,13 +183,13 @@ export function dueTitle({ code, title, category }) {
 export function prepTitle({ code, title }) {
   const short = shortCourseCode(code);
   const name = cleanItemTitle(title, short);
-  return clip(`Prep · ${short ? `${short} ` : ''}${name}`, MAX_TITLE + 8);
+  return `Prep · ${short ? `${short} ` : ''}${name}`;
 }
 
 /** A checkpoint the user wrote themselves — their words lead. */
 export function checkpointTitle({ code, title }) {
   const short = shortCourseCode(code);
-  const name = clip(String(title ?? '').trim() || 'Checkpoint', MAX_TITLE);
+  const name = String(title ?? '').replace(/\s+/g, ' ').trim() || 'Checkpoint';
   return short ? `${short} · ${name}` : name;
 }
 

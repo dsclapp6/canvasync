@@ -179,11 +179,100 @@ test('an aggregate survives when Canvas has nothing dated to show for it', () =>
   assert.equal(items[0].id, 's2a', 'a summary beats nothing at all');
 });
 
-test('canvas_assignment_ids absorbs every row the aggregate covers, not just the first', () => {
-  const mined = { items: [{ id: 's2a', title: 'S2a Concept Checks', canvas_assignment_ids: [532620, 532700], category: 'quiz', due_date: '2026-09-01' }] };
+// The user's ruling, 2026-09-01: "a lot of assignments, just regular ones in
+// canvas like quizzes, arent showing up at all. make sure that EVERYTHING is
+// showing up." This block replaces the previous rule — that an aggregate
+// ABSORBED every row it covered — because absorbing is what hid them. On real
+// data it hid 32 dated BUSI 380 quizzes inside 8 aggregates: no individual
+// title, no Submit link, no row to tick.
+test('an aggregate covering several live rows releases them instead of absorbing them', () => {
+  const mined = { items: [{
+    id: 's2a', title: 'S2a Concept Checks',
+    canvas_assignment_ids: [532620, 532700], category: 'quiz', due_date: '2026-09-01',
+    weight_note: 'ALL seven must be attempted or the session scores zero',
+    description: 'Watch the videos and attempt every quiz before class.',
+  }] };
   const { items } = tasksForClass({ mined, assignments: [QUIZ_ROW, PAPER_ROW] });
-  assert.equal(items.length, 1, 'both rows are spoken for');
-  assert.equal(items[0].id, 's2a');
+
+  assert.equal(items.length, 2, 'one row each, not one item for both');
+  assert.ok(!items.some(i => i.id === 's2a'),
+    'the aggregate must emit nothing of its own — its members are the ops now');
+  const byId = Object.fromEntries(items.map(i => [i.id, i]));
+
+  // Canvas's own title, link and points reach the user for each member.
+  assert.equal(byId['canvas-532620'].title, 'S9-Concept Check: Product Line Depth');
+  assert.equal(byId['canvas-532700'].title, 'Midterm Case Assignment');
+  assert.ok(byId['canvas-532620'].submit_url, 'each member is submittable on its own');
+  assert.equal(byId['canvas-532620'].points_possible, 10);
+  assert.equal(byId['canvas-532620'].origin, 'canvas');
+  // Canvas's date, not the aggregate's mined 2026-09-01. Derived from the row
+  // the way the sibling date test does, so this does not become a test that
+  // only passes in US Central.
+  const local = new Date(QUIZ_ROW.due_at);
+  assert.equal(byId['canvas-532620'].due_date,
+    `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}-${String(local.getDate()).padStart(2, '0')}`);
+  assert.equal(byId['canvas-532620'].due_confidence, 'high');
+
+  // The enrichment survives on every member, because it is true of each.
+  for (const id of ['canvas-532620', 'canvas-532700']) {
+    assert.match(byId[id].description, /Part of: S2a Concept Checks/);
+    assert.match(byId[id].description, /attempt every quiz before class/);
+    assert.equal(byId[id].weight_note, 'ALL seven must be attempted or the session scores zero',
+      'the weight rule is what tells the student a skipped member zeroes the set');
+  }
+});
+
+test('a dated member is released even when its aggregate also covers an undated row', () => {
+  // The mixed case: releasing only when EVERY member is dated would leave this
+  // dated quiz hidden, which is the whole complaint.
+  const mined = { items: [{
+    id: 'mixed', title: 'Session pack', canvas_assignment_ids: [532620, 532701],
+    category: 'quiz', due_date: '2026-09-01',
+  }] };
+  const { items } = tasksForClass({ mined, assignments: [QUIZ_ROW, UNDATED_ROW] });
+  assert.deepEqual(items.map(i => i.id), ['canvas-532620']);
+  assert.match(items[0].description, /Part of: Session pack/);
+});
+
+test('an item that reaches only ONE live row is not an aggregate, whatever its id list says', () => {
+  // ids[0] is dead, ids[1] is live: mining wrote a stale id beside a good one.
+  // Releasing here would throw away the mined title and description to gain an
+  // item the merge already produces, with the same Canvas date and link.
+  const mined = { items: [{
+    id: 'stale-first', title: 'S2a Concept Checks',
+    canvas_assignment_ids: [999999, 532700], category: 'quiz',
+  }] };
+  const { items } = tasksForClass({ mined, assignments: [PAPER_ROW] });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, 'stale-first', 'the mined item still speaks for its one live row');
+  assert.equal(items[0].canvas_assignment_id, 532700);
+});
+
+test('a recurring aggregate still keeps its note AND still frees the dated rows', () => {
+  // The swallowsDated guard predates this change and must survive it: a
+  // recurring item is routed to a note rather than an op, so skipping it here
+  // would delete the recurrence instead of releasing anything.
+  const mined = { items: [{
+    id: 'weekly', title: 'Concept checks', recurring: 'before each class',
+    canvas_assignment_ids: [532620, 532700], category: 'quiz',
+  }] };
+  const { items } = tasksForClass({ mined, assignments: [QUIZ_ROW, PAPER_ROW] });
+  const ids = items.map(i => i.id);
+  assert.ok(ids.includes('weekly'), 'the recurrence still has its note');
+  assert.ok(ids.includes('canvas-532620') && ids.includes('canvas-532700'),
+    'and both dated rows are still their own ops');
+});
+
+test('two aggregates naming one row leave it with a single provenance line', () => {
+  const mined = { items: [
+    { id: 'a1', title: 'First pack', canvas_assignment_ids: [532620, 532700] },
+    { id: 'a2', title: 'Second pack', canvas_assignment_ids: [532620, 532700] },
+  ] };
+  const { items } = tasksForClass({ mined, assignments: [QUIZ_ROW, PAPER_ROW] });
+  const quiz = items.find(i => i.id === 'canvas-532620');
+  assert.match(quiz.description, /Part of: First pack/);
+  assert.ok(!/Part of: Second pack/.test(quiz.description),
+    'a member that says it belongs to two different packs describes nothing');
 });
 
 // --- provenance ------------------------------------------------------------
