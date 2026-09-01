@@ -1179,71 +1179,14 @@ table.files tr:hover td { background: var(--sunk); }
 /* On, in ink weight and a border — never opacity. */
 .ghost-btn.active { color: var(--ink); border-color: var(--edge); background: var(--sunk); }
 
-/* An on/off switch, for a control that changes the MODE of a view rather than
-   adding to it. The user asked for "an on/off bubble thingy", and the point of
-   a switch over a toggle button is that its state is legible without having to
-   compare it to its neighbours: the knob is left or right, and the track is
-   empty or filled.
-
-   The first version filled the track with --accent and the user's verdict was
-   "ugly". Measured, they were right and it was not close: 364px2 of forest
-   green at 6.82:1 against the paper, in a toolbar whose other controls say
-   "on" at 1.07:1 — six times the contrast of anything beside it, and the only
-   HUE in a row of neutrals. A switch has to fill to read as on, so the fix is
-   not less fill, it is no colour: the track is now --muted, monochrome, and
-   22x11 rather than 26x14. That keeps the knob at 5.46:1 against the track,
-   comfortably legible at 8px, while adding no colour to the row at all.
-   (--edge is quieter still at 3.54:1, but puts the knob at 3.83:1 — thin for a
-   target this small, so the extra calm is not worth the legibility.)
-
-   State in ink and SHAPE, never opacity — CALENDAR-SPEC 3.6. Both halves are
-   here on purpose: the fill alone fails anyone who cannot separate the tones,
-   and the knob position alone is a small target for the eye. */
-.switch-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: var(--s-2) var(--s-4) var(--s-2) var(--s-2);
-  color: var(--muted);
-  border-color: var(--rule-2);
-  box-shadow: none;
-  font-size: var(--t-legend);
-  font-weight: var(--w-label);
-}
-.switch-track {
-  position: relative;
-  flex: none;
-  width: 22px;
-  /* Under ~14px the LABEL's line box sets the button's height, so the control
-     measures 24px — exactly what the ghost buttons beside it measure — and the
-     track can shrink without the row going ragged. */
-  height: 11px;
-  border-radius: 999px;
-  background: var(--sunk);
-  border: 1px solid var(--rule-2);
-  transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease);
-}
-.switch-knob {
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-  transition: transform var(--fast) var(--ease), background-color var(--fast) var(--ease);
-}
-.switch-btn:hover { color: var(--ink); border-color: var(--edge); }
-.switch-btn:hover .switch-track { border-color: var(--edge); }
-.switch-btn.active { color: var(--ink); border-color: var(--edge); }
-.switch-btn.active .switch-track { background: var(--muted); border-color: var(--muted); }
-/* 22 track - 2 border - 8 knob - 1 left inset - 1 right inset = 10px of travel,
-   so the knob sits the same 1px from the end it is resting against. */
-.switch-btn.active .switch-knob { transform: translateX(10px); background: var(--panel); }
-
-@media (prefers-reduced-motion: reduce) {
-  .switch-knob { transition: none; }
-}
+/* The Times control used to live here as a drawn switch — a 22x11 track and a
+   travelling knob. Retired 2026-09-01 on the user's third verdict ("the times
+   bubble is still ugly"): the first two rounds re-tuned its COLOURS, and the
+   third said the object itself was wrong. It is now a chip in the filter row's
+   family (.filter-chip.mode-chip) — see that rule for why sharing the class,
+   rather than copying its metrics, is the point. Nothing else used .switch-btn,
+   so the track and knob are gone rather than left for a future caller to find.
+   The unrelated .switch (a real input, used outside the calendar) is untouched. */
 
 .sr-only {
   position: absolute;
@@ -3409,6 +3352,27 @@ table.files tr:last-child td { border-bottom: 0; }
    That is one signal where the kind chips get two, and it is what the row had
    before I added dots to it — the user has not objected to that chip. */
 .filter-chip:not(.on) { border-style: dashed; }
+
+/* Times: a MODE control wearing the filter row's clothes.
+
+   It SHARES .filter-chip rather than copying its height, radius, padding and
+   type, because the whole complaint was that this control looked like nothing
+   else on the page — and a copy drifts the first time either side is tuned.
+   .mode-chip only supplies the selected treatment, since the row's `on` rule is
+   scoped to [data-kind-filter] and .ai-filter, and this button is neither: it
+   must never be picked up by the kind-filter delegation.
+
+   Identical declarations to that rule on purpose — same ink, same frame, same
+   ground, same weight. Weight above all: `on` and `off` differ in border STYLE
+   and colour only, never in anything with a width, so the toolbar cannot shift
+   as the chip toggles. Dashed and solid are both 1px. */
+.filter-chip.mode-chip.on {
+  color: var(--ink);
+  background: var(--panel);
+  border-color: var(--edge);
+  font-weight: var(--w-text);
+}
+.filter-chip.mode-chip.on:hover { color: var(--ink); background: var(--sunk); }
 
 .cal-row[data-kind] {
   padding-left: 9px;

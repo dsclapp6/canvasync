@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const PUBLIC = new URL('../public/', import.meta.url);
-const [APP, CSS] = await Promise.all([
+const [APP, CSS, HTML] = await Promise.all([
   readFile(new URL('app.js', PUBLIC), 'utf8'),
   readFile(new URL('style.css', PUBLIC), 'utf8'),
+  readFile(new URL('index.html', PUBLIC), 'utf8'),
 ]);
 
 // Comments here quote the rules that were REMOVED, `--kind-color` among them.
@@ -144,4 +145,76 @@ test('the AI chip keeps its dashed provenance frame in BOTH states', () => {
   // for. Noted rather than hidden; the user has not objected to this chip.
   assert.match(CSS, /\.filter-chip\.ai-filter:not\(\.on\) \{[^}]*color: var\(--muted\)/,
     'the AI chip must mute its label when off, or its state is unreadable');
+});
+
+// --- Times: a MODE control that stopped being its own object ----------------
+//
+// Third verdict on the same control: *"the times bubble is still ugly."* The
+// first two rounds re-tuned the drawn switch's COLOURS (accent fill, then
+// --muted); this one was about the object. A 22x11 track with a travelling
+// knob was the only thing of its kind on the page, so it read as an
+// afterthought however it was painted. It now wears the kind chips' frame.
+
+test('the retired Times switch leaves no hardware behind', () => {
+  // Not "the rule is unused" — the selectors are GONE, so a later rule cannot
+  // reach for a track or a knob that is merely sitting there. Comments are
+  // stripped first: the note explaining the removal names .switch-btn, and an
+  // assertion that can read its own explanation is the trap this file's header
+  // already records paying for once.
+  for (const dead of ['.switch-btn', '.switch-track', '.switch-knob']) {
+    assert.doesNotMatch(CSS_CODE, new RegExp(dead.replace('.', '\\.') + '\\b'),
+      `${dead} survives the switch it belonged to`);
+  }
+  assert.doesNotMatch(HTML, /switch-track|switch-knob/, 'the track and knob are still in the markup');
+  // The unrelated .switch (a real checkbox input, used outside the calendar)
+  // must NOT have been swept up in the removal.
+  assert.match(CSS_CODE, /\.switch input:checked \+ \.knob/, 'the unrelated .switch input was removed too');
+});
+
+test('the Times control is a chip in the kind-filter family', () => {
+  assert.match(HTML, /id="cal-times"[^>]*class="filter-chip mode-chip/,
+    'Times must share .filter-chip, not copy its metrics');
+  // Shared class, not a copied one: height, radius, padding and type come from
+  // the family, so tuning either side cannot drift them apart.
+  assert.doesNotMatch(CSS_CODE, /\.mode-chip \{/,
+    'a bare .mode-chip rule means the metrics were copied instead of shared');
+  // And it must not be reachable by the kind-filter delegation.
+  assert.doesNotMatch(HTML, /id="cal-times"[^>]*data-kind-filter/);
+});
+
+test('Times says on and off in the row’s own vocabulary', () => {
+  const on = /\.filter-chip\.mode-chip\.on \{([^}]*)\}/.exec(CSS);
+  assert.ok(on, 'Times has no selected treatment — it would fall through to the accent rule');
+  const kindOn = /\.filter-chip\[data-kind-filter\]\.on,\s*\n\.filter-chip\.ai-filter\.on \{([^}]*)\}/.exec(CSS);
+  assert.ok(kindOn, 'the kind chips’ selected rule moved — this test is stale');
+  // Same words, not merely a similar look.
+  for (const decl of ['color: var(--ink)', 'border-color: var(--edge)', 'background: var(--panel)']) {
+    assert.ok(on[1].includes(decl), `Times must say on with ${decl}, as the kind chips do`);
+    assert.ok(kindOn[1].includes(decl), `the kind chips no longer say on with ${decl} — this test is stale`);
+  }
+  // Off is the shared dashed rule, not a second opinion about what off means.
+  assert.doesNotMatch(CSS_CODE, /\.filter-chip\.mode-chip:not\(\.on\)/,
+    'Times must inherit the row’s dashed off-state, not define its own');
+  assert.doesNotMatch(on[1], /opacity/, 'state must never be carried by opacity (spec 3.6)');
+  assert.doesNotMatch(on[1], /--accent/, 'the toolbar stays colourless');
+});
+
+test('toggling Times cannot move anything beside it', () => {
+  // The chip is in a toolbar with two ghost buttons; if `on` changed any
+  // dimension, every toggle would nudge its neighbours. On and off may differ
+  // only in border STYLE and colour — dashed and solid are both 1px.
+  const on = /\.filter-chip\.mode-chip\.on \{([^}]*)\}/.exec(CSS)[1];
+  for (const dimension of ['padding', 'font-size', 'border-width', 'letter-spacing', 'gap', 'width']) {
+    assert.doesNotMatch(on, new RegExp(`(^|;|\\s)${dimension}\\s*:`),
+      `the selected chip changes ${dimension}, so the toolbar shifts when Times is toggled`);
+  }
+  const base = /\n\.filter-chip \{([^}]*)\}/.exec(CSS)[1];
+  const weightOf = (rule) => (/font-weight:\s*([^;]+)/.exec(rule) || [])[1]?.trim();
+  assert.equal(weightOf(on), weightOf(base),
+    'a heavier selected label re-measures the text and shifts the row');
+});
+
+test('the Times chip takes the family’s state class, not the ghost buttons’', () => {
+  assert.match(APP, /times\.classList\.toggle\('on', CAL_TIMES\)/,
+    'the chip family says selected with .on; .active would leave it styled as off');
 });

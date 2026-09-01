@@ -176,30 +176,35 @@ test('the toggle re-renders whichever column view is up', () => {
     'the handler must not special-case which view it is in');
 });
 
-test('the switch says on or off in SHAPE and ink, never opacity', () => {
-  // CALENDAR-SPEC 3.6. The user asked for "an on/off bubble thingy", and a
-  // switch earns its place over a toggle button by being legible on its own —
-  // you can see it is off without a neighbour to compare it against.
-  assert.match(HTML, /id="cal-times"[^>]*class="switch-btn/,
-    'the Times control must be the switch, not a ghost button');
-  assert.match(HTML, /<span class="switch-track"[\s\S]*?<span class="switch-knob">/,
-    'the switch needs a track and a knob to move in it');
-  const on = /\.switch-btn\.active \.switch-knob \{([^}]*)\}/.exec(CSS);
-  assert.ok(on, 'nothing moves the knob when the switch is on');
-  assert.match(on[1], /transform: translateX\(\d+px\)/, 'the knob must MOVE — shape, not colour alone');
-  const track = /\.switch-btn\.active \.switch-track \{([^}]*)\}/.exec(CSS);
-  assert.ok(track, 'nothing fills the track when the switch is on');
-  assert.match(track[1], /background: var\(--(muted|edge|ink|fill)\)/,
-    'the track must fill, so the state does not rest on knob position alone');
-  // The user called the first version "ugly", and measured they were right:
+test('the Times control says on or off in SHAPE and ink, never opacity', () => {
+  // CALENDAR-SPEC 3.6. This pinned a 22x11 track and a travelling knob until
+  // 2026-09-01, when the user's THIRD verdict on the control — *"the times
+  // bubble is still ugly"* — retired the drawn switch entirely. The first two
+  // rounds re-tuned its colours; the third was about the object, which was the
+  // only thing of its kind on the page however it was painted. It now wears
+  // the kind chips' frame and speaks their on/off vocabulary.
+  //
+  // The invariant this test has always been about is unchanged, which is why
+  // it was migrated rather than deleted: the state must be legible in SHAPE
+  // and ink, never in opacity, and never by adding a hue to this toolbar.
+  assert.match(HTML, /id="cal-times"[^>]*class="filter-chip mode-chip/,
+    'the Times control must be a chip in the filter row’s family, not a bespoke object');
+  const on = /\.filter-chip\.mode-chip\.on \{([^}]*)\}/.exec(CSS);
+  assert.ok(on, 'nothing marks the chip as selected — it would fall through to the accent rule');
+  assert.match(on[1], /color: var\(--ink\)/, 'the label must come up to ink when it is on');
+  assert.match(on[1], /border-color: var\(--edge\)/, 'and the frame must firm up');
+  // Shape, not tone alone: off is dashed and on is solid, from the row's own
+  // shared rule — and both are 1px, so the toolbar cannot shift as it toggles.
+  const off = /\.filter-chip:not\(\.on\) \{([^}]*)\}/.exec(CSS);
+  assert.ok(off && /border-style: dashed/.test(off[1]),
+    'off must differ in shape, not only in tone');
+  // The user called the first version "ugly" and, measured, they were right:
   // --accent put 364px2 of forest green at 6.82:1 against the paper in a
   // toolbar whose other controls say "on" at 1.07:1 — the only HUE in a row of
-  // neutrals. A switch has to fill to read as on, so the answer is no COLOUR,
-  // not less fill.
-  assert.doesNotMatch(track[1], /--accent/,
-    'the accent fill is back — it was the loudest thing in the toolbar');
-  // and never the thing the spec forbids
-  for (const rule of [on[1], track[1]]) {
+  // neutrals. Whatever shape this control takes, it does not bring one back.
+  assert.doesNotMatch(on[1], /--accent/,
+    'the accent is back — it was the loudest thing in the toolbar');
+  for (const rule of [on[1], off[1]]) {
     assert.doesNotMatch(rule, /opacity/, 'state must never be carried by opacity');
   }
 });

@@ -257,14 +257,17 @@
               <!-- Finished work is dropped from the worklist by design, so the
                    checkbox that would un-finish it vanished with the row. This
                    brings those rows back. CALENDAR-SPEC 2.5. -->
-              <!-- Week only: lay the seven columns against a clock. -->
-              <!-- A MODE, not a filter, so it reads as a switch rather than as
-                   another ghost toggle: the days are drawn against a clock or
-                   they are not. Show past / Show completed sit beside it and
-                   stay ghost buttons because they ADD rows to what is here. -->
-              <button type="button" id="cal-times" class="switch-btn hidden" aria-pressed="false"
-                      title="Draw the days against a clock"><span class="switch-track"
-                      aria-hidden="true"><span class="switch-knob"></span></span>Times</button>
+              <!-- Lay the days against a clock — Week and 2-day (CALENDAR-SPEC
+                   9.1). Still a MODE rather than a filter, but it no longer
+                   announces that in its own hardware: the drawn switch was
+                   called ugly three times, and the third verdict was on the
+                   SHAPE, not its colours. It now wears the kind chips' frame,
+                   height and type, and says on/off in their vocabulary —
+                   solid + ink on, dashed + muted off. A control that looks
+                   like the rest of the calendar's controls beats a bespoke one
+                   that is the only object of its kind on the page. -->
+              <button type="button" id="cal-times" class="filter-chip mode-chip hidden"
+                      aria-pressed="false" title="Draw the days against a clock">Times</button>
               <button type="button" id="cal-showpast" class="ghost-btn hidden" aria-pressed="false">Show past schedule</button>
               <button type="button" id="cal-showdone" class="ghost-btn hidden" aria-pressed="false">Show completed</button>
             </div>

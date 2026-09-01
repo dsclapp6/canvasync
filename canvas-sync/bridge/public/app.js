@@ -5148,7 +5148,9 @@ function syncCalControls(doneCount) {
   const times = $('cal-times');
   if (times) {
     times.classList.toggle('hidden', CAL_VIEW !== 'week' && CAL_VIEW !== 'twoday');
-    times.classList.toggle('active', CAL_TIMES);
+    // `on`, not `active`: it is a chip in the filter row's family now, and that
+    // family's selected state is .on. The ghost buttons beside it keep .active.
+    times.classList.toggle('on', CAL_TIMES);
     times.setAttribute('aria-pressed', CAL_TIMES ? 'true' : 'false');
   }
   const showDone = $('cal-showdone');
