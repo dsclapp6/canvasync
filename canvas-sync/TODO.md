@@ -335,3 +335,15 @@ v1.8.35: something writes <home>/logs after teardown. Deliberately NOT swept
 (they are the only evidence). Root-cause when a lane is free; the v1.8.35
 commit and scope.test.js's updated comment carry the breakdown (151 total:
 44 calendar/ swept, 6 seeded, 101 logs/-only kept).
+
+## Watch: pipeline-control.test.js under full-suite concurrency (2026-09-01)
+
+One full bridge run (the v1.8.38 landing) saw "a selective readings run indexes
+readings and refreshes the calendar only" fail with `read ECONNRESET` after
+117,337 ms, and the next three tests in the file fail with 409 (busy) because
+that run was still in flight. Alone the file passes 9/9 in ~6 s, twice; every
+other full run today was green. Only one sighting, so no hypothesis is asserted
+here — but the 117 s is suspiciously close to two minutes, and a stage that
+usually finishes in seconds took that long or hung. Next occurrence: capture
+the spawned bridge's stderr and the child stage's duration before touching
+anything; if it recurs under a concurrent pane drill on :3849, note that too.
