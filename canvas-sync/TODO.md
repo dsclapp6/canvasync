@@ -314,3 +314,15 @@ severity order, each with file:line evidence in the report:
 5. Dated raw rows with `id == null` are filtered before normalization with no
    ledger record (canvas-tasks.js:225) — malformed-cache guard, fold into fc's
    invariant work if cheap.
+
+## Consolidate the four atomicWrite copies (routed to PM 2026-09-01, ruled: ticket)
+
+write-lock.js, bridge/storage.js, scripts/_util.js and scripts/bump-version.js
+each carry their own atomic-write primitive. The pid-keyed temp-name bug was
+fixed in write-lock.js months before the same defect surfaced in storage.js —
+a fix to one copy propagates to none of the others, and this instance needed a
+second agent's sweep to converge. All four now agree; the risk is the
+duplication itself. Shape when taken: a dependency-free root module (the
+syllabus-source.js pattern) re-exported by all four sites with symbol-identity
+tests, so divergence becomes impossible rather than unlikely. Crosses three
+custodies — schedule as its own lane, not a rider.

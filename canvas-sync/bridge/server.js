@@ -1112,13 +1112,17 @@ export function buildApp(config) {
     const out = [];
     for (const folder of folders) {
       const dir = path.join(classesDir, folder);
-      const [metadata, mined, readings, filesIndex, grades, assignments, groups, syllabusParsed] = await Promise.all([
+      const [metadata, mined, readings, filesIndex, grades, assignments, quizzes, groups, syllabusParsed] = await Promise.all([
         readJsonOrNull(path.join(dir, 'metadata.json')),
         readJsonOrNull(path.join(dir, 'assignments_mined.json')),
         readJsonOrNull(path.join(dir, 'readings_index.json')),
         readJsonOrNull(path.join(dir, 'files_index.json')),
         readJsonOrNull(path.join(dir, 'grades.json')),
         readJsonOrNull(path.join(dir, 'assignments.json')),
+        // A dated practice quiz has no assignment row behind it, so the count
+        // on the card would disagree with the class page and the calendar
+        // without this — the invariant one line below is that they agree.
+        readJsonOrNull(path.join(dir, 'quizzes.json')),
         readJsonOrNull(path.join(dir, 'assignment_groups.json')),
         readJsonOrNull(path.join(dir, 'syllabus_parsed.json')),
       ]);
@@ -1143,7 +1147,7 @@ export function buildApp(config) {
         taskCount: (() => {
           try {
             const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
-            const { items } = tasksForClass({ mined, readings: readingFloor, assignments });
+            const { items } = tasksForClass({ mined, readings: readingFloor, assignments, quizzes });
             return items.length > 0 || mined || assignments ? items.length : null;
           } catch { return Array.isArray(mined?.items) ? mined.items.length : null; }
         })(),
@@ -1302,7 +1306,7 @@ export function buildApp(config) {
     const dir = path.join(syncHome(), 'classes', folderName);
     try { await fs.access(dir); } catch { return res.status(404).json({ error: 'not found' }); }
 
-    const [metadata, context, minedRaw, readings, filesIndex, grades, tabs, syllabusParsed, assignments, assignmentGroups, coursePacks, pages] = await Promise.all([
+    const [metadata, context, minedRaw, readings, filesIndex, grades, tabs, syllabusParsed, assignments, assignmentGroups, coursePacks, pages, quizzes] = await Promise.all([
       readJsonOrNull(path.join(dir, 'metadata.json')),
       readJsonOrNull(path.join(dir, 'AI_CONTEXT', 'context.json')),
       readJsonOrNull(path.join(dir, 'assignments_mined.json')),
@@ -1315,13 +1319,14 @@ export function buildApp(config) {
       readJsonOrNull(path.join(dir, 'assignment_groups.json')),
       readJsonOrNull(path.join(dir, 'course_packs.json')),
       readJsonOrNull(path.join(dir, 'pages.json')),
+      readJsonOrNull(path.join(dir, 'quizzes.json')),
     ]);
     // Until mining runs, Canvas is the task list. Serving nothing here was
     // showing "no tasks yet" for classes with dozens of Canvas assignments —
     // the same fallback the calendar has always had.
     const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
     const { items: taskItems, source: taskSource } = tasksForClass({
-      mined: minedRaw, readings: readingFloor, assignments,
+      mined: minedRaw, readings: readingFloor, assignments, quizzes,
     });
     const userState = await readUserState(dir);
     const textbooks = await resolveTextbooks(dir, syllabusParsed);
@@ -1421,7 +1426,7 @@ export function buildApp(config) {
     // recurring item that would swallow one) keeps living in the raw file,
     // and keying user state off it returned {} for work the user had already
     // ticked — the panel showed it outstanding. Ask the merge who this is.
-    const mergedItems = tasksForClass({ mined, readings: readingFloor, assignments }).items;
+    const mergedItems = tasksForClass({ mined, readings: readingFloor, assignments, quizzes }).items;
     const mergedSelf = mergedItems.find(x => String(x?.id) === assignmentId)
       || (minedItem && mergedItems.find(x => String(x?.id) === String(minedItem.id)))
       || mergedItems.find(x => String(x?.canvas_assignment_id ?? '') === wanted)
