@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataRoot as syncHome } from '../data-root.js';
 import { withFilesIndexLock } from '../file-lock.js';
+import { withPathLock, lockKey } from '../write-lock.js';
 import { preserveUnreadable } from './store-safety.js';
 
 export function slugifyCourseCode(code) {
@@ -23,16 +24,122 @@ export function classDirFor(courseId, slug) {
 }
 
 // Atomic write: write to tmp file then rename.
+//
+// The temp name is RANDOM per call, not `.tmp.${process.pid}`. Two ingests
+// landing in one bridge process — two browser profiles, or a scheduled sync
+// overlapping a manual one — aimed at the same pid-named temp: the first
+// rename moved it, the second failed ENOENT, and the whole course write
+// rejected mid-way. Reproduced on metadata.json while testing the pages merge,
+// so this predates that merge and applies to every file writeCourse writes.
+// Same fix, same reasoning as write-lock.js's atomicWrite (WRITE-SAFETY-AUDIT):
+// a collision that cannot be constructed beats one that has to be handled.
+const tempName = (filePath) => `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
+
 async function atomicWrite(filePath, data) {
-  const tmp = filePath + '.tmp.' + process.pid;
-  await fs.writeFile(tmp, data, { encoding: 'utf8' });
-  await fs.rename(tmp, filePath);
+  const tmp = tempName(filePath);
+  try {
+    await fs.writeFile(tmp, data, { encoding: 'utf8' });
+    await fs.rename(tmp, filePath);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 async function atomicWriteBinary(filePath, buffer) {
-  const tmp = filePath + '.tmp.' + process.pid;
-  await fs.writeFile(tmp, buffer);
-  await fs.rename(tmp, filePath);
+  const tmp = tempName(filePath);
+  try {
+    await fs.writeFile(tmp, buffer);
+    await fs.rename(tmp, filePath);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * pages.json, written the way the payload says it was collected.
+ *
+ * Every other resource here is a wholesale write, and for a working Canvas
+ * listing that is right: the listing is authoritative, including an honest
+ * empty one — a course whose pages were all deleted must not resurrect them
+ * from cache forever.
+ *
+ * A CRAWL is not authoritative. When the pages listing is forbidden (five of
+ * this user's six courses), the extension walks pages individually from the
+ * slugs it can reach, and what it reaches depends on what it remembered. A
+ * sparse crawl written wholesale REPLACES a richer cache — the course keeps
+ * its pages in Canvas and loses them here. So a crawl-sourced payload merges:
+ * incoming rows win per slug, cached rows with no incoming counterpart survive.
+ *
+ * Payload contract, agreed with the extension side (Agent 3, 2026-09-01):
+ *   key absent            → nothing written, cache untouched (total failure)
+ *   pages_source 'listing'→ wholesale (the array sent is the listing UNION the
+ *                           front page UNION whatever the crawl reached)
+ *   pages_source 'crawl'  → merge by slug
+ * An older extension sends `pages` with no `pages_source`; that stays a
+ * wholesale write, exactly as it behaves today.
+ *
+ * WHAT THIS TRADE COSTS, stated because it is real and joint (agreed with the
+ * extension side rather than assumed): under a crawl merge a page DELETED in
+ * Canvas lingers until a listing next succeeds — and where the listing is
+ * permanently closed, that may be never. It is still the right way round. A
+ * page that still exists but is missing from a partial crawl is the common
+ * case and loses real content; a lingering deleted page costs one stale row
+ * that mining may re-read. Content lost is worse than content stale. If it
+ * ever bites, the fix is a crawl-completeness signal from the extension, not a
+ * change to this merge.
+ */
+function pageKey(row) {
+  // `url` is Canvas's page slug and the extension guarantees it on crawl rows
+  // (it stamps the slug it requested onto any row that arrives without one).
+  // page_id is present on listing rows and expected on crawl rows but not
+  // guaranteed, so it is a fallback; the title is the last resort and should
+  // never be reached.
+  const url = typeof row?.url === 'string' ? row.url.trim() : '';
+  if (url) return `url:${url}`;
+  if (row?.page_id != null) return `id:${row.page_id}`;
+  const title = typeof row?.title === 'string' ? row.title.trim().toLowerCase() : '';
+  return title ? `title:${title}` : null;
+}
+
+async function writePages(classDir, incoming, source) {
+  const file = path.join(classDir, 'pages.json');
+  const rows = Array.isArray(incoming) ? incoming : [];
+  if (source !== 'crawl') return atomicWrite(file, JSON.stringify(rows, null, 2));
+
+  // Read-modify-write, so it takes the lock: writeCourse is otherwise a
+  // wholesale writer and had no race to lose. Two ingests for one class (two
+  // browser profiles, or a scheduled sync overlapping a manual one) would
+  // otherwise each read this file and one merge would be written away.
+  return withPathLock(lockKey('pages', file), async () => {
+    let cached = [];
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (Array.isArray(parsed)) cached = parsed;
+    } catch { /* no cache yet, or unreadable — the crawl is all there is */ }
+
+    // Cached order first, updated in place, then genuinely new rows appended:
+    // the smallest diff, and a stable file for anything reading it twice.
+    const byKey = new Map();
+    for (const row of rows) {
+      const key = pageKey(row);
+      if (key) byKey.set(key, row);
+    }
+    const merged = [];
+    const used = new Set();
+    for (const row of cached) {
+      const key = pageKey(row);
+      if (key && byKey.has(key)) { merged.push(byKey.get(key)); used.add(key); }
+      else merged.push(row);
+    }
+    for (const row of rows) {
+      const key = pageKey(row);
+      if (!key || !used.has(key)) merged.push(row);
+      if (key) used.add(key);
+    }
+    return atomicWrite(file, JSON.stringify(merged, null, 2));
+  });
 }
 
 export async function writeCourse(payload) {
@@ -57,6 +164,13 @@ export async function writeCourse(payload) {
     'id', 'name', 'course_code', 'sis_course_id', 'term',
     'start_at', 'end_at', 'time_zone', 'uuid',
     'apply_assignment_group_weights', 'grading_standard_id', 'hide_final_grades',
+    // Which tab the course opens on. Five of this user's six courses are
+    // 'wiki' (a landing PAGE rather than the assignment list), which is why
+    // "check the syllabus tab" is the wrong instruction for them and why a
+    // reader deciding where a course's real index lives needs this. A default
+    // Course field like the rest — the extension already collects it, and a
+    // selected-field list silently drops whatever it does not name.
+    'default_view',
   ];
   const instructorFields = ['id', 'display_name', 'email', 'avatar_url'];
   const metadata = {
@@ -79,11 +193,12 @@ export async function writeCourse(payload) {
   // Canvas 403 used to arrive here as [] and overwrite a cached
   // assignments.json holding real deadlines. An old extension sends every
   // key, so nothing changes for it.
+  // pages is handled by writePages below — it is the one resource whose write
+  // rule depends on HOW the extension collected it.
   const RESOURCE_FILES = [
     ['assignments', 'assignments.json'],
     ['modules', 'modules.json'],
     ['announcements', 'announcements.json'],
-    ['pages', 'pages.json'],
     ['quizzes', 'quizzes.json'],
     ['assignment_groups', 'assignment_groups.json'],
     ['discussions', 'discussions.json'],
@@ -94,6 +209,8 @@ export async function writeCourse(payload) {
   ];
   const writes = [
     atomicWrite(path.join(classDir, 'metadata.json'), JSON.stringify(metadata, null, 2)),
+    ...(payload.pages !== undefined
+      ? [writePages(classDir, payload.pages, payload.pages_source)] : []),
     ...RESOURCE_FILES
       .filter(([key]) => payload[key] !== undefined)
       .map(([key, file]) => atomicWrite(path.join(classDir, file), JSON.stringify(payload[key] ?? [], null, 2))),

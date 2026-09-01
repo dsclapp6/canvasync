@@ -55,6 +55,7 @@ test('writeCourse: creates expected files in temp home', async () => {
         name: 'Test Course',
         course_code: 'TC 101',
         syllabus_body: '<p>Hello</p>',
+        default_view: 'wiki',
       },
       assignments: [{ id: 1, name: 'HW1' }],
       modules: [],
@@ -83,6 +84,12 @@ test('writeCourse: creates expected files in temp home', async () => {
     const meta = JSON.parse(await fs.readFile(path.join(classDir, 'metadata.json'), 'utf8'));
     assert.equal(meta.name, 'Test Course');
     assert.equal(meta.instructors[0].display_name, 'Prof Smith');
+    // Which tab the course opens on. A selected-field list drops silently
+    // whatever it does not name, and this one was dropped: five of the user's
+    // six courses are 'wiki', meaning the course home is a PAGE and not the
+    // assignment list — which is why anything reasoning about where a course's
+    // real index lives needs it. The extension already sends it.
+    assert.equal(meta.default_view, 'wiki');
 
     // Check raw snapshot exists.
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -353,6 +360,186 @@ test('updateLastSync: writes correct structure', async () => {
     assert.ok(data.timestamp);
   } finally {
     delete process.env.CANVAS_SYNC_HOME;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+// --- pages: written the way the payload says it was collected ---------------
+//
+// Every other resource is a wholesale write. Pages cannot be, because when the
+// listing is forbidden — five of this user's six courses — the extension walks
+// pages individually and what it reaches depends on what it remembered. A
+// sparse crawl written wholesale REPLACES a richer cache: the course keeps its
+// pages in Canvas and loses them here. Codex M1.
+//
+// Payload contract agreed with the extension side (Agent 3, 2026-09-01):
+// key absent → untouched; pages_source 'listing' → wholesale; 'crawl' → merge
+// by slug. The two halves below are the ones that matter: a crawl must not
+// shrink the cache (convergence) and a listing MUST (discrimination), or the
+// merge is just a cache that can never be corrected.
+
+const PAGE = (url, title, body = '<p>x</p>') => ({ url, title, page_id: url.length, body });
+
+async function seedCourse(coursePages, source) {
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-pages-'));
+  process.env.CANVAS_SYNC_HOME = tmpHome;
+  const { classDir } = await writeCourse({
+    course: { id: 55, name: 'Pages Course', course_code: 'PG 101' },
+    pages: coursePages,
+    ...(source ? { pages_source: source } : {}),
+  });
+  return { tmpHome, classDir };
+}
+const readPages = async (classDir) =>
+  JSON.parse(await fs.readFile(path.join(classDir, 'pages.json'), 'utf8'));
+
+test('a sparse CRAWL does not shrink a richer cached pages.json', async () => {
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const { tmpHome, classDir } = await seedCourse(
+    [PAGE('week-1', 'Week 1'), PAGE('week-2', 'Week 2'), PAGE('syllabus', 'Syllabus')], 'listing');
+  try {
+    // The listing goes 403 and the crawl reaches only one remembered slug.
+    await writeCourse({
+      course: { id: 55, name: 'Pages Course', course_code: 'PG 101' },
+      pages: [PAGE('week-1', 'Week 1 (updated)', '<p>new</p>')],
+      pages_source: 'crawl',
+    });
+    const pages = await readPages(classDir);
+    assert.deepEqual(pages.map(p => p.url), ['week-1', 'week-2', 'syllabus'],
+      'the two pages the crawl could not reach must survive, in place');
+    assert.equal(pages[0].title, 'Week 1 (updated)', 'the row the crawl DID reach wins');
+    assert.equal(pages[0].body, '<p>new</p>');
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('a LISTING with fewer pages does shrink it — a working listing is authoritative', async () => {
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const { tmpHome, classDir } = await seedCourse(
+    [PAGE('week-1', 'Week 1'), PAGE('week-2', 'Week 2'), PAGE('gone', 'Deleted page')], 'listing');
+  try {
+    // Built from what the extension SENDS, not from a bare listing response:
+    // a 'listing' payload is the listing union the front page union whatever
+    // the crawl reached, so a fixture assembled the other way could make a
+    // shrink look like a non-shrink.
+    await writeCourse({
+      course: { id: 55, name: 'Pages Course', course_code: 'PG 101' },
+      pages: [PAGE('week-1', 'Week 1'), PAGE('week-2', 'Week 2')],
+      pages_source: 'listing',
+    });
+    assert.deepEqual((await readPages(classDir)).map(p => p.url), ['week-1', 'week-2'],
+      'a deleted page must not live in the cache forever');
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('an honest empty listing clears the cache', async () => {
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const { tmpHome, classDir } = await seedCourse([PAGE('week-1', 'Week 1')], 'listing');
+  try {
+    await writeCourse({
+      course: { id: 55, name: 'Pages Course', course_code: 'PG 101' },
+      pages: [], pages_source: 'listing',
+    });
+    assert.deepEqual(await readPages(classDir), []);
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('a crawl that reaches a page the cache never had appends it', async () => {
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const { tmpHome, classDir } = await seedCourse([PAGE('week-1', 'Week 1')], 'listing');
+  try {
+    await writeCourse({
+      course: { id: 55, name: 'Pages Course', course_code: 'PG 101' },
+      pages: [PAGE('week-9', 'Week 9')], pages_source: 'crawl',
+    });
+    assert.deepEqual((await readPages(classDir)).map(p => p.url), ['week-1', 'week-9']);
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('no pages key at all leaves the cache exactly as it was', async () => {
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const { tmpHome, classDir } = await seedCourse([PAGE('week-1', 'Week 1')], 'listing');
+  try {
+    const before = await fs.readFile(path.join(classDir, 'pages.json'), 'utf8');
+    await writeCourse({ course: { id: 55, name: 'Pages Course', course_code: 'PG 101' } });
+    assert.equal(await fs.readFile(path.join(classDir, 'pages.json'), 'utf8'), before);
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('an older extension that sends no pages_source still writes wholesale', async () => {
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const { tmpHome, classDir } = await seedCourse([PAGE('a', 'A'), PAGE('b', 'B')], null);
+  try {
+    await writeCourse({
+      course: { id: 55, name: 'Pages Course', course_code: 'PG 101' },
+      pages: [PAGE('a', 'A')],
+    });
+    assert.deepEqual((await readPages(classDir)).map(p => p.url), ['a'],
+      'the flag is what opts into merging — its absence must behave as before');
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('two crawl merges landing together do not write each other away', async () => {
+  // The merge is a read-modify-write, which writeCourse never had before. Two
+  // ingests for one class — two browser profiles, or a scheduled sync
+  // overlapping a manual one — would otherwise each read the file and one
+  // merge would be lost.
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const { tmpHome, classDir } = await seedCourse([PAGE('base', 'Base')], 'listing');
+  try {
+    const course = { id: 55, name: 'Pages Course', course_code: 'PG 101' };
+    await Promise.all([
+      writeCourse({ course, pages: [PAGE('from-a', 'A')], pages_source: 'crawl' }),
+      writeCourse({ course, pages: [PAGE('from-b', 'B')], pages_source: 'crawl' }),
+    ]);
+    const urls = (await readPages(classDir)).map(p => p.url).sort();
+    assert.deepEqual(urls, ['base', 'from-a', 'from-b'],
+      'both crawls and the cached row must all survive');
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('two course writes in one process do not collide on a temp file', async () => {
+  // The temp name used to be `.tmp.${process.pid}`, so two ingests landing in
+  // one bridge process aimed at the same path: the first rename moved it, the
+  // second failed ENOENT, and the whole course write rejected part-way through
+  // — with metadata.json the first casualty, not pages. Found while testing the
+  // pages merge; it predates it and applied to every file writeCourse writes.
+  const prior = process.env.CANVAS_SYNC_HOME;
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-tmprace-'));
+  process.env.CANVAS_SYNC_HOME = tmpHome;
+  try {
+    const course = { id: 77, name: 'Race Course', course_code: 'RC 101' };
+    await assert.doesNotReject(Promise.all([
+      writeCourse({ course, pages: [PAGE('a', 'A')], pages_source: 'listing', assignments: [] }),
+      writeCourse({ course, pages: [PAGE('b', 'B')], pages_source: 'listing', assignments: [] }),
+    ]));
+    const classDir = path.join(tmpHome, 'classes', '77-rc-101');
+    const meta = JSON.parse(await fs.readFile(path.join(classDir, 'metadata.json'), 'utf8'));
+    assert.equal(meta.name, 'Race Course', 'metadata survived both writers whole');
+    assert.deepEqual((await fs.readdir(classDir)).filter(f => f.includes('.tmp.')), [],
+      'no temp file left behind');
+  } finally {
+    process.env.CANVAS_SYNC_HOME = prior;
     await fs.rm(tmpHome, { recursive: true, force: true });
   }
 });

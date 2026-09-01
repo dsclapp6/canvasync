@@ -43,7 +43,7 @@
 //        embedded in the worklist when set. Only meaningful to someone writing
 //        events into a hosted calendar by hand; the .ics files need none of it.
 
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -213,6 +213,53 @@ function checkpointOffsets(it, kind) {
   return CHECKPOINTS[String(it.category ?? '').toLowerCase()] || [];
 }
 
+/**
+ * assignments.json for one class — the Canvas floor, read as a REQUIRED source.
+ *
+ * readJsonSafe answers null for "missing", "corrupt" and "permission denied"
+ * alike, and tasksForClass turns null into an empty row set. So a truncated or
+ * unreadable file published a worklist with ZERO Canvas operations for that
+ * class and no ledger entry saying anything was wrong: every deadline the class
+ * had simply was not there, and nothing in the output disagreed. That is the
+ * exact shape of the complaint this whole chain of work started from.
+ *
+ * THREE states, and the distinctions are the point:
+ *   present  — parsed, and an ARRAY. An empty array is a real answer: ECON 205
+ *              genuinely has no Canvas assignments, and it must still publish
+ *              its meetings and readings.
+ *   absent   — no file at all. NOT an error: the bridge writes a resource file
+ *              only when the extension actually read it (storage.js), so a
+ *              class whose Assignments tab is locked, or one synced before its
+ *              first assignments pass, legitimately has none. Aborting the
+ *              whole calendar for that would make one locked tab freeze every
+ *              other class's events — a bigger outage than the bug. It is
+ *              recorded in the ledger instead, by name.
+ *   throw    — the file is THERE and cannot be trusted: unreadable (EACCES,
+ *              EIO), not JSON, or not an array. Publishing without it would
+ *              silently drop work we know exists, so the run aborts and the
+ *              previous worklist stays on disk.
+ */
+async function readCanvasAssignments(classDir) {
+  const file = join(classDir, 'assignments.json');
+  let raw;
+  try {
+    raw = await readFile(file, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { rows: [], state: 'absent' };
+    throw new Error(`Canvas assignments unreadable, refusing to publish a calendar without them: ${file}: ${err.message}`);
+  }
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Canvas assignments unreadable, refusing to publish a calendar without them: ${file}: ${err.message}`);
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`Canvas assignments unreadable, refusing to publish a calendar without them: ${file} is not an array`);
+  }
+  return { rows: value, state: 'present' };
+}
+
 // Normalize one mined item (or Canvas assignment fallback) into 0+ ops.
 // `state` is this item's entry in user_state.json — the user's own marks win
 // over anything the pipeline mined.
@@ -227,8 +274,14 @@ function opsForItem(it, {
 }) {
   const ops = [];
   const kind = kindForItem(it);
+  // canvas_assignment_id travels on every record, op and drop alike, so the
+  // op-or-ledger invariant can be JOINED on it rather than inferred from a
+  // marker string: every dated Canvas row must be exactly one due op or one
+  // named drop, and a test can only check that if both carry the id.
   const note = (reason, date = null) => {
-    if (drops) drops.push({ class: classSlug, item_id: it.id ?? null, title: it.title ?? null, kind, category: it.category ?? 'other', reason, date });
+    if (drops) drops.push({ class: classSlug, item_id: it.id ?? null,
+      canvas_assignment_id: it.canvas_assignment_id ?? null,
+      title: it.title ?? null, kind, category: it.category ?? 'other', reason, date });
   };
 
   // A moved date keeps the original clock time unless the user set one too —
@@ -252,6 +305,7 @@ function opsForItem(it, {
       drops.push({
         class: classSlug,
         item_id: it.id ?? null,
+        canvas_assignment_id: it.canvas_assignment_id ?? null,
         title: it.title ?? null,
         // The title the op WOULD have carried, so a completed row reads
         // identically to the live rows it sits among ("BUSI 305 · HW 3") rather
@@ -321,6 +375,7 @@ function opsForItem(it, {
       url: it.html_url || null,
       submit_url: it.submit_url || null,
       item_id: it.id ?? null,
+      canvas_assignment_id: it.canvas_assignment_id ?? null,
       origin: originOf(it),
       // The note is already inside the description; carried as a field too so
       // the calendar can mark a row that has one without parsing prose, the
@@ -942,6 +997,10 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
     const classSlug = classSlugOf(folder);
     const metadata = await readJsonSafe(join(classDir, 'metadata.json')) || {};
     const syllabusParsed = await readJsonSafe(join(classDir, 'syllabus_parsed.json'));
+    // Read before the context is built: a file that is present and unreadable
+    // throws from here, which is what aborts the run with the old worklist
+    // still on disk.
+    const canvasAssignments = await readCanvasAssignments(classDir);
     contexts.push({
       classDir,
       classSlug,
@@ -953,12 +1012,19 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
       // the raw field is what §4.3 specifies as the source.
       instructor: syllabusParsed?.course?.instructor?.name ?? null,
       userState: (await readUserState(classDir)).items ?? {},
-      canvasAssignments: await readJsonSafe(join(classDir, 'assignments.json')),
+      canvasAssignments: canvasAssignments.rows,
+      canvasAssignmentsState: canvasAssignments.state,
       mined: await readJsonSafe(join(classDir, 'assignments_mined.json')),
       readings: await readJsonSafe(join(classDir, 'readings_index.json')),
       minedMtime: await minedMtime(classDir),
       syllabusParsed,
       canvasEvents: await readJsonSafe(join(classDir, 'calendar_events.json')),
+      // Optional, unlike assignments: quizzes.json is the floor for a DATED
+      // practice quiz or survey that has no assignment row behind it, and a
+      // class without the file simply has no such rows. readJsonSafe is right
+      // here for the same reason it is wrong above — nothing known is lost when
+      // this one is absent.
+      canvasQuizzes: await readJsonSafe(join(classDir, 'quizzes.json')),
     });
   }
 
@@ -986,14 +1052,37 @@ export async function buildWorklist(baseDirOverride = null, { allowRetry = true,
 
   // Pass 2: ops.
   for (const ctx of contexts) {
-    const { classDir, classSlug, courseCode, instructor, userState, canvasAssignments, mined, readings, syllabusParsed, canvasEvents } = ctx;
+    const { classDir, classSlug, courseCode, instructor, userState, canvasAssignments, canvasAssignmentsState, canvasQuizzes, mined, readings, syllabusParsed, canvasEvents } = ctx;
     classSlugs.push(classSlug);
+
+    // No assignments.json at all. Nothing to schedule from Canvas for this
+    // class, which is a fact worth STATING rather than a silence to publish:
+    // "0 homework" now has a reason attached to it.
+    //
+    // kind is null on purpose. This is not one kind's loss — it is the class
+    // having no Canvas source — so it belongs in the per-class reason tally
+    // (unscheduled[class]) without inflating any single kind's unscheduled
+    // count or triggering a kind note that would blame readings for it.
+    if (canvasAssignmentsState === 'absent') {
+      drops.push({
+        class: classSlug,
+        item_id: null,
+        canvas_assignment_id: null,
+        title: 'Canvas assignments have never been synced for this class',
+        kind: null,
+        category: 'other',
+        reason: 'assignments_absent',
+        date: null,
+      });
+    }
 
     // The persisted index contains raw-text fallbacks; the structured schedule
     // is also applied in-memory so a missing/stale index cannot create a gap
     // between syllabus parsing and the next pipeline pass.
     const readingFloor = readingsWithScheduleFloor(readings, syllabusParsed);
-    const { items } = tasksForClass({ mined, readings: readingFloor, assignments: canvasAssignments });
+    const { items } = tasksForClass({
+      mined, readings: readingFloor, assignments: canvasAssignments, quizzes: canvasQuizzes,
+    });
     for (const it of items) {
       // A recurrence with no date cannot become one honest event. A model can,
       // however, attach `recurring` to a dated occurrence (ECON 205 did this

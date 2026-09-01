@@ -49,7 +49,8 @@ async function tempBase() {
 }
 
 async function seedClass(base, folder, {
-  items = [], assignments = null, readings = null, syllabus = null, userState = null, code = 'BUSI 305 001/002',
+  items = [], assignments = null, readings = null, syllabus = null, userState = null, quizzes = null,
+  code = 'BUSI 305 001/002',
 } = {}) {
   const dir = join(base, 'classes', folder);
   await mkdir(dir, { recursive: true });
@@ -59,6 +60,7 @@ async function seedClass(base, folder, {
   if (readings) await writeFile(join(dir, 'readings_index.json'), JSON.stringify(readings));
   if (syllabus) await writeFile(join(dir, 'syllabus_parsed.json'), JSON.stringify(syllabus));
   if (userState) await writeFile(join(dir, 'user_state.json'), JSON.stringify({ version: 1, items: userState }));
+  if (quizzes) await writeFile(join(dir, 'quizzes.json'), JSON.stringify(quizzes));
   return dir;
 }
 
@@ -1244,4 +1246,153 @@ test('a done item keeps its origin in the drop record, so the completed row read
   assert.ok(rec, 'the record exists');
   assert.equal(rec.origin, 'syllabus');
   await rm(base, { recursive: true, force: true });
+});
+
+// --- the op-or-ledger invariant --------------------------------------------
+//
+// The mechanical guarantee behind the user's "make sure that EVERYTHING is
+// showing up": a dated Canvas row either becomes an event or is named in the
+// ledger with a reason. Never neither, and never twice. Both records carry
+// canvas_assignment_id so this can be JOINED rather than inferred from marker
+// strings — that field exists for this test as much as for the dashboard.
+
+test('every dated Canvas row becomes exactly one due op or one named drop', async () => {
+  const base = await tempBase();
+  const soon = isoDaysAhead(10);
+  const wrongYear = '2019-04-01';
+  const rows = [
+    { id: 1001, name: 'Plain homework', due_at: `${soon}T05:59:00Z` },
+    // Two rows a mined aggregate speaks for: since v1.8.29 they are released
+    // rather than absorbed, so each owes its own op.
+    { id: 1002, name: 'Concept check A', due_at: `${soon}T05:59:00Z` },
+    { id: 1003, name: 'Concept check B', due_at: `${soon}T05:59:00Z` },
+    // Ticked off: no op, but a 'done' record the UI can un-tick from.
+    { id: 1004, name: 'Already finished', due_at: `${soon}T05:59:00Z` },
+    // Dated a year Canvas will never reach: no op, but it must be NAMED.
+    { id: 1005, name: 'Wrong year survey', due_at: `${wrongYear}T05:59:00Z` },
+    // Undated rows are outside the invariant — nothing to place and nothing to
+    // be late for — and are asserted separately below.
+    { id: 1006, name: 'No deadline at all', due_at: null },
+  ];
+  await seedClass(base, '93903-busi-380-002', {
+    code: 'BUSI 380 002',
+    assignments: rows,
+    items: [{
+      id: 'session-pack', title: 'Session concept checks (2 quizzes)',
+      canvas_assignment_ids: [1002, 1003], category: 'quiz',
+    }],
+    userState: { 'canvas-1004': { done: true } },
+  });
+
+  const w = await build(base);
+  const idsOf = (list) => list.map(x => String(x.canvas_assignment_id ?? '')).filter(Boolean);
+  const opIds = idsOf(w.ops);
+  const dropIds = idsOf(w.dropped);
+
+  for (const row of rows.filter(r => r.due_at)) {
+    const id = String(row.id);
+    const inOps = opIds.filter(x => x === id).length;
+    const inDrops = dropIds.filter(x => x === id).length;
+    assert.equal(inOps + inDrops, 1,
+      `${row.name} (${id}) has ${inOps} ops and ${inDrops} drops — it must have exactly one`);
+  }
+
+  // …and the reasons are the ones we expect, not an accident that happens to
+  // sum to one.
+  const dropFor = (id) => w.dropped.find(d => String(d.canvas_assignment_id ?? '') === String(id));
+  assert.equal(dropFor(1004).reason, 'done');
+  assert.equal(dropFor(1005).reason, 'out_of_window');
+  assert.ok(opIds.includes('1002') && opIds.includes('1003'),
+    'a released aggregate member owes an op of its own');
+  assert.equal(dropFor(1006), undefined, 'an undated row is not a Canvas deadline');
+});
+
+// --- assignments.json as a required source ---------------------------------
+
+test('a corrupt assignments.json aborts the build and leaves the old worklist alone', async () => {
+  const base = await tempBase();
+  const dir = await seedClass(base, '93903-busi-380-002', {
+    code: 'BUSI 380 002',
+    assignments: [{ id: 2001, name: 'Real deadline', due_at: `${isoDaysAhead(12)}T05:59:00Z` }],
+  });
+  const good = await build(base);
+  assert.ok(good.ops.length, 'the first build published something');
+  const published = await readFile(join(base, 'calendar', 'worklist.json'), 'utf8');
+
+  // Truncated mid-write, or half-copied: the file is THERE and cannot be
+  // trusted. Publishing anyway would drop a real deadline and say nothing.
+  await writeFile(join(dir, 'assignments.json'), '[{"id": 2001, "name": "Real');
+  await assert.rejects(build(base), /Canvas assignments unreadable/);
+  assert.equal(await readFile(join(base, 'calendar', 'worklist.json'), 'utf8'), published,
+    'the previous worklist must survive a refused build byte for byte');
+});
+
+test('assignments.json that is not an array is refused too', async () => {
+  const base = await tempBase();
+  const dir = await seedClass(base, '93903-busi-380-002', { code: 'BUSI 380 002', assignments: [] });
+  // A Canvas error body parses as perfectly good JSON.
+  await writeFile(join(dir, 'assignments.json'), JSON.stringify({ errors: [{ message: 'unauthorized' }] }));
+  await assert.rejects(build(base), /is not an array/);
+});
+
+test('a class that genuinely has no Canvas assignments still publishes', async () => {
+  // ECON 205 stores a real empty array. An empty answer is an answer: its
+  // meetings and readings must still reach the calendar.
+  const base = await tempBase();
+  await seedClass(base, '90805-econ-205-002', {
+    code: 'ECON 205 002',
+    assignments: [],
+    items: [{ id: 'read-1', title: 'Read Ch 4', category: 'reading', due_date: isoDaysAhead(9) }],
+  });
+  const w = await build(base);
+  assert.ok(w.ops.some(o => o.item_id === 'read-1'), 'an empty array is not a failure');
+  assert.ok(!w.dropped.some(d => d.reason === 'assignments_absent'),
+    'an empty array is present, not absent');
+});
+
+test('a class with NO assignments.json publishes, and says so in the ledger', async () => {
+  // The bridge writes a resource file only when the extension actually read it,
+  // so a locked Assignments tab means no file at all. Aborting every class's
+  // calendar over one locked tab would be a bigger outage than the bug — but
+  // going silent about it is what this whole chain of work exists to stop.
+  const base = await tempBase();
+  await seedClass(base, '92294-busi-305-001-002-003', {
+    items: [{ id: 'read-1', title: 'Read Ch 2', category: 'reading', due_date: isoDaysAhead(8) }],
+  });
+  const w = await build(base);
+  assert.ok(w.ops.some(o => o.item_id === 'read-1'), 'the rest of the class still publishes');
+  const record = w.dropped.find(d => d.reason === 'assignments_absent');
+  assert.ok(record, 'the missing source must be named in the ledger');
+  assert.equal(record.class, 'busi-305-001-002-003');
+  assert.equal(record.kind, null, 'no single kind owns this loss');
+  assert.match(record.title, /never been synced/);
+  // Surfaced per class, where a "0 homework" column can point at it.
+  assert.equal(w.unscheduled['busi-305-001-002-003'].assignments_absent, 1);
+});
+
+test('a dated practice quiz with no assignment row reaches the calendar as Canvas work', async () => {
+  // Planted positive: no such row exists in the live snapshots today (every
+  // dated quiz there is assignment-backed). Codex H1 — the hole is that such a
+  // quiz lives only in quizzes.json, which the calendar never read.
+  const base = await tempBase();
+  const due = isoDaysAhead(14);
+  await seedClass(base, '93903-busi-380-002', {
+    code: 'BUSI 380 002',
+    assignments: [],
+    quizzes: [{
+      id: 7001, title: 'Practice: Segmentation drill', quiz_type: 'practice_quiz',
+      due_at: `${due}T05:59:00Z`,
+      html_url: 'https://canvas.rice.edu/courses/93903/quizzes/7001',
+    }],
+  });
+  const w = await build(base);
+  const op = w.ops.find(o => o.item_id === 'canvas-quiz-7001');
+  assert.ok(op, 'the quiz never reached the calendar');
+  assert.equal(op.origin, 'canvas',
+    'Canvas holds it and it has a link to take — calling it syllabus would tell '
+    + 'the user the AI invented it');
+  assert.match(op.submit_url, /\/quizzes\/7001\/take$/);
+  // The marker stays in the syllabus namespace on purpose: a quiz id inside a
+  // csync:a| marker could collide with a real assignment's op.
+  assert.match(op.marker, /^\[csync:s\|/);
 });

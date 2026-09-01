@@ -403,3 +403,82 @@ test('model and index copies of the same dated reading merge without losing inde
   assert.match(items[0].description, /both channel-strategy articles/);
   assert.deepEqual(items[0].related_materials.map(m => m.file), ['Chapter 3.pdf', 'Syllabus.pdf']);
 });
+
+// --- the quiz floor ---------------------------------------------------------
+//
+// PLANTED POSITIVES, and worth saying so: all 39 dated quizzes in the six live
+// snapshots have assignment rows behind them, so nothing here reproduces a
+// present outage. What it closes is a hole — a dated practice quiz or ungraded
+// survey has NO assignment row, exists only in quizzes.json, and reached the
+// calendar only if the model happened to mention it. Codex H1.
+
+const PRACTICE_QUIZ = {
+  id: 7001,
+  title: 'Practice: Segmentation drill',
+  due_at: '2026-03-12T05:59:00Z',
+  quiz_type: 'practice_quiz',
+  points_possible: 0,
+  html_url: 'https://canvas.rice.edu/courses/93903/quizzes/7001',
+};
+
+test('a dated quiz with no assignment row behind it still becomes work', () => {
+  const { items, source } = tasksForClass({ mined: null, assignments: [], quizzes: [PRACTICE_QUIZ] });
+  assert.equal(items.length, 1);
+  const [it] = items;
+  assert.equal(it.id, 'canvas-quiz-7001');
+  assert.equal(it.title, 'Practice: Segmentation drill');
+  assert.equal(it.origin, 'canvas', 'Canvas holds it — this is not an AI find');
+  assert.equal(it.canvas_quiz_id, 7001);
+  assert.equal(it.canvas_assignment_id, undefined,
+    'a quiz id must never sit in the assignment-id field — different namespaces, '
+    + 'and a csync:a| marker built from one could collide with a real assignment');
+  assert.equal(it.html_url, 'https://canvas.rice.edu/courses/93903/quizzes/7001');
+  assert.equal(it.submit_url, 'https://canvas.rice.edu/courses/93903/quizzes/7001/take');
+  assert.equal(source, 'canvas');
+});
+
+test('a quiz Canvas already schedules as an assignment is not doubled', () => {
+  // The ordinary case: a graded quiz has an assignment row carrying quiz_id.
+  // The floor must stay out of its way or every graded quiz appears twice.
+  //
+  // The quiz TITLE here deliberately differs from the assignment row's name.
+  // Canvas often words them differently, and more to the point: a matching
+  // title is suppressed by the title rule whether or not the backing-row check
+  // exists, so a same-titled fixture cannot see this rule at all. (Found by
+  // reverting — with the titles equal, deleting the backing-row check passed
+  // every test.)
+  const { items } = tasksForClass({
+    mined: null,
+    assignments: [QUIZ_ROW],                       // quiz_id 244811
+    quizzes: [{ id: 244811, title: 'Concept Check 9', due_at: '2026-03-10T05:59:00Z' }],
+  });
+  assert.equal(items.length, 1, 'the assignment row is the one true copy');
+  assert.equal(items[0].canvas_assignment_id, 532620);
+  assert.equal(items[0].canvas_quiz_id, undefined);
+});
+
+test('a mined item that already describes the practice quiz keeps its description', () => {
+  // Title resolution, the same discipline the assignment union uses: the model
+  // found it, so the model's richer item stands and the floor stays quiet.
+  const { items } = tasksForClass({
+    mined: { items: [{ id: 'drill', title: 'Practice: Segmentation Drill', description: 'Do it twice.' }] },
+    assignments: [],
+    quizzes: [PRACTICE_QUIZ],
+  });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, 'drill');
+  assert.equal(items[0].description, 'Do it twice.');
+});
+
+test('an undated quiz is not work — nothing to place, nothing to be late for', () => {
+  const { items } = tasksForClass({
+    mined: null, assignments: [],
+    quizzes: [{ ...PRACTICE_QUIZ, due_at: null }],
+  });
+  assert.deepEqual(items, []);
+});
+
+test('no quizzes argument at all behaves exactly as before', () => {
+  const { items } = tasksForClass({ mined: null, assignments: [QUIZ_ROW, PAPER_ROW] });
+  assert.equal(items.length, 2);
+});

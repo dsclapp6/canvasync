@@ -91,6 +91,55 @@ export function itemsFromCanvasAssignments(assignments) {
 }
 
 /**
+ * Dated quizzes Canvas holds that have NO assignment row behind them.
+ *
+ * Graded Classic and New Quizzes get an assignment row, and that row is what
+ * itemsFromCanvasAssignments already turns into work — which is why this is a
+ * FLOOR and not a second source of the same quizzes. What it covers is the
+ * case that has no assignment at all: a dated practice quiz or an ungraded
+ * survey. Those live only in quizzes.json, and until now they reached the
+ * calendar only if the model happened to mention them, which is not a
+ * guarantee — it is a hope with a good track record.
+ *
+ * Zero rows in the six live snapshots today (all 39 dated quizzes are
+ * assignment-backed), so this is a latent hole being closed rather than a
+ * present outage, and its test is a planted positive.
+ *
+ * `canvas_quiz_id`, never canvas_assignment_id: quiz ids and assignment ids
+ * are different namespaces, and writing one into the other's field would put a
+ * quiz id inside a `csync:a|...` calendar marker, where it could collide with
+ * a real assignment's op.
+ */
+export function itemsFromCanvasQuizzes(quizzes, assignments) {
+  const backed = new Set((assignments || [])
+    .map(a => a?.quiz_id)
+    .filter(v => v != null)
+    .map(String));
+  return (quizzes || [])
+    .filter(q => q && q.id != null && q.due_at && !backed.has(String(q.id)))
+    .map((q) => {
+      // Reuse the link rules rather than rebuilding a quiz URL by hand: a
+      // shape with html_url + quiz_id is exactly what they are written for.
+      const asRow = { html_url: q.html_url ?? null, quiz_id: q.id, id: q.id };
+      return {
+        id: `canvas-quiz-${q.id}`,
+        title: q.title || q.name || 'Untitled',
+        canvas_quiz_id: q.id,
+        category: categoryOf({ name: q.title || q.name || '', quiz_id: q.id }),
+        canvas_category: categoryOf({ name: q.title || q.name || '', quiz_id: q.id }),
+        ...dueParts(q.due_at),
+        due_confidence: 'high',
+        points_possible: q.points_possible ?? null,
+        description: '',
+        source: 'Canvas',
+        origin: 'canvas',
+        html_url: canvasItemUrl(asRow),
+        submit_url: canvasSubmitUrl(asRow),
+      };
+    });
+}
+
+/**
  * A title, flattened for comparison. Mining rewrites Canvas titles lightly
  * ("Quiz 3 - Segmentation" vs "Quiz 3: Segmentation"), so an exact match misses
  * the duplicate it is meant to catch.
@@ -182,7 +231,7 @@ function aggregateCount(title) {
  *   'canvas' — Canvas only (mining has not run)
  *   'mixed'  — both
  */
-export function tasksForClass({ mined, assignments, readings } = {}) {
+export function tasksForClass({ mined, assignments, readings, quizzes } = {}) {
   const modelItems = Array.isArray(mined?.items) ? mined.items : [];
   const indexedReadings = Array.isArray(readings?.items) ? readings.items : [];
 
@@ -389,8 +438,17 @@ export function tasksForClass({ mined, assignments, readings } = {}) {
     .filter(it => !claimedIds.has(String(it.canvas_assignment_id)))
     .map(it => withAggregateContext(it, memberContext.get(String(it.canvas_assignment_id))));
 
+  // Quizzes with no assignment row behind them, minus any a mined item already
+  // describes — the same title-resolution discipline the assignment union uses,
+  // so a model that DID find the practice quiz keeps its description instead of
+  // being doubled by the floor.
+  const spokenFor = new Set([...items, ...extras].map(i => titleKey(i.title)).filter(Boolean));
+  const quizFloor = itemsFromCanvasQuizzes(quizzes, rows)
+    .filter(q => !spokenFor.has(titleKey(q.title)));
+
+  const canvasOnly = extras.concat(quizFloor);
   const source = items.length
-    ? (extras.length ? 'mixed' : 'mined')
+    ? (canvasOnly.length ? 'mixed' : 'mined')
     : 'canvas';
-  return { items: items.concat(extras), source };
+  return { items: items.concat(canvasOnly), source };
 }
