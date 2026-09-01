@@ -694,6 +694,33 @@ export function buildApp(config) {
   // and remember whether another became due while it was in flight.
   let taskRebuildTimer = null;
   let taskRebuildPending = false;
+  /**
+   * Is a rebuild in flight OR merely owed?
+   *
+   * `calRebuild` only knows about children that have actually been SPAWNED, so
+   * during the debounce window below the honest answer to "is a rebuild
+   * running" is no — and it is truthfully misleading, because one is coming.
+   * Anything that waits for quiescence (a test teardown, a shutdown path) has
+   * to see the owed one too or it waits for the wrong thing and proceeds.
+   */
+  function rebuildStatus() {
+    return { ...calRebuild, pending: taskRebuildPending || taskRebuildTimer !== null };
+  }
+  /**
+   * Drop a rebuild that has been scheduled but not yet spawned.
+   *
+   * A debounce timer that outlives the server that scheduled it is the defect:
+   * it fires into a process that has moved on, spawning a child that reads
+   * CANVAS_SYNC_HOME AT SPAWN TIME. In a test that has already torn its
+   * temporary home down, that resolves to the real data root and the child
+   * rebuilds the USER'S OWN calendar from a fixture — user-state.test.js
+   * records that happening four times in one afternoon.
+   */
+  function cancelPendingRebuild() {
+    clearTimeout(taskRebuildTimer);
+    taskRebuildTimer = null;
+    taskRebuildPending = false;
+  }
   function scheduleWorklistRebuild(delayMs = 1500) {
     taskRebuildPending = true;
     clearTimeout(taskRebuildTimer);
@@ -1935,13 +1962,13 @@ export function buildApp(config) {
       };
     }));
     classes.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    res.json({ kinds: CAL_KINDS, labels: CAL_KIND_LABELS, classes, rebuild: calRebuild });
+    res.json({ kinds: CAL_KINDS, labels: CAL_KIND_LABELS, classes, rebuild: rebuildStatus() });
   });
 
   // POST /api/calendar/rebuild — regenerate the worklist from disk.
   dashRouter.post('/calendar/rebuild', disabledCheck, (req, res) => {
     const started = spawnWorklistRebuild();
-    res.json({ ok: true, started, rebuild: calRebuild });
+    res.json({ ok: true, started, rebuild: rebuildStatus() });
   });
 
   // GET /api/logs — tail of the pipeline log
@@ -2418,6 +2445,16 @@ export function buildApp(config) {
     if (res.headersSent) return next(err);
     res.status(status).json({ error: detail });
   });
+
+  // Wired here rather than at the two call sites that listen (production's
+  // app.listen and the tests' server factory), so no caller has to know the
+  // debounce exists to be safe from it.
+  const listen = app.listen.bind(app);
+  app.listen = (...args) => {
+    const server = listen(...args);
+    server.on('close', cancelPendingRebuild);
+    return server;
+  };
 
   return app;
 }

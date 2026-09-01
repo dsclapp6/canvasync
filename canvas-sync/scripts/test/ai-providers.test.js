@@ -1,4 +1,4 @@
-import { test, before, after } from 'node:test';
+import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -36,6 +36,25 @@ before(async () => {
   root = await mkdtemp(join(tmpdir(), 'csync-ai-cli-'));
   for (const key of KEYS) saved[key] = process.env[key];
   process.env.CANVAS_SYNC_HOME = root;
+});
+
+// Both overrides are set for EVERY test, whether or not it cares about that
+// CLI. providerBin() falls back to ~/.local/bin, /opt/homebrew/bin,
+// /usr/local/bin and finally PATH, so an override left unset does not mean
+// "no CLI" — it means the developer's own installed, signed-in binary, and
+// cliProviderStatuses() probes BOTH providers on every call. The third test
+// below sets only CSYNC_CLAUDE_BIN and used to inherit the codex fake from the
+// first test; run it alone (`--test-name-pattern`) or insert a test above it,
+// and it ran `codex login status` against the real thing instead. It still
+// PASSED while doing so, because it only asserts the claude half — which is
+// why this needed a structural answer and not a careful reading.
+//
+// A path that does not exist gives ENOENT, which _statusSpawn already reads as
+// installed: false. That is the state a test asking for "no CLI" wants.
+beforeEach(() => {
+  const missing = join(root, 'no-such-cli');
+  process.env.CSYNC_CLAUDE_BIN = missing;
+  process.env.CSYNC_CODEX_BIN = missing;
 });
 
 after(async () => {

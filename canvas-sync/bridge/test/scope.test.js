@@ -46,11 +46,77 @@ before(async () => {
 });
 
 after(async () => {
+  // Cleaning up a stale class fires a WORKLIST REBUILD — a real child process
+  // (scripts/sync-calendar.js) that inherits CANVAS_SYNC_HOME and writes
+  // <tmpHome>/calendar/{worklist.json,*.ics}. Nothing here used to wait for it,
+  // so the rm below raced a live writer and died with
+  // `ENOTEMPTY: rmdir '<tmp>/cvsync-scope-*/calendar'` — intermittently, as a
+  // FILE-level failure with no test named, which reads like a flaky suite
+  // rather than a leaked child — node reports a failed after() hook on a
+  // synthetic file entry carrying the HOOK's duration, which is why it looks
+  // "too fast to have run a test".
+  //
+  // Measured while fixing it: 151 orphan cvsync-scope-* directories on this
+  // machine, of which 44 held exactly a calendar/ the child wrote after
+  // teardown had removed the rest. Those 44 were this bug and are swept. The
+  // other 107 hold a logs/delete.log dated 2026-08-24 or an untouched seeded
+  // home — an OLDER, separate leak, left in place rather than tidied away,
+  // because they are the only evidence it exists. An earlier version of this
+  // comment said 118, all calendar/: that was three newest directories
+  // generalised to a population, and it was wrong.
+  //
+  // Waiting is the fix. Retrying the rmdir would only hide the writer, and the
+  // orphan directories would keep accumulating.
+  await waitForRebuildIdle();
   await new Promise(resolve => server.close(resolve));
-  delete process.env.CANVAS_SYNC_HOME;
+  // CANVAS_SYNC_HOME is REPOINTED, never deleted. A rebuild child that starts
+  // after this hook runs reads the variable at spawn time; with it deleted,
+  // dataRoot() falls back to ~/canvas-sync-data and the child rebuilds the
+  // USER'S REAL CALENDAR from a test's fixtures. That is not hypothetical —
+  // user-state.test.js's own teardown records it happening four times in one
+  // afternoon, rewriting worklist.json, worklist.md and ROUTINE.md out from
+  // under them, and defends with exactly this graveyard. The wait above should
+  // make it unreachable here; this is what makes being wrong about that cost a
+  // junk directory instead of the user's data.
+  const graveyard = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-scope-void-'));
+  process.env.CANVAS_SYNC_HOME = graveyard;
   delete process.env.BRIDGE_PORT;
   await fs.rm(tmpHome, { recursive: true, force: true });
 });
+
+/**
+ * Block until the bridge says no worklist rebuild is in flight.
+ *
+ * Asked through the server's own published answer (`GET /api/calendar` returns
+ * `rebuild`), not by sniffing the filesystem: the server is the only thing that
+ * knows a child was spawned, and it already re-spawns once more if a request
+ * arrived mid-run, which a mtime-settles heuristic would walk straight past.
+ *
+ * Bounded, and it gives up rather than hanging the suite — a teardown that
+ * blocks forever is worse than the orphan directory it was trying to prevent.
+ */
+async function waitForRebuildIdle({ timeoutMs = 20000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    // /api/calendar/classes, NOT /api/calendar: only the former publishes
+    // `rebuild`. Polling the latter read `undefined`, treated it as "idle", and
+    // returned instantly — a wait that never waited, which is why the orphan
+    // directories kept appearing after it was added.
+    const res = await request('GET', '/api/calendar/classes', asDash()).catch(() => null);
+    // Cannot ask (server already down, route changed): do not spin on it.
+    if (!res || res.status !== 200) return false;
+    // `pending` covers the debounce window that `running` truthfully misses:
+    // a rebuild that is owed but not yet spawned is still one we must not tear
+    // the home out from under.
+    if (!res.body?.rebuild?.running && !res.body?.rebuild?.pending) return true;
+    if (Date.now() > deadline) {
+      console.error('[scope.test] gave up waiting for the worklist rebuild;'
+        + ` ${tmpHome} may be left behind`);
+      return false;
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+}
 
 beforeEach(async () => {
   await fs.rm(path.join(tmpHome, 'sync-scope.json'), { force: true });
@@ -347,4 +413,138 @@ test('an empty selection still syncs nothing — scope semantics are unchanged',
   const res = await request('GET', '/api/classes', asDash());
   assert.equal(res.body.classes.every(c => c.inScope === false), true,
     'nothing is in scope, exactly as a strict empty allowlist requires');
+});
+
+// --- The rebuild that outlived its server -----------------------------------
+//
+// Three layers, pinned separately, because they defend different things and
+// each can be wrong on its own. The bug they answer: cleaning a class schedules
+// a worklist rebuild, the rebuild is a CHILD PROCESS that reads
+// CANVAS_SYNC_HOME at spawn time, and nothing tied its lifetime to the server
+// that asked for it. Seen as an intermittent `ENOTEMPTY: rmdir
+// '<tmp>/cvsync-scope-*/calendar'` reported against this file's after() hook —
+// which node attributes to a synthetic FILE-level entry with the hook's own
+// duration, so it reads like a module that failed to load rather than a
+// teardown that raced a live writer.
+//
+// These are deterministic. The failure they describe is a race, and a test that
+// reproduces a race one run in twenty is a rumour, not a test.
+
+async function probeServer() {
+  // The shared server must be quiet BEFORE this helper repoints
+  // CANVAS_SYNC_HOME. spawnWorklistRebuild reads the variable at spawn time, so
+  // a child of the shared server that starts while the probe owns the variable
+  // rebuilds into the PROBE's home — which looks exactly like the failure the
+  // close-cancel test is hunting, and made it fail with the fix in place. The
+  // bug under test and the test's own isolation are the same hazard.
+  await waitForRebuildIdle();
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cvsync-scope-probe-'));
+  await fs.writeFile(path.join(home, 'config.json'),
+    JSON.stringify({ bridgeSecret: SECRET, extensionId: EXT_ID }), { mode: 0o600 });
+  // A class, because sync-calendar writes NOTHING for a home with none — and a
+  // rebuild that produces no file cannot be detected by looking for one. The
+  // close-cancel test stayed green against the un-cancelled timer until this
+  // was here: the timer fired, the child ran, and it had nothing to write.
+  const probeClass = path.join(home, 'classes', '92294-busi-305-001');
+  await fs.mkdir(probeClass, { recursive: true });
+  await fs.writeFile(path.join(probeClass, 'metadata.json'), JSON.stringify({
+    name: 'BUSI 305', course_code: 'BUSI 305',
+    term: { id: '1', name: 'Fall Semester 2026 Full Term' },
+  }));
+  const saved = process.env.CANVAS_SYNC_HOME;
+  process.env.CANVAS_SYNC_HOME = home;
+  const srv = await createServer();
+  return {
+    home,
+    url: `http://127.0.0.1:${srv.address().port}`,
+    // Schedules a rebuild through the DEBOUNCE path rather than spawning one:
+    // this is the window `rebuild.running` cannot see.
+    schedule: (url) => fetch(`${url}/api/calendar/items`, {
+      method: 'POST',
+      headers: { 'X-Bridge-Secret': SECRET, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'probe item', date: '2026-09-05' }),
+    }),
+    // Closing and cleaning up are SEPARATE on purpose. The close-cancel test
+    // has to keep both the home and the env var alive across the debounce
+    // window, or a timer that fires writes somewhere the assertion is not
+    // looking and the test passes without testing anything.
+    async close() {
+      await new Promise(resolve => srv.close(resolve));
+    },
+    async cleanup() {
+      process.env.CANVAS_SYNC_HOME = saved;
+      await fs.rm(home, { recursive: true, force: true });
+    },
+    async done() { await this.close(); await this.cleanup(); },
+  };
+}
+
+test('a rebuild owed but not yet spawned is published, not hidden', async () => {
+  // Layer 3. `calRebuild` only tracks children that exist, so during the
+  // debounce the server answered "not running" — true, and useless to anything
+  // waiting for quiescence, which then proceeded to delete the home.
+  const probe = await probeServer();
+  try {
+    const scheduled = await probe.schedule(probe.url);
+    assert.equal(scheduled.status, 200, await scheduled.text());
+    const res = await fetch(`${probe.url}/api/calendar/classes`, { headers: { 'X-Bridge-Secret': SECRET } });
+    const body = await res.json();
+    assert.equal(body.rebuild.running, false, 'nothing has been spawned yet — that part was always true');
+    assert.equal(body.rebuild.pending, true, 'but one is owed, and that is what a waiter needs to know');
+  } finally { await probe.done(); }
+});
+
+test('the endpoint the teardown waits on actually answers the question', async () => {
+  // The failure this pins is one I shipped: waitForRebuildIdle polled
+  // /api/calendar, which publishes no `rebuild` at all, so it read undefined,
+  // called it idle and returned instantly. A wait that never waits looks
+  // exactly like a wait that works — the suite stays green and the orphan
+  // directories keep appearing. Assert the CONTRACT, not just the value.
+  const res = await request('GET', '/api/calendar/classes', asDash());
+  assert.equal(res.status, 200);
+  assert.equal(typeof res.body?.rebuild, 'object',
+    'the polled route must publish a rebuild status, or the wait is a no-op');
+  for (const field of ['running', 'pending']) {
+    assert.equal(typeof res.body.rebuild[field], 'boolean',
+      `rebuild.${field} must be a boolean the wait can branch on`);
+  }
+});
+
+test('a rebuild scheduled on a server that then closes never fires', async () => {
+  // Layer 1, and the defect that generalises: a debounce timer outliving its
+  // server. Every test that stands up a bridge inherits it. Deterministic —
+  // the timer is guaranteed pending at close, so the pre-fix code spawns the
+  // child every single run.
+  const probe = await probeServer();
+  const worklist = path.join(probe.home, 'calendar', 'worklist.json');
+  try {
+    const scheduled = await probe.schedule(probe.url);
+    assert.equal(scheduled.status, 200, await scheduled.text());
+    // createCustomItem already made calendar/ — only sync-calendar writes this.
+    await assert.rejects(fs.stat(worklist), 'nothing should have rebuilt yet');
+    await probe.close();
+    // The home and CANVAS_SYNC_HOME both stay put across this window: a timer
+    // that survives its server must have somewhere to write that this
+    // assertion can see, or the test is vacuous. It was, once — it asserted a
+    // missing file inside a directory it had already deleted, and stayed green
+    // with the cancel removed.
+    await new Promise(resolve => setTimeout(resolve, 2200));  // past the 1500ms debounce
+    await assert.rejects(fs.stat(worklist),
+      'the timer fired after its server closed and rebuilt into a home nobody owns');
+  } finally {
+    await probe.cleanup();
+  }
+});
+
+// Layer 2, asserted from a SECOND after() so it runs once the real teardown
+// above has done its work. If that hook ever goes back to deleting the
+// variable, a rebuild child spawned afterwards inherits no CANVAS_SYNC_HOME,
+// dataRoot() falls back to ~/canvas-sync-data, and the child rewrites the
+// user's real calendar. This is the only layer that still holds when the other
+// two are wrong, so it gets its own assertion rather than a comment.
+after(() => {
+  assert.ok(process.env.CANVAS_SYNC_HOME,
+    'teardown must REPOINT CANVAS_SYNC_HOME at a throwaway directory, never delete it');
+  assert.notEqual(process.env.CANVAS_SYNC_HOME, path.join(os.homedir(), 'canvas-sync-data'),
+    'and never at the real data root');
 });
