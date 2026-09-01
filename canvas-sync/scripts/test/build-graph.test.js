@@ -139,10 +139,23 @@ const CLASS_FILES = {
   'syllabus.html': SYLLABUS_HTML,
   'syllabus.hash': createHash('sha256').update(SYLLABUS_HTML).digest('hex'),
   'syllabus_parsed.json': { extracted_at: '2026-08-24T00:00:00Z', textbooks: [], assignments: [] },
+  // Must match what buildReadingIndex() now produces for this fixture, or the
+  // content-aware writer rewrites it on every run and "only the graph is
+  // stale" stops being true — index+mine+build would fire for a class whose
+  // readings did not change. The pages_* counters arrived with the class-page
+  // source: this fixture's one page carries no date, so it is scanned and
+  // contributes nothing, which is exactly what these numbers say.
   'readings_index.json': {
     version: 1,
-    source: { structured: 'syllabus_parsed.json', raw: 'syllabus.html', syllabus_file: null },
-    coverage: { structured: 0, raw_fallback: 0, total: 0 },
+    source: {
+      structured: 'syllabus_parsed.json', raw: 'syllabus.html',
+      syllabus_file: null, pages: 'pages.json',
+    },
+    coverage: {
+      structured: 0, raw_fallback: 0,
+      pages_scanned: 1, pages: 0, pages_merged: 0, total: 0,
+    },
+    skipped: [],
     items: [],
     indexed_at: '2026-08-24T00:00:00Z',
   },
